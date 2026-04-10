@@ -1,7 +1,9 @@
 import fastify, { FastifyInstance, FastifyError } from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
+import fastifyStatic from '@fastify/static';
 import pino from 'pino';
+import path from 'node:path';
 import type { InstanceService } from '../../services/instance-service.js';
 import type { LogService } from '../../services/log-service.js';
 import type { TerminalService } from '../../services/terminal-service.js';
@@ -31,13 +33,15 @@ export const createHttpServer = async (deps: ApiDeps): Promise<FastifyInstance> 
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
   });
 
-  await server.register(websocket);
+await server.register(websocket);
 
-  server.get('/health', async (request, reply) => {
-    return reply.status(200).send({
-      status: 'ok',
-      timestamp: new Date().toISOString()
-    });
+  const staticPath = process.env.SQUASH_STATIC_DIR
+    ?? path.join(process.cwd(), '..', 'frontend', 'dist');
+
+  await server.register(fastifyStatic, {
+    root: staticPath,
+    prefix: '/',
+    decorateReply: false
   });
 
   server.get('/terminal/:instanceId', { websocket: true }, (socket, request) => {

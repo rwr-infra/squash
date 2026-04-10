@@ -34,18 +34,48 @@ squash/
 │   ├── core/log/          # Log writer & output parser
 │   ├── services/          # Business logic
 │   └── api/               # HTTP + WebSocket endpoints
-├── frontend/              # Frontend (React)
-└── config/                # Instance configs (instances.json)
+├── frontend/              # Frontend (React + Vite)
+├── scripts/               # Dev scripts (PTY smoke test)
+├── config/                # Instance configs (instances.json)
+├── Dockerfile             # Container image
+└── LICENSE
 ```
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js >= 20
+- Node.js >= 24
+- Docker (for containerized deployment)
 - Linux (PTY behavior validated on Linux; macOS has known node-pty permission quirks)
 
-### Backend
+### Docker (Recommended)
+
+```bash
+# Build image
+docker build -t rwr-infra/squash .
+
+# Run container
+docker run -d \
+  --name squash \
+  -p 3000:3000 \
+  -v squash-data:/app/config \
+  -v squash-logs:/app/logs \
+  rwr-infra/squash
+```
+
+Then open `http://localhost:3000`.
+
+### Docker Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3000` | HTTP server port |
+| `HOST` | `0.0.0.0` | Bind address |
+| `LOG_LEVEL` | `info` | Pino log level |
+| `SQUASH_STATIC_DIR` | `/app/frontend/dist` | Frontend static files path |
+
+### Manual
 
 ```bash
 npm install
@@ -60,7 +90,7 @@ Environment variables:
 | `HOST` | `0.0.0.0` | Bind address |
 | `LOG_LEVEL` | `info` | Pino log level |
 
-### Frontend
+### Frontend (Development)
 
 ```bash
 cd frontend
@@ -73,7 +103,7 @@ echo "VITE_WS_URL=ws://localhost:3000" >> .env.local
 npm run dev
 ```
 
-Frontend runs at `http://localhost:5173` by default.
+Frontend dev server runs at `http://localhost:5173`.
 
 ### Quick Test
 
