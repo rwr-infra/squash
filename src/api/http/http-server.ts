@@ -9,6 +9,7 @@ import type { LogService } from '../../services/log-service.js';
 import type { TerminalService } from '../../services/terminal-service.js';
 import type { TerminalGateway } from '../ws/terminal-gateway.js';
 import { registerInstanceRoutes } from './routes/instance-routes.js';
+import { isAuthEnabled, validateBearerToken } from './auth.js';
 
 export type ApiDeps = {
   instanceService: InstanceService;
@@ -33,7 +34,7 @@ export const createHttpServer = async (deps: ApiDeps): Promise<FastifyInstance> 
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
   });
 
-await server.register(websocket);
+  await server.register(websocket);
 
   const staticPath = process.env.SQUASH_STATIC_DIR
     ?? path.join(process.cwd(), '..', 'frontend', 'dist');
@@ -44,7 +45,21 @@ await server.register(websocket);
     decorateReply: false
   });
 
+  server.addHook('preHandler', async (request, reply) => {
+    const url = request.url;
+    if (url === '/health' || url.startsWith('/terminal')) return;
+    if (isAuthEnabled && !validateBearerToken(request.headers.authorization)) {
+      return reply.status(401).send({ success: false, error: { code: 'UNAUTHORIZED', message: 'Missing or invalid Authorization header' } });
+    }
+  });
+
   server.get('/terminal/:instanceId', { websocket: true }, (socket, request) => {
+    const token = (request.query as { token?: string }).token;
+    if (!validateBearerToken(token ? `Bearer ${token}` : undefined)) {
+      socket.send(JSON.stringify({ type: 'error', message: 'Unauthorized' }));
+      socket.close();
+      return;
+    }
     const params = request.params as { instanceId: string };
     deps.terminalGateway.handleConnection(socket, { query: { instanceId: params.instanceId } });
   });

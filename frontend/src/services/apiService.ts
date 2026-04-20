@@ -1,4 +1,9 @@
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+const AUTH_TOKEN = import.meta.env.VITE_AUTH_TOKEN ?? '';
+
+const authHeaders: Record<string, string> = AUTH_TOKEN
+  ? { Authorization: `Bearer ${AUTH_TOKEN}` }
+  : {};
 
 interface ApiResponse<T> {
   success: boolean;
@@ -57,41 +62,41 @@ export type CreateInstanceRequest = {
 export type InstanceWithRuntime = { config: InstanceConfig; runtime: InstanceRuntime };
 
 export const fetchInstances = async (): Promise<InstanceWithRuntime[]> => {
-  const res = await fetch(`${API_BASE}/instances`);
+  const res = await fetch(`${API_BASE}/instances`, { headers: authHeaders });
   return unwrap(res);
 };
 
 export const fetchInstance = async (id: string): Promise<InstanceWithRuntime> => {
-  const res = await fetch(`${API_BASE}/instances/${id}`);
+  const res = await fetch(`${API_BASE}/instances/${id}`, { headers: authHeaders });
   return unwrap(res);
 };
 
 export const createInstance = async (data: CreateInstanceRequest): Promise<InstanceConfig> => {
   const res = await fetch(`${API_BASE}/instances`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders },
     body: JSON.stringify(data)
   });
   return unwrap(res);
 };
 
 export const startInstance = async (id: string): Promise<InstanceRuntime> => {
-  const res = await fetch(`${API_BASE}/instances/${id}/start`, { method: 'POST' });
+  const res = await fetch(`${API_BASE}/instances/${id}/start`, { method: 'POST', headers: authHeaders });
   return unwrap(res);
 };
 
 export const stopInstance = async (id: string): Promise<InstanceRuntime> => {
-  const res = await fetch(`${API_BASE}/instances/${id}/stop`, { method: 'POST' });
+  const res = await fetch(`${API_BASE}/instances/${id}/stop`, { method: 'POST', headers: authHeaders });
   return unwrap(res);
 };
 
 export const restartInstance = async (id: string): Promise<InstanceRuntime> => {
-  const res = await fetch(`${API_BASE}/instances/${id}/restart`, { method: 'POST' });
+  const res = await fetch(`${API_BASE}/instances/${id}/restart`, { method: 'POST', headers: authHeaders });
   return unwrap(res);
 };
 
 export const deleteInstance = async (id: string): Promise<void> => {
-  const res = await fetch(`${API_BASE}/instances/${id}`, { method: 'DELETE' });
+  const res = await fetch(`${API_BASE}/instances/${id}`, { method: 'DELETE', headers: authHeaders });
   if (!res.ok) {
     const body = (await res.json()) as ApiResponse<null>;
     throw new Error(body.error?.message ?? 'Delete failed');
@@ -99,7 +104,7 @@ export const deleteInstance = async (id: string): Promise<void> => {
 };
 
 export const tailInstanceLogs = async (id: string, lines = 100): Promise<string> => {
-  const res = await fetch(`${API_BASE}/instances/${id}/logs/tail?lines=${lines}`);
+  const res = await fetch(`${API_BASE}/instances/${id}/logs/tail?lines=${lines}`, { headers: authHeaders });
   return unwrap(res);
 };
 

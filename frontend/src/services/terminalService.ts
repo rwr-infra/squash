@@ -17,6 +17,7 @@ export type TerminalHandlers = {
 };
 
 const WS_BASE = import.meta.env.VITE_WS_URL ?? 'ws://localhost:3000';
+const AUTH_TOKEN = import.meta.env.VITE_AUTH_TOKEN ?? '';
 const MAX_RETRIES = 3;
 
 export const connectTerminal = (
@@ -27,10 +28,14 @@ export const connectTerminal = (
   let ws: WebSocket | null = null;
   let disposed = false;
 
+  const wsUrl = AUTH_TOKEN
+    ? `${WS_BASE}/terminal/${instanceId}?token=${encodeURIComponent(AUTH_TOKEN)}`
+    : `${WS_BASE}/terminal/${instanceId}`;
+
   const connect = () => {
     if (disposed) return;
 
-    ws = new WebSocket(`${WS_BASE}/terminal/${instanceId}`);
+    ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
       retries = 0;

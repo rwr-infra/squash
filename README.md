@@ -55,10 +55,11 @@ squash/
 # Build image
 docker build -t rwr-infra/squash .
 
-# Run container
+# Run container (with auth token)
 docker run -d \
   --name squash \
   -p 3000:3000 \
+  -e AUTH_TOKEN=your-secret-token \
   -v squash-data:/app/config \
   -v squash-logs:/app/logs \
   rwr-infra/squash
@@ -74,12 +75,13 @@ Then open `http://localhost:3000`.
 | `HOST` | `0.0.0.0` | Bind address |
 | `LOG_LEVEL` | `info` | Pino log level |
 | `SQUASH_STATIC_DIR` | `/app/frontend/dist` | Frontend static files path |
+| `AUTH_TOKEN` | _(none)_ | Bearer token for API authentication |
 
 ### Manual
 
 ```bash
 npm install
-npx tsx src/index.ts
+AUTH_TOKEN=your-secret-token npx tsx src/index.ts
 ```
 
 Environment variables:
@@ -89,6 +91,7 @@ Environment variables:
 | `PORT` | `3000` | HTTP server port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `LOG_LEVEL` | `info` | Pino log level |
+| `AUTH_TOKEN` | _(none)_ | Bearer token for API authentication |
 
 ### Frontend (Development)
 
@@ -96,9 +99,10 @@ Environment variables:
 cd frontend
 npm install
 
-# Configure backend URL (match PORT above)
+# Configure backend URL and auth token (match backend settings above)
 echo "VITE_API_URL=http://localhost:3000" > .env.local
 echo "VITE_WS_URL=ws://localhost:3000" >> .env.local
+echo "VITE_AUTH_TOKEN=your-secret-token" >> .env.local
 
 npm run dev
 ```
@@ -150,14 +154,12 @@ WebSocket: `ws://localhost:3000/terminal/:instanceId`
 
 - **macOS `posix_spawnp failed`**: node-pty spawn-helper binary may lack execute bit on macOS. Fix: `chmod +x node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper`. Linux is unaffected.
 - **Real `rwr_server` runtime validation** has not been performed on an actual game server binary yet.
-- **No authentication** — API is unprotected.
 
 ## Roadmap
 
 - [ ] Real game server runtime validation (Linux)
 - [ ] Auto-restart strategy on crash
 - [ ] Log rotation
-- [ ] Authentication / API key
 - [ ] SQLite config storage (planned)
 
 ## License
