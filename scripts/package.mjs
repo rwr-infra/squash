@@ -42,11 +42,18 @@ fs.copyFileSync(path.join(rootDir, 'package-lock.json'), path.join(stageDir, 'pa
 
 // --- Install production dependencies (pulls node-pty's platform binary) ------
 log('installing production dependencies (this resolves node-pty for this platform)');
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const npm = spawnSync(npmCmd, ['ci', '--omit=dev', '--no-audit', '--no-fund'], {
+// shell:true is REQUIRED on Windows: Node refuses to spawn npm.cmd directly
+// (EINVAL since the CVE-2024-27980 fix). Args are hardcoded constants, so the
+// shell-injection caveat behind the DEP0190 warning doesn't apply here.
+const npm = spawnSync('npm', ['ci', '--omit=dev', '--no-audit', '--no-fund'], {
   cwd: stageDir,
-  stdio: 'inherit'
+  stdio: 'inherit',
+  shell: true
 });
+if (npm.error) {
+  console.error(`[package] failed to launch npm: ${npm.error.message}`);
+  process.exit(1);
+}
 if (npm.status !== 0) {
   console.error('[package] npm ci failed');
   process.exit(npm.status ?? 1);
