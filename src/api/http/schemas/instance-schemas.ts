@@ -7,9 +7,11 @@ export const CreateInstanceSchema = z.object({
   executable: z.string().min(1),
   args: z.array(z.string()).default([]),
   env: z.record(z.string(), z.string()).default({}),
-  logDir: z.string().min(1),
+  // Defaults to "logs" (relative to the app root), which is the same directory
+  // LogService tails from — keep them aligned if you customize this.
+  logDir: z.string().min(1).default('logs'),
   autoStart: z.boolean().default(false),
-  autoRestart: z.boolean().default(false),
+  autoRestart: z.boolean().default(true),
   restartDelayMs: z.number().int().min(0).default(3000)
 }).strict();
 

@@ -1,3 +1,4 @@
+import './app/env.js'; // MUST be first — loads .env before any module reads process.env
 import pino from 'pino';
 import { bootstrapApp } from './app/bootstrap.js';
 import { createInstanceConfigStore } from './core/config/instance-config-store.js';
@@ -5,6 +6,7 @@ import { createInstanceRegistry } from './core/instance/instance-registry.js';
 import { InstanceService } from './services/instance-service.js';
 import { LogService } from './services/log-service.js';
 import { TerminalService } from './services/terminal-service.js';
+import { AuditService } from './services/audit-service.js';
 import { createHttpServer } from './api/http/http-server.js';
 import { createTerminalGateway } from './api/ws/terminal-gateway.js';
 
@@ -30,8 +32,9 @@ const main = async () => {
   const logService = new LogService();
   const terminalService = new TerminalService(registry);
   const terminalGateway = createTerminalGateway(registry);
+  const auditService = new AuditService();
 
-  const httpServer = await createHttpServer({ instanceService, logService, terminalService, terminalGateway });
+  const httpServer = await createHttpServer({ instanceService, logService, terminalService, terminalGateway, auditService });
 
   try {
     await httpServer.listen({ port: PORT, host: HOST });

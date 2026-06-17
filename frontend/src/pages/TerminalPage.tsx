@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Button, Tag, Space, message, Spin, Input } from 'antd';
+import { Button, Tag, Space, message, Spin, Input, Grid, ConfigProvider, theme } from 'antd';
 import { ArrowLeftOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, ExpandOutlined } from '@ant-design/icons';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -29,7 +29,9 @@ const TerminalPage = () => {
   const [pid, setPid] = useState<number | undefined>();
   const [loading, setLoading] = useState(true);
   const [quickCmd, setQuickCmd] = useState('');
-  const [sending, setSending] = useState(false);
+
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.md;
 
   useEffect(() => {
     if (!instanceId) return;
@@ -43,11 +45,13 @@ const TerminalPage = () => {
   }, [instanceId]);
 
   useEffect(() => {
-    if (loading || status !== 'running' && status !== 'starting') return;
+    // Connect regardless of status so a crashed/stopped instance still shows its
+    // buffered output (e.g. the crash error). Status updates arrive via onRuntime.
+    if (loading) return;
 
     const terminal = new Terminal({
       cursorBlink: true,
-      fontSize: 14,
+      fontSize: isMobile ? 12 : 14,
       fontFamily: 'Menlo, Monaco, monospace',
       theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
       convertEol: true
@@ -87,7 +91,21 @@ const TerminalPage = () => {
       connectionRef.current = null;
       terminalRef.current = null;
     };
-  }, [loading, status, instanceId]);
+    // NOTE: isMobile is intentionally NOT a dependency. Grid.useBreakpoint()
+    // returns {} on first render then resolves a tick later, flipping isMobile —
+    // if it were a dep, the terminal would be torn down and reconnected right
+    // after mount, dropping the just-replayed output. Font size is adjusted
+    // separately below without recreating the terminal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, instanceId]);
+
+  // Adjust font size on breakpoint changes without recreating the terminal.
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.options.fontSize = isMobile ? 12 : 14;
+    fitAddonRef.current?.fit();
+  }, [isMobile]);
 
   const handleResize = () => fitAddonRef.current?.fit();
 
@@ -124,37 +142,35 @@ const TerminalPage = () => {
     }
   };
 
+  // Send via REST /command (fire-and-forget, no captureMs). The backend writes it
+  // to the pty and records an audit entry; the echo + output come back over the
+  // live WS stream (shown once — we do NOT write locally, which would double).
   const handleQuickCommand = async () => {
     const cmd = quickCmd.trim();
     if (!cmd) return;
-    setSending(true);
     try {
-      const { output } = await sendCommand(instanceId, cmd, { captureMs: 1500 });
-      if (output && terminalRef.current) {
-        terminalRef.current.write(output);
-      }
+      await sendCommand(instanceId, cmd);
       setQuickCmd('');
     } catch (e) {
       message.error((e as Error).message);
-    } finally {
-      setSending(false);
     }
   };
 
   const running = status === 'running' || status === 'starting';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#1e1e1e' }}>
-      <div style={{ padding: '8px 16px', background: '#252526', borderBottom: '1px solid #3c3c3c', display: 'flex', alignItems: 'center', gap: 12 }}>
+    <ConfigProvider theme={{ algorithm: theme.darkAlgorithm }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100svh', background: '#1e1e1e' }}>
+      <div style={{ padding: '8px 12px', background: '#252526', borderBottom: '1px solid #3c3c3c', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <Button icon={<ArrowLeftOutlined />} size="small" onClick={() => navigate('/')} type="text" style={{ color: '#fff' }} />
-        <code style={{ color: '#fff', marginLeft: 4 }}>{instanceId}</code>
-        <Tag color={statusColor[status]} style={{ marginLeft: 8 }}>{status.toUpperCase()}</Tag>
+        <code style={{ color: '#fff', background: '#3c3c3c', padding: '2px 8px', borderRadius: 4, wordBreak: 'break-all', maxWidth: '40vw' }}>{instanceId}</code>
+        <Tag color={statusColor[status]} style={{ marginInlineEnd: 0 }}>{status.toUpperCase()}</Tag>
         {pid && <span style={{ color: '#888', fontSize: 12 }}>PID {pid}</span>}
-        <Space style={{ marginLeft: 'auto' }}>
-          <Button size="small" icon={<PlayCircleOutlined />} disabled={running} onClick={handleStart}>Start</Button>
-          <Button size="small" icon={<StopOutlined />} disabled={!running} onClick={handleStop}>Stop</Button>
-          <Button size="small" icon={<SyncOutlined />} onClick={handleRestart} loading={status === 'starting'}>Restart</Button>
-          <Button size="small" icon={<ExpandOutlined />} onClick={handleResize}>Fit</Button>
+        <Space style={{ marginLeft: 'auto' }} wrap>
+          <Button size="small" icon={<PlayCircleOutlined />} disabled={running} onClick={handleStart} title="Start">{isMobile ? null : 'Start'}</Button>
+          <Button size="small" icon={<StopOutlined />} disabled={!running} onClick={handleStop} title="Stop">{isMobile ? null : 'Stop'}</Button>
+          <Button size="small" icon={<SyncOutlined />} onClick={handleRestart} loading={status === 'starting'} title="Restart">{isMobile ? null : 'Restart'}</Button>
+          <Button size="small" icon={<ExpandOutlined />} onClick={handleResize} title="Fit">{isMobile ? null : 'Fit'}</Button>
         </Space>
       </div>
 
@@ -162,30 +178,29 @@ const TerminalPage = () => {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
           <Spin />
         </div>
-      ) : !running ? (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: '#888' }}>
-          <div style={{ textAlign: 'center' }}>
-            <p>Instance is not running</p>
-            <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleStart} style={{ marginTop: 8 }}>Start Instance</Button>
-          </div>
-        </div>
       ) : (
         <>
-          <div ref={containerRef} style={{ flex: 1, padding: 8 }} />
-          <div style={{ padding: '8px 16px', background: '#252526', borderTop: '1px solid #3c3c3c' }}>
+          {!running && (
+            <div style={{ padding: '8px 12px', background: '#3a2d2d', color: '#e0c0c0', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span>Instance is {status}. Showing the last output below.</span>
+              <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={handleStart}>Start</Button>
+            </div>
+          )}
+          <div ref={containerRef} style={{ flex: 1, padding: 8, minHeight: 0 }} />
+          <div style={{ padding: '8px 12px', background: '#252526', borderTop: '1px solid #3c3c3c' }}>
             <Input.Search
               value={quickCmd}
               onChange={(e) => setQuickCmd(e.target.value)}
               onSearch={handleQuickCommand}
               enterButton="Send"
-              loading={sending}
-              placeholder="Quick command (e.g. status) — captures ~1.5s of output"
+              placeholder={isMobile ? 'Send a command (e.g. status)' : 'Send a command to the terminal (e.g. status)'}
               disabled={!running}
             />
           </div>
         </>
       )}
     </div>
+    </ConfigProvider>
   );
 };
 

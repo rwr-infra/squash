@@ -57,11 +57,12 @@ squash/
 # Build image
 docker build -t rwr-infra/squash .
 
-# Run container (with auth token)
+# Run container (with login credentials)
 docker run -d \
   --name squash \
   -p 3000:3000 \
-  -e AUTH_TOKEN=your-secret-token \
+  -e AUTH_USERNAME=admin \
+  -e AUTH_PASSWORD=change-me \
   -v squash-data:/app/config \
   -v squash-logs:/app/logs \
   rwr-infra/squash
@@ -71,13 +72,10 @@ Then open `http://localhost:3000`.
 
 ### Docker Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | HTTP server port |
-| `HOST` | `0.0.0.0` | Bind address |
-| `LOG_LEVEL` | `info` | Pino log level |
-| `SQUASH_STATIC_DIR` | `/app/frontend/dist` | Frontend static files path |
-| `AUTH_TOKEN` | _(none)_ | Bearer token for API authentication |
+Same variables as the [Configuration](#configuration-env) section below
+(`PORT`, `HOST`, `LOG_LEVEL`, `AUTH_USERNAME`, `AUTH_PASSWORD`, `AUTH_TOKEN`, `CORS_ORIGIN`).
+In the image `SQUASH_STATIC_DIR` defaults to `/app/frontend/dist`. Mount `/app/config` and
+`/app/logs` as volumes to persist instance configs and logs.
 
 ### Development
 
@@ -93,18 +91,49 @@ The server is compiled to plain JavaScript and run with `node` (no `tsx` at runt
 ```bash
 npm install
 npm run build        # compiles the server to dist/ and the frontend to frontend/dist/
-AUTH_TOKEN=your-secret-token npm start   # node dist/index.js
+npm start            # node dist/index.js
 ```
 
-Environment variables:
+### Configuration (`.env`)
+
+On startup the server automatically loads a `.env` file from the working directory
+(via Node's built-in env-file loader — no extra dependency). Copy the template and edit:
+
+```bash
+cp .env.example .env
+```
+
+Environment variables (all optional; settable via `.env` or the real environment):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP server port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `LOG_LEVEL` | `info` | Pino log level |
+| `AUTH_USERNAME` | _(none)_ | Login username — set together with `AUTH_PASSWORD` to require login |
+| `AUTH_PASSWORD` | _(none)_ | Login password |
+| `AUTH_TOKEN` | _(none)_ | Optional static bearer token (accepted alongside login; legacy) |
+| `CORS_ORIGIN` | `*` | Allowed CORS origin for the API |
 | `SQUASH_STATIC_DIR` | _(next to the app)_ | Frontend static files path (auto-derived; override only if you relocate `frontend/dist`) |
-| `AUTH_TOKEN` | _(none)_ | Bearer token for API authentication |
+
+### Authentication
+
+Set **both** `AUTH_USERNAME` and `AUTH_PASSWORD` to require a username/password login
+on the web UI and API. The login (`POST /auth/login`) issues a session token (7-day TTL,
+kept in memory — restarting the server invalidates sessions). The frontend stores the
+token in `localStorage` and sends it as `Authorization: Bearer <token>` (and as a
+`?token=` query param for the terminal WebSocket).
+
+If neither credential is set, auth is **disabled** and access is open. A static
+`AUTH_TOKEN` is still accepted for backward-compatible/programmatic use.
+
+### Audit log
+
+User actions are recorded to `logs/audit.log` (JSONL) and exposed via `GET /audit`.
+Recorded actions: `login`, `create`, `start`, `stop`, `restart`, `delete`, and `command`
+(which captures the command text sent via the terminal's quick-command box). Each entry
+has `time`, `user`, `action`, and optional `instanceId` / `detail`. The web UI shows them
+in the **Audit log** drawer on the instance list page.
 
 ### Portable distribution (Windows without Docker)
 
@@ -119,7 +148,8 @@ npm run package
 On the target machine (which only needs **Node.js >= 24** installed — no build tools):
 
 1. Unzip the bundle.
-2. Edit `start.bat` (Windows) / `start.sh` (Linux/macOS) to set `AUTH_TOKEN`.
+2. Set credentials: edit `start.bat` / `start.sh` (or drop a `.env` next to them) with
+   `AUTH_USERNAME` / `AUTH_PASSWORD`.
 3. Run `start.bat` / `./start.sh`. Open `http://localhost:3000`.
 
 > Because `node-pty` is a native module, a bundle must be produced **on the same OS/arch**
@@ -138,15 +168,20 @@ build artifact. Pushing a `v*` tag additionally publishes them to a GitHub Relea
 cd frontend
 npm install
 
-# Configure backend URL and auth token (match backend settings above)
+# Point the frontend at the backend (MUST set both — API and WebSocket)
 echo "VITE_API_URL=http://localhost:3000" > .env.local
 echo "VITE_WS_URL=ws://localhost:3000" >> .env.local
-echo "VITE_AUTH_TOKEN=your-secret-token" >> .env.local
 
 npm run dev
 ```
 
-Frontend dev server runs at `http://localhost:5173`.
+Frontend dev server runs at `http://localhost:5173`. When login is enabled you sign in
+through the app's login page (no token in `.env.local` needed — it's obtained at login
+and stored in `localStorage`). `VITE_AUTH_TOKEN` is still honored as a fallback for
+static-token setups.
+
+> Set **both** `VITE_API_URL` and `VITE_WS_URL`. If `VITE_WS_URL` is missing it falls
+> back to `ws://localhost:3000`, so the terminal would connect to the wrong server.
 
 ### Quick Test
 
@@ -175,18 +210,26 @@ curl http://localhost:3000/instances
 
 ## API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-| GET | `/instances` | List all instances |
-| POST | `/instances` | Create instance |
-| GET | `/instances/:id` | Get instance details |
-| DELETE | `/instances/:id` | Delete instance |
-| POST | `/instances/:id/start` | Start instance |
-| POST | `/instances/:id/stop` | Stop instance |
-| POST | `/instances/:id/restart` | Restart instance |
-| POST | `/instances/:id/command` | Send a command to the instance's stdin |
-| GET | `/instances/:id/logs/tail` | Tail instance logs |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/health` | public | Health check |
+| GET | `/auth/status` | public | Whether login is required (`{ loginEnabled }`) |
+| POST | `/auth/login` | public | Log in with `{ username, password }` → `{ token }` |
+| GET | `/auth/me` | yes | Current user for the supplied token |
+| POST | `/auth/logout` | yes | Invalidate the current session token |
+| GET | `/instances` | yes | List all instances |
+| POST | `/instances` | yes | Create instance |
+| GET | `/instances/:id` | yes | Get instance details |
+| PUT | `/instances/:id` | yes | Update instance config (must be stopped/crashed) |
+| DELETE | `/instances/:id` | yes | Delete instance |
+| POST | `/instances/:id/start` | yes | Start instance |
+| POST | `/instances/:id/stop` | yes | Stop instance |
+| POST | `/instances/:id/restart` | yes | Restart instance |
+| POST | `/instances/:id/command` | yes | Send a command to the instance's stdin |
+| GET | `/instances/:id/logs/tail` | yes | Tail instance logs |
+| GET | `/audit` | yes | Recent audit-log entries (`?limit=`) |
+
+"Auth: yes" endpoints require `Authorization: Bearer <token>` when login (or `AUTH_TOKEN`) is configured.
 
 ### Sending commands
 

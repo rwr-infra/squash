@@ -36,7 +36,12 @@ export type InstanceSupervisor = {
   captureCommand: (command: string, opts?: CaptureCommandOptions) => Promise<string>;
   resize: (cols: number, rows: number) => void;
   getRuntime: () => InstanceRuntime;
+  getRecentOutput: () => string;
   onData: (listener: (chunk: string) => void) => () => void;
+  onStatus: (listener: (runtime: InstanceRuntime) => void) => () => void;
+  // Releases all timers/watchers and kills any live process. Call before
+  // discarding a supervisor (delete/edit) so a pending auto-restart can't fire.
+  dispose: () => void;
 };
 
 export type CaptureCommandOptions = {

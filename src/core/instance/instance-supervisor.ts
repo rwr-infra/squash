@@ -23,6 +23,10 @@ const MAX_RESTART_DELAY_MS = 60_000;
 const RESET_AFTER_MS = 60_000;
 const WATCHDOG_INTERVAL_MS = 5000;
 const MAX_CAPTURE_MS = 10_000;
+// Recent raw output (incl. ANSI) replayed to terminals that connect after the
+// process has already printed — e.g. a startup burst that finished before the
+// WebSocket attached.
+const OUTPUT_BUFFER_LIMIT = 64 * 1024;
 
 const isWindows = process.platform === 'win32';
 
@@ -51,7 +55,15 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
 
   let runtime = createRuntime(config.id, 'stopped');
   let processRef: PtyProcess | undefined;
+  let outputBuffer = '';
   const dataListeners = new Set<(chunk: string) => void>();
+  const statusListeners = new Set<(runtime: InstanceRuntime) => void>();
+
+  const notifyStatus = () => {
+    for (const listener of statusListeners) {
+      listener(runtime);
+    }
+  };
 
   let restartAttempts = 0;
   let restartTimer: NodeJS.Timeout | undefined;
@@ -128,6 +140,8 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
         lastOutputAt: now()
       });
 
+      outputBuffer = (outputBuffer + chunk).slice(-OUTPUT_BUFFER_LIMIT);
+
       const lines = parser.push(chunk);
       await logWriter.writeLines(lines);
 
@@ -145,15 +159,19 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       await logWriter.writeLines(pending);
 
       const userStopped = runtime.status === 'stopping';
+      // A clean exit (code 0, no signal) is a normal completion — e.g. a one-shot
+      // command like steamcmd that finishes — not a crash, so don't auto-restart.
+      const cleanExit = exitCode === 0 && !signal;
       runtime = markRuntime(runtime, {
-        status: userStopped ? 'stopped' : 'crashed',
+        status: userStopped || cleanExit ? 'stopped' : 'crashed',
         stoppedAt: now(),
         exitCode,
         exitSignal: signal
       });
       processRef = undefined;
+      notifyStatus();
 
-      if (!userStopped) {
+      if (!userStopped && !cleanExit) {
         scheduleRestart();
       }
     });
@@ -161,6 +179,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
 
   const start = async () => {
     assertInstanceState(canStart(runtime.status), `Cannot start instance from state ${runtime.status}`);
+    outputBuffer = '';
     runtime = markRuntime(runtime, {
       status: 'starting',
       startedAt: now(),
@@ -184,6 +203,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       status: 'running',
       pid: processRef.pid
     });
+    notifyStatus();
 
     startWatchdog();
 
@@ -206,6 +226,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     restartAttempts = 0;
     stopWatchdog();
     runtime = markRuntime(runtime, { status: 'stopping', restartCount: 0 });
+    notifyStatus();
     processRef?.kill();
   };
 
@@ -274,9 +295,25 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     getRuntime() {
       return runtime;
     },
+    getRecentOutput() {
+      return outputBuffer;
+    },
     onData(listener) {
       dataListeners.add(listener);
       return () => dataListeners.delete(listener);
+    },
+    onStatus(listener) {
+      statusListeners.add(listener);
+      return () => statusListeners.delete(listener);
+    },
+    dispose() {
+      clearRestartState();
+      restartAttempts = 0;
+      stopWatchdog();
+      if (processRef && (runtime.status === 'running' || runtime.status === 'starting')) {
+        runtime = markRuntime(runtime, { status: 'stopping' });
+        processRef.kill();
+      }
     }
   };
 };

@@ -21,6 +21,26 @@ export class InstanceService {
     return { ...config };
   }
 
+  async updateInstance(config: InstanceConfig): Promise<InstanceConfig | undefined> {
+    const existing = this.registry.getConfig(config.id);
+    if (!existing) {
+      return undefined;
+    }
+
+    const runtime = this.registry.getRuntime(config.id);
+    if (runtime && runtime.status !== 'stopped' && runtime.status !== 'crashed') {
+      throw new Error(`Cannot edit instance ${config.id} while it is ${runtime.status}`);
+    }
+
+    // Rebuild the supervisor: it captures config (executable/cwd/args/logDir) at
+    // construction, so the only correct way to apply changes is a fresh one.
+    this.registry.getSupervisor(config.id)?.dispose();
+    const supervisor = await createInstanceSupervisor(config);
+    await this.configStore.save(config);
+    await this.registry.register(config, supervisor);
+    return { ...config };
+  }
+
   async listInstances(): Promise<Array<{ config: InstanceConfig; runtime: InstanceRuntime }>> {
     return this.registry.listConfigs().map(config => ({
       config,
@@ -74,6 +94,7 @@ export class InstanceService {
       throw new Error(`Cannot delete running instance ${id}`);
     }
 
+    this.registry.getSupervisor(id)?.dispose();
     const deleted = await this.configStore.delete(id);
     if (deleted) {
       await this.registry.unregister(id);

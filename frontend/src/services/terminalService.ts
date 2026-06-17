@@ -16,8 +16,9 @@ export type TerminalHandlers = {
   onClose: () => void;
 };
 
+import { getToken } from './apiService';
+
 const WS_BASE = import.meta.env.VITE_WS_URL ?? 'ws://localhost:3000';
-const AUTH_TOKEN = import.meta.env.VITE_AUTH_TOKEN ?? '';
 const MAX_RETRIES = 3;
 
 export const connectTerminal = (
@@ -28,8 +29,9 @@ export const connectTerminal = (
   let ws: WebSocket | null = null;
   let disposed = false;
 
-  const wsUrl = AUTH_TOKEN
-    ? `${WS_BASE}/terminal/${instanceId}?token=${encodeURIComponent(AUTH_TOKEN)}`
+  const token = getToken();
+  const wsUrl = token
+    ? `${WS_BASE}/terminal/${instanceId}?token=${encodeURIComponent(token)}`
     : `${WS_BASE}/terminal/${instanceId}`;
 
   const connect = () => {
@@ -81,7 +83,7 @@ export const connectTerminal = (
 
   return {
     send: (msg: TerminalMessage) => {
-      ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg));
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
     },
     disconnect: () => {
       disposed = true;
