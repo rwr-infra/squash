@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Button, Tag, Space, message, Spin } from 'antd';
+import { Button, Tag, Space, message, Spin, Input } from 'antd';
 import { ArrowLeftOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, ExpandOutlined } from '@ant-design/icons';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { connectTerminal } from '../services/terminalService';
-import { fetchInstance, startInstance, stopInstance, restartInstance } from '../services/apiService';
+import { fetchInstance, startInstance, stopInstance, restartInstance, sendCommand } from '../services/apiService';
 import type { InstanceStatus } from '../services/apiService';
 
 const statusColor: Record<InstanceStatus, string> = {
@@ -28,6 +28,8 @@ const TerminalPage = () => {
   const [status, setStatus] = useState<InstanceStatus>('stopped');
   const [pid, setPid] = useState<number | undefined>();
   const [loading, setLoading] = useState(true);
+  const [quickCmd, setQuickCmd] = useState('');
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     if (!instanceId) return;
@@ -122,6 +124,23 @@ const TerminalPage = () => {
     }
   };
 
+  const handleQuickCommand = async () => {
+    const cmd = quickCmd.trim();
+    if (!cmd) return;
+    setSending(true);
+    try {
+      const { output } = await sendCommand(instanceId, cmd, { captureMs: 1500 });
+      if (output && terminalRef.current) {
+        terminalRef.current.write(output);
+      }
+      setQuickCmd('');
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSending(false);
+    }
+  };
+
   const running = status === 'running' || status === 'starting';
 
   return (
@@ -151,7 +170,20 @@ const TerminalPage = () => {
           </div>
         </div>
       ) : (
-        <div ref={containerRef} style={{ flex: 1, padding: 8 }} />
+        <>
+          <div ref={containerRef} style={{ flex: 1, padding: 8 }} />
+          <div style={{ padding: '8px 16px', background: '#252526', borderTop: '1px solid #3c3c3c' }}>
+            <Input.Search
+              value={quickCmd}
+              onChange={(e) => setQuickCmd(e.target.value)}
+              onSearch={handleQuickCommand}
+              enterButton="Send"
+              loading={sending}
+              placeholder="Quick command (e.g. status) — captures ~1.5s of output"
+              disabled={!running}
+            />
+          </div>
+        </>
       )}
     </div>
   );

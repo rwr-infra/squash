@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { InstanceService } from '../../../services/instance-service.js';
 import type { LogService } from '../../../services/log-service.js';
 import type { TerminalService } from '../../../services/terminal-service.js';
-import { CreateInstanceSchema, type CreateInstanceRequest, InstanceIdParamSchema, type InstanceIdParam, TailLogQuerySchema, type TailLogQuery } from '../schemas/instance-schemas.js';
+import { CreateInstanceSchema, type CreateInstanceRequest, InstanceIdParamSchema, type InstanceIdParam, TailLogQuerySchema, type TailLogQuery, SendCommandSchema, type SendCommandRequest } from '../schemas/instance-schemas.js';
 
 type RouteDeps = {
   instanceService: InstanceService;
@@ -164,6 +164,44 @@ export const registerInstanceRoutes = async (fastify: FastifyInstance, deps: Rou
           code: 'INSTANCE_ERROR',
           message: err instanceof Error ? err.message : 'Failed to delete instance'
         }
+      });
+    }
+  });
+
+  fastify.post('/instances/:id/command', async (request: FastifyRequest<{ Params: InstanceIdParam; Body: SendCommandRequest }>, reply) => {
+    const { id } = request.params;
+
+    const instance = await deps.instanceService.getInstance(id);
+    if (!instance) {
+      return reply.status(404).send({
+        success: false,
+        error: { code: 'INSTANCE_NOT_FOUND', message: `Instance ${id} not found` }
+      });
+    }
+
+    let body: SendCommandRequest;
+    try {
+      body = SendCommandSchema.parse(request.body);
+    } catch (err) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: 'INVALID_REQUEST', message: err instanceof Error ? err.message : 'Invalid command payload' }
+      });
+    }
+
+    try {
+      const output = await deps.terminalService.captureCommand(id, body.command, {
+        appendNewline: body.appendNewline,
+        captureMs: body.captureMs
+      });
+      return reply.status(200).send({
+        success: true,
+        data: body.captureMs && body.captureMs > 0 ? { output } : { accepted: true }
+      });
+    } catch (err) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: 'INSTANCE_ERROR', message: err instanceof Error ? err.message : 'Failed to send command' }
       });
     }
   });

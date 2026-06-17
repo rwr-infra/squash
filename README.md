@@ -17,6 +17,8 @@ All **Running With Rifles** related content, assets, and trademarks—including 
 - **Multi-instance management** — run multiple game server instances with separate working directories
 - **Real-time terminal streaming** — WebSocket-based terminal with xterm.js
 - **Instance lifecycle management** — start, stop, restart, delete instances
+- **Crash auto-restart** — opt-in per instance, with exponential backoff, a max-attempt cap, and a cooldown that resets the counter after stable uptime
+- **Windows crash-dialog recovery** — a WerFault watchdog force-kills a hung crashed process (plus a registry script to suppress the dialog at the source)
 - **Timestamped logging** — per-instance log files with line-buffered output
 
 ## Tech Stack
@@ -45,9 +47,9 @@ squash/
 
 ### Prerequisites
 
-- Node.js >= 24
-- Docker (for containerized deployment)
-- Linux (PTY behavior validated on Linux; macOS has known node-pty permission quirks)
+- Node.js >= 24 (the only runtime requirement; works on Linux, macOS, and Windows)
+- Docker — optional, for containerized deployment
+- PTY behavior is validated on Linux; macOS has known node-pty permission quirks (see Known Issues)
 
 ### Docker (Recommended)
 
@@ -77,11 +79,21 @@ Then open `http://localhost:3000`.
 | `SQUASH_STATIC_DIR` | `/app/frontend/dist` | Frontend static files path |
 | `AUTH_TOKEN` | _(none)_ | Bearer token for API authentication |
 
-### Manual
+### Development
 
 ```bash
 npm install
-AUTH_TOKEN=your-secret-token npx tsx src/index.ts
+npm run dev          # tsx watch — runs src/index.ts and reloads on change
+```
+
+### Production (compiled)
+
+The server is compiled to plain JavaScript and run with `node` (no `tsx` at runtime):
+
+```bash
+npm install
+npm run build        # compiles the server to dist/ and the frontend to frontend/dist/
+AUTH_TOKEN=your-secret-token npm start   # node dist/index.js
 ```
 
 Environment variables:
@@ -91,7 +103,34 @@ Environment variables:
 | `PORT` | `3000` | HTTP server port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `LOG_LEVEL` | `info` | Pino log level |
+| `SQUASH_STATIC_DIR` | _(next to the app)_ | Frontend static files path (auto-derived; override only if you relocate `frontend/dist`) |
 | `AUTH_TOKEN` | _(none)_ | Bearer token for API authentication |
+
+### Portable distribution (Windows without Docker)
+
+`npm run package` produces a self-contained bundle for the **current OS/arch** under
+`release/` (a `.zip` on Windows, `.tar.gz` elsewhere) containing the compiled server,
+the built frontend, production `node_modules`, and `start.bat` / `start.sh` launchers.
+
+```bash
+npm run package
+```
+
+On the target machine (which only needs **Node.js >= 24** installed — no build tools):
+
+1. Unzip the bundle.
+2. Edit `start.bat` (Windows) / `start.sh` (Linux/macOS) to set `AUTH_TOKEN`.
+3. Run `start.bat` / `./start.sh`. Open `http://localhost:3000`.
+
+> Because `node-pty` is a native module, a bundle must be produced **on the same OS/arch**
+> it will run on. Build it on a Windows machine (or use the CI matrix below) for a Windows
+> distribution.
+
+### Cross-platform builds (CI)
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) runs `npm run package` on a
+matrix of `ubuntu-latest`, `macos-latest`, and `windows-latest`, uploading each bundle as a
+build artifact. Pushing a `v*` tag additionally publishes them to a GitHub Release.
 
 ### Frontend (Development)
 
@@ -146,9 +185,66 @@ curl http://localhost:3000/instances
 | POST | `/instances/:id/start` | Start instance |
 | POST | `/instances/:id/stop` | Stop instance |
 | POST | `/instances/:id/restart` | Restart instance |
+| POST | `/instances/:id/command` | Send a command to the instance's stdin |
 | GET | `/instances/:id/logs/tail` | Tail instance logs |
 
+### Sending commands
+
+`POST /instances/:id/command` forwards a command to the running instance's stdin
+(the same channel as the interactive terminal). Useful for issuing in-game console
+commands such as `status` programmatically.
+
+```bash
+# Fire-and-forget (a trailing \r is appended by default)
+curl -X POST http://localhost:3000/instances/test-1/command \
+  -H "Content-Type: application/json" \
+  -d '{ "command": "status" }'
+
+# Capture output produced within a time window (ms) and return it
+curl -X POST http://localhost:3000/instances/test-1/command \
+  -H "Content-Type: application/json" \
+  -d '{ "command": "status", "captureMs": 1500 }'
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `command` | _(required)_ | The command string |
+| `appendNewline` | `true` | Append `\r` (set `false` to write raw bytes) |
+| `captureMs` | _(none)_ | If > 0, collect stdout for this many ms (max 10000) and return it as `data.output`; otherwise returns `data.accepted: true` |
+
+> Note: the PTY is a single output stream, so captured output may include
+> unrelated periodic logging and is not a strict request/response. It is
+> intended for fast-echoing console commands like `status`.
+
 WebSocket: `ws://localhost:3000/terminal/:instanceId`
+
+## Windows deployment
+
+When `rwr_server.exe` crashes on Windows, Windows Error Reporting (WER) shows a
+"has stopped working" dialog and the process **hangs** waiting for it to be
+dismissed — so the process never truly exits and auto-restart cannot trigger.
+squash handles this in two layers:
+
+1. **Root cause (recommended):** run the bundled script as Administrator to stop
+   WER from showing a dialog for `rwr_server.exe`. The process then exits
+   immediately on crash and auto-restart works normally.
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\windows-disable-wer.ps1
+   ```
+
+2. **Fallback (always on):** for instances with `autoRestart` enabled, squash
+   runs an in-app watchdog that detects a `WerFault.exe` process for the instance
+   and force-kills the whole process tree (`taskkill /T /F`), which lets the
+   crash propagate and auto-restart kick in — even without the registry change.
+
+## Auto-restart
+
+Set `autoRestart: true` (and optionally `restartDelayMs`, default `3000`) when
+creating an instance. On an unexpected exit (`crashed`), squash restarts it with
+exponential backoff (`restartDelayMs * 2^n`, capped at 60s), up to 5 consecutive
+attempts; the instance then stays `crashed`. Once an instance runs cleanly for
+60s, the attempt counter resets. Manual stop/restart always clears the counter.
 
 ## Known Issues
 
@@ -158,7 +254,8 @@ WebSocket: `ws://localhost:3000/terminal/:instanceId`
 ## Roadmap
 
 - [ ] Real game server runtime validation (Linux)
-- [ ] Auto-restart strategy on crash
+- [x] Auto-restart strategy on crash
+- [ ] Health probing via `status` output parsing
 - [ ] Log rotation
 - [ ] SQLite config storage (planned)
 

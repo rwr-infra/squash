@@ -7,6 +7,12 @@
     "node": ">=24"
   },
   "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "npm run build:server && npm run build:web",
+    "build:server": "tsc -p tsconfig.build.json",
+    "build:web": "npm --prefix frontend ci && npm --prefix frontend run build",
+    "package": "npm run build && node scripts/package.mjs",
     "smoke:pty": "tsx scripts/pty-rwr-smoke.ts",
     "typecheck": "tsc --noEmit"
   },

@@ -79,6 +79,12 @@ const InstanceListPage = () => {
       render: (_: unknown, record: InstanceWithRuntime) => formatUptime(record.runtime.startedAt, record.runtime.status)
     },
     {
+      title: 'Restarts',
+      dataIndex: ['runtime', 'restartCount'],
+      key: 'restartCount',
+      render: (count?: number) => (count && count > 0 ? String(count) : '-')
+    },
+    {
       title: 'Actions',
       key: 'actions',
       render: (_: unknown, record: InstanceWithRuntime) => {

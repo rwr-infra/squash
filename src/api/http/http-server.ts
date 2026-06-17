@@ -3,13 +3,13 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import pino from 'pino';
-import path from 'node:path';
 import type { InstanceService } from '../../services/instance-service.js';
 import type { LogService } from '../../services/log-service.js';
 import type { TerminalService } from '../../services/terminal-service.js';
 import type { TerminalGateway } from '../ws/terminal-gateway.js';
 import { registerInstanceRoutes } from './routes/instance-routes.js';
 import { isAuthEnabled, validateBearerToken } from './auth.js';
+import { appPaths } from '../../app/paths.js';
 
 export type ApiDeps = {
   instanceService: InstanceService;
@@ -36,8 +36,7 @@ export const createHttpServer = async (deps: ApiDeps): Promise<FastifyInstance> 
 
   await server.register(websocket);
 
-  const staticPath = process.env.SQUASH_STATIC_DIR
-    ?? path.join(process.cwd(), '..', 'frontend', 'dist');
+  const staticPath = process.env.SQUASH_STATIC_DIR ?? appPaths.staticDir;
 
   await server.register(fastifyStatic, {
     root: staticPath,

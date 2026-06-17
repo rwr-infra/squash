@@ -1,20 +1,38 @@
 import { createInstanceLogWriter, toInstanceLogFile } from '../log/log-writer.js';
 import { createOutputParser } from '../log/output-parser.js';
 import { createPtyProcess } from '../pty/pty-process-adapter.js';
+import { detectWerFaultFor } from '../pty/windows-werfault.js';
 import type { PtyProcess } from '../pty/pty-types.js';
 import { assertInstanceState } from './instance-errors.js';
-import type { InstanceConfig, InstanceRuntime, InstanceStatus, InstanceSupervisor } from './instance-types.js';
+import type {
+  CaptureCommandOptions,
+  InstanceConfig,
+  InstanceRuntime,
+  InstanceStatus,
+  InstanceSupervisor
+} from './instance-types.js';
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
 const DEFAULT_TERM_NAME = 'xterm-256color';
+
+const DEFAULT_RESTART_DELAY_MS = 3000;
+const MAX_RESTART_ATTEMPTS = 5;
+const MAX_RESTART_DELAY_MS = 60_000;
+// Successful uptime past this window means the crash loop is over → reset counter.
+const RESET_AFTER_MS = 60_000;
+const WATCHDOG_INTERVAL_MS = 5000;
+const MAX_CAPTURE_MS = 10_000;
+
+const isWindows = process.platform === 'win32';
 
 const now = () => new Date().toISOString();
 
 const createRuntime = (id: string, status: InstanceStatus): InstanceRuntime => ({
   id,
   status,
-  viewers: 0
+  viewers: 0,
+  restartCount: 0
 });
 
 const markRuntime = (runtime: InstanceRuntime, changes: Partial<InstanceRuntime>): InstanceRuntime => ({
@@ -28,9 +46,80 @@ const canStop = (status: InstanceStatus) => status === 'starting' || status === 
 export const createInstanceSupervisor = async (config: InstanceConfig): Promise<InstanceSupervisor> => {
   const parser = createOutputParser();
   const logWriter = await createInstanceLogWriter(toInstanceLogFile(config.logDir, config.id));
+  const restartDelayMs = config.restartDelayMs ?? DEFAULT_RESTART_DELAY_MS;
+  const watchdogEnabled = isWindows && config.autoRestart === true;
+
   let runtime = createRuntime(config.id, 'stopped');
   let processRef: PtyProcess | undefined;
   const dataListeners = new Set<(chunk: string) => void>();
+
+  let restartAttempts = 0;
+  let restartTimer: NodeJS.Timeout | undefined;
+  let resetTimer: NodeJS.Timeout | undefined;
+  let watchdogTimer: NodeJS.Timeout | undefined;
+
+  const log = (line: string) => logWriter.writeLines([`[squash] ${line}`]);
+
+  const clearTimer = (timer: NodeJS.Timeout | undefined) => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  };
+
+  const stopWatchdog = () => {
+    if (watchdogTimer) {
+      clearInterval(watchdogTimer);
+      watchdogTimer = undefined;
+    }
+  };
+
+  const clearRestartState = () => {
+    clearTimer(restartTimer);
+    clearTimer(resetTimer);
+    restartTimer = undefined;
+    resetTimer = undefined;
+  };
+
+  const startWatchdog = () => {
+    if (!watchdogEnabled) {
+      return;
+    }
+    stopWatchdog();
+    watchdogTimer = setInterval(async () => {
+      const pid = processRef?.pid;
+      if (pid === undefined || runtime.status !== 'running') {
+        return;
+      }
+      const hung = await detectWerFaultFor(pid);
+      if (hung && processRef && runtime.status === 'running') {
+        await log('WerFault.exe detected — instance crashed and is hanging; force-killing process tree');
+        // Force-kill triggers onExit → crashed → scheduleRestart.
+        processRef.kill();
+      }
+    }, WATCHDOG_INTERVAL_MS);
+  };
+
+  const scheduleRestart = () => {
+    clearTimer(restartTimer);
+    if (!config.autoRestart) {
+      return;
+    }
+    if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
+      void log(`reached max restart attempts (${MAX_RESTART_ATTEMPTS}); leaving instance crashed`);
+      return;
+    }
+
+    const delay = Math.min(restartDelayMs * 2 ** restartAttempts, MAX_RESTART_DELAY_MS);
+    restartAttempts += 1;
+    runtime = markRuntime(runtime, { restartCount: restartAttempts });
+    void log(`scheduling auto-restart #${restartAttempts} in ${delay}ms`);
+    restartTimer = setTimeout(() => {
+      restartTimer = undefined;
+      start().catch((err: unknown) => {
+        void log(`auto-restart failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }, delay);
+  };
 
   const bindProcessEvents = (ptyProcess: PtyProcess) => {
     ptyProcess.onData(async (chunk) => {
@@ -48,15 +137,25 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     });
 
     ptyProcess.onExit(async ({ exitCode, signal }) => {
+      stopWatchdog();
+      clearTimer(resetTimer);
+      resetTimer = undefined;
+
       const pending = parser.flush();
       await logWriter.writeLines(pending);
+
+      const userStopped = runtime.status === 'stopping';
       runtime = markRuntime(runtime, {
-        status: runtime.status === 'stopping' ? 'stopped' : 'crashed',
+        status: userStopped ? 'stopped' : 'crashed',
         stoppedAt: now(),
         exitCode,
         exitSignal: signal
       });
       processRef = undefined;
+
+      if (!userStopped) {
+        scheduleRestart();
+      }
     });
   };
 
@@ -86,12 +185,27 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       pid: processRef.pid
     });
 
+    startWatchdog();
+
+    // Reset the crash-loop counter once the instance has run long enough.
+    clearTimer(resetTimer);
+    resetTimer = setTimeout(() => {
+      resetTimer = undefined;
+      if (restartAttempts > 0) {
+        restartAttempts = 0;
+        runtime = markRuntime(runtime, { restartCount: 0 });
+      }
+    }, RESET_AFTER_MS);
+
     return runtime;
   };
 
   const stopProcess = () => {
     assertInstanceState(canStop(runtime.status), `Cannot stop instance from state ${runtime.status}`);
-    runtime = markRuntime(runtime, { status: 'stopping' });
+    clearRestartState();
+    restartAttempts = 0;
+    stopWatchdog();
+    runtime = markRuntime(runtime, { status: 'stopping', restartCount: 0 });
     processRef?.kill();
   };
 
@@ -104,13 +218,19 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       stopProcess();
     },
     async restart() {
+      clearRestartState();
+      restartAttempts = 0;
+      stopWatchdog();
+
       if (canStop(runtime.status)) {
-        stopProcess();
+        runtime = markRuntime(runtime, { status: 'stopping' });
+        processRef?.kill();
       }
 
       runtime = markRuntime(runtime, {
         status: 'stopped',
-        pid: undefined
+        pid: undefined,
+        restartCount: 0
       });
 
       return start();
@@ -122,6 +242,30 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     sendRawInput(data) {
       assertInstanceState(runtime.status === 'running', 'Cannot send input unless instance is running');
       processRef?.write(data);
+    },
+    captureCommand(command, opts?: CaptureCommandOptions) {
+      assertInstanceState(runtime.status === 'running', 'Cannot send command unless instance is running');
+      const appendNewline = opts?.appendNewline ?? true;
+      const captureMs = opts?.captureMs;
+      const payload = appendNewline ? `${command}\r` : command;
+
+      if (captureMs === undefined || captureMs <= 0) {
+        processRef?.write(payload);
+        return Promise.resolve('');
+      }
+
+      return new Promise<string>((resolve) => {
+        let collected = '';
+        const listener = (chunk: string) => {
+          collected += chunk;
+        };
+        dataListeners.add(listener);
+        processRef?.write(payload);
+        setTimeout(() => {
+          dataListeners.delete(listener);
+          resolve(collected);
+        }, Math.min(captureMs, MAX_CAPTURE_MS));
+      });
     },
     resize(cols, rows) {
       assertInstanceState(runtime.status === 'running', 'Cannot resize unless instance is running');

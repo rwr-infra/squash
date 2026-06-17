@@ -1,4 +1,5 @@
 import type { InstanceRegistry } from '../core/instance/instance-registry.js';
+import type { CaptureCommandOptions } from '../core/instance/instance-types.js';
 
 export class TerminalService {
   constructor(private readonly registry: InstanceRegistry) {}
@@ -10,6 +11,15 @@ export class TerminalService {
     }
 
     supervisor.sendCommand(command);
+  }
+
+  captureCommand(instanceId: string, command: string, opts?: CaptureCommandOptions): Promise<string> {
+    const supervisor = this.registry.getSupervisor(instanceId);
+    if (!supervisor) {
+      throw new Error(`Instance ${instanceId} not found`);
+    }
+
+    return supervisor.captureCommand(command, opts);
   }
 
   sendRawInput(instanceId: string, data: string): void {

@@ -44,6 +44,7 @@ export type InstanceRuntime = {
   readonly exitCode?: number;
   readonly exitSignal?: number;
   readonly viewers: number;
+  readonly restartCount?: number;
 };
 
 export type CreateInstanceRequest = {
@@ -101,6 +102,21 @@ export const deleteInstance = async (id: string): Promise<void> => {
     const body = (await res.json()) as ApiResponse<null>;
     throw new Error(body.error?.message ?? 'Delete failed');
   }
+};
+
+export type SendCommandOptions = { appendNewline?: boolean; captureMs?: number };
+
+export const sendCommand = async (
+  id: string,
+  command: string,
+  opts: SendCommandOptions = {}
+): Promise<{ output?: string; accepted?: boolean }> => {
+  const res = await fetch(`${API_BASE}/instances/${id}/command`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders },
+    body: JSON.stringify({ command, ...opts })
+  });
+  return unwrap(res);
 };
 
 export const tailInstanceLogs = async (id: string, lines = 100): Promise<string> => {

@@ -26,3 +26,11 @@ export const TailLogQuerySchema = z.object({
 });
 
 export type TailLogQuery = z.infer<typeof TailLogQuerySchema>;
+
+export const SendCommandSchema = z.object({
+  command: z.string().min(1),
+  appendNewline: z.boolean().default(true),
+  captureMs: z.number().int().min(0).max(10000).optional()
+}).strict();
+
+export type SendCommandRequest = z.infer<typeof SendCommandSchema>;

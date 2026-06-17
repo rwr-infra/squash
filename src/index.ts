@@ -40,6 +40,17 @@ const main = async () => {
     logger.error({ err }, 'Failed to start HTTP server');
     process.exit(1);
   }
+
+  for (const config of registry.listConfigs()) {
+    if (config.autoStart) {
+      try {
+        await instanceService.startInstance(config.id);
+        logger.info({ instanceId: config.id }, 'Auto-started instance');
+      } catch (err) {
+        logger.error({ err, instanceId: config.id }, 'Failed to auto-start instance');
+      }
+    }
+  }
 };
 
 main().catch((error: unknown) => {

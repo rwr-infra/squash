@@ -16,15 +16,16 @@ export type InstanceRegistry = {
 
 export const createInstanceRegistry = async (): Promise<InstanceRegistry> => {
   const configs = new Map<string, InstanceConfig>();
-  const runtimes = new Map<string, InstanceRuntime>();
   const supervisors = new Map<string, InstanceSupervisor>();
 
   return {
     getConfig(id) {
       return configs.get(id);
     },
+    // Derived live from the supervisor — the runtime object is recreated on every
+    // state change, so caching a snapshot here would go stale immediately.
     getRuntime(id) {
-      return runtimes.get(id);
+      return supervisors.get(id)?.getRuntime();
     },
     getSupervisor(id) {
       return supervisors.get(id);
@@ -33,21 +34,19 @@ export const createInstanceRegistry = async (): Promise<InstanceRegistry> => {
       return Array.from(configs.values());
     },
     listRuntimes() {
-      return Array.from(runtimes.values());
+      return Array.from(supervisors.values(), supervisor => supervisor.getRuntime());
     },
     listSupervisors() {
       return Array.from(supervisors.values());
     },
     async register(config, supervisor) {
       configs.set(config.id, { ...config });
-      runtimes.set(config.id, supervisor.getRuntime());
       supervisors.set(config.id, supervisor);
     },
     async unregister(id) {
       const exists = configs.has(id);
       if (exists) {
         configs.delete(id);
-        runtimes.delete(id);
         supervisors.delete(id);
       }
       return exists;
@@ -58,7 +57,6 @@ export const createInstanceRegistry = async (): Promise<InstanceRegistry> => {
         configs.set(config.id, { ...config });
         const supervisor = await createInstanceSupervisor(config);
         supervisors.set(config.id, supervisor);
-        runtimes.set(config.id, supervisor.getRuntime());
       }
     }
   };

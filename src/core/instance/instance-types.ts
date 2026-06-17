@@ -23,6 +23,7 @@ export type InstanceRuntime = {
   readonly exitCode?: number;
   readonly exitSignal?: number;
   readonly viewers: number;
+  readonly restartCount?: number;
 };
 
 export type InstanceSupervisor = {
@@ -32,7 +33,13 @@ export type InstanceSupervisor = {
   restart: () => Promise<InstanceRuntime>;
   sendCommand: (command: string) => void;
   sendRawInput: (data: string) => void;
+  captureCommand: (command: string, opts?: CaptureCommandOptions) => Promise<string>;
   resize: (cols: number, rows: number) => void;
   getRuntime: () => InstanceRuntime;
   onData: (listener: (chunk: string) => void) => () => void;
+};
+
+export type CaptureCommandOptions = {
+  readonly appendNewline?: boolean;
+  readonly captureMs?: number;
 };

@@ -1,9 +1,14 @@
 node_modules/
-logs/
+/logs/
 *.log
 dist/
+/release/
 .DS_Store
 .opencode/
 .tmp/
-config/
+/config/
 frontend/.env.local
+
+.claude/
+.codegraph/
+.cursor/
