@@ -119,7 +119,7 @@ Environment variables (all optional; settable via `.env` or the real environment
 ### Authentication
 
 Set **both** `AUTH_USERNAME` and `AUTH_PASSWORD` to require a username/password login
-on the web UI and API. The login (`POST /auth/login`) issues a session token (7-day TTL,
+on the web UI and API. The login (`POST /api/auth/login`) issues a session token (7-day TTL,
 kept in memory — restarting the server invalidates sessions). The frontend stores the
 token in `localStorage` and sends it as `Authorization: Bearer <token>` (and as a
 `?token=` query param for the terminal WebSocket).
@@ -129,7 +129,7 @@ If neither credential is set, auth is **disabled** and access is open. A static
 
 ### Audit log
 
-User actions are recorded to `logs/audit.log` (JSONL) and exposed via `GET /audit`.
+User actions are recorded to `logs/audit.log` (JSONL) and exposed via `GET /api/audit`.
 Recorded actions: `login`, `create`, `start`, `stop`, `restart`, `delete`, and `command`
 (which captures the command text sent via the terminal's quick-command box). Each entry
 has `time`, `user`, `action`, and optional `instanceId` / `detail`. The web UI shows them
@@ -180,17 +180,18 @@ through the app's login page (no token in `.env.local` needed — it's obtained 
 and stored in `localStorage`). `VITE_AUTH_TOKEN` is still honored as a fallback for
 static-token setups.
 
-> Set **both** `VITE_API_URL` and `VITE_WS_URL`. If `VITE_WS_URL` is missing it falls
-> back to `ws://localhost:3000`, so the terminal would connect to the wrong server.
+> In the split dev setup set **both** `VITE_API_URL` and `VITE_WS_URL` to the backend's
+> origin. If `VITE_WS_URL` is missing it falls back to the page's own origin (correct for
+> production same-origin, but wrong when the dev backend is on a different port).
 
 ### Quick Test
 
 ```bash
 # Health check
-curl http://localhost:3000/health
+curl http://localhost:3000/api/health
 
 # Create a test instance
-curl -X POST http://localhost:3000/instances \
+curl -X POST http://localhost:3000/api/instances \
   -H "Content-Type: application/json" \
   -d '{
     "id": "test-1",
@@ -202,32 +203,36 @@ curl -X POST http://localhost:3000/instances \
   }'
 
 # Start it
-curl -X POST http://localhost:3000/instances/test-1/start
+curl -X POST http://localhost:3000/api/instances/test-1/start
 
 # List instances
-curl http://localhost:3000/instances
+curl http://localhost:3000/api/instances
 ```
+
+> When login is enabled, add `-H "Authorization: Bearer <token>"` (get a token from `POST /api/auth/login`).
 
 ## API Endpoints
 
+All backend endpoints are served under the `/api` prefix; every other path is the SPA.
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/health` | public | Health check |
-| GET | `/auth/status` | public | Whether login is required (`{ loginEnabled }`) |
-| POST | `/auth/login` | public | Log in with `{ username, password }` → `{ token }` |
-| GET | `/auth/me` | yes | Current user for the supplied token |
-| POST | `/auth/logout` | yes | Invalidate the current session token |
-| GET | `/instances` | yes | List all instances |
-| POST | `/instances` | yes | Create instance |
-| GET | `/instances/:id` | yes | Get instance details |
-| PUT | `/instances/:id` | yes | Update instance config (must be stopped/crashed) |
-| DELETE | `/instances/:id` | yes | Delete instance |
-| POST | `/instances/:id/start` | yes | Start instance |
-| POST | `/instances/:id/stop` | yes | Stop instance |
-| POST | `/instances/:id/restart` | yes | Restart instance |
-| POST | `/instances/:id/command` | yes | Send a command to the instance's stdin |
-| GET | `/instances/:id/logs/tail` | yes | Tail instance logs |
-| GET | `/audit` | yes | Recent audit-log entries (`?limit=`) |
+| GET | `/api/health` | public | Health check |
+| GET | `/api/auth/status` | public | Whether login is required (`{ loginEnabled }`) |
+| POST | `/api/auth/login` | public | Log in with `{ username, password }` → `{ token }` |
+| GET | `/api/auth/me` | yes | Current user for the supplied token |
+| POST | `/api/auth/logout` | yes | Invalidate the current session token |
+| GET | `/api/instances` | yes | List all instances |
+| POST | `/api/instances` | yes | Create instance |
+| GET | `/api/instances/:id` | yes | Get instance details |
+| PUT | `/api/instances/:id` | yes | Update instance config (must be stopped/crashed) |
+| DELETE | `/api/instances/:id` | yes | Delete instance |
+| POST | `/api/instances/:id/start` | yes | Start instance |
+| POST | `/api/instances/:id/stop` | yes | Stop instance |
+| POST | `/api/instances/:id/restart` | yes | Restart instance |
+| POST | `/api/instances/:id/command` | yes | Send a command to the instance's stdin |
+| GET | `/api/instances/:id/logs/tail` | yes | Tail instance logs |
+| GET | `/api/audit` | yes | Recent audit-log entries (`?limit=`) |
 
 "Auth: yes" endpoints require `Authorization: Bearer <token>` when login (or `AUTH_TOKEN`) is configured.
 
@@ -239,12 +244,12 @@ commands such as `status` programmatically.
 
 ```bash
 # Fire-and-forget (a trailing \r is appended by default)
-curl -X POST http://localhost:3000/instances/test-1/command \
+curl -X POST http://localhost:3000/api/instances/test-1/command \
   -H "Content-Type: application/json" \
   -d '{ "command": "status" }'
 
 # Capture output produced within a time window (ms) and return it
-curl -X POST http://localhost:3000/instances/test-1/command \
+curl -X POST http://localhost:3000/api/instances/test-1/command \
   -H "Content-Type: application/json" \
   -d '{ "command": "status", "captureMs": 1500 }'
 ```
@@ -259,7 +264,7 @@ curl -X POST http://localhost:3000/instances/test-1/command \
 > unrelated periodic logging and is not a strict request/response. It is
 > intended for fast-echoing console commands like `status`.
 
-WebSocket: `ws://localhost:3000/terminal/:instanceId`
+WebSocket (terminal stream): `ws://localhost:3000/api/terminal/:instanceId?token=<token>`
 
 ## Windows deployment
 

@@ -18,7 +18,11 @@ export type TerminalHandlers = {
 
 import { getToken } from './apiService';
 
-const WS_BASE = import.meta.env.VITE_WS_URL ?? 'ws://localhost:3000';
+// Same-origin WebSocket by default (derived from the page's location), so the
+// production build talks to whatever host served it. VITE_WS_URL overrides this
+// for the split dev setup.
+const sameOriginWs = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
+const WS_BASE = import.meta.env.VITE_WS_URL ?? sameOriginWs;
 const MAX_RETRIES = 3;
 
 export const connectTerminal = (
@@ -31,8 +35,8 @@ export const connectTerminal = (
 
   const token = getToken();
   const wsUrl = token
-    ? `${WS_BASE}/terminal/${instanceId}?token=${encodeURIComponent(token)}`
-    : `${WS_BASE}/terminal/${instanceId}`;
+    ? `${WS_BASE}/api/terminal/${instanceId}?token=${encodeURIComponent(token)}`
+    : `${WS_BASE}/api/terminal/${instanceId}`;
 
   const connect = () => {
     if (disposed) return;

@@ -1,4 +1,9 @@
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+// All backend endpoints live under /api. Default to a relative base so the
+// production build — served same-origin by the backend (npm start / Docker /
+// portable bundle) — calls the API on whatever origin served the page.
+// VITE_API_URL is only an override for the split dev setup (vite on :5173 talking
+// to the backend on another port); the /api prefix is always appended.
+const API_BASE = `${import.meta.env.VITE_API_URL ?? ''}/api`;
 const TOKEN_KEY = 'squash_token';
 
 // Token is obtained at runtime via login and persisted in localStorage. A
