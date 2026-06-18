@@ -1,7 +1,7 @@
 import { createInstanceLogWriter, toInstanceLogFile } from '../log/log-writer.js';
 import { createOutputParser } from '../log/output-parser.js';
 import { createPtyProcess } from '../pty/pty-process-adapter.js';
-import { detectWerFaultFor } from '../pty/windows-werfault.js';
+import { readCrashDumpMtime } from '../pty/rwr-crashdump.js';
 import type { PtyProcess } from '../pty/pty-types.js';
 import { assertInstanceState } from './instance-errors.js';
 import type {
@@ -69,6 +69,9 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   let restartTimer: NodeJS.Timeout | undefined;
   let resetTimer: NodeJS.Timeout | undefined;
   let watchdogTimer: NodeJS.Timeout | undefined;
+  // Wall-clock start of the current run; a crash dump whose mtime is newer than
+  // this was written by *this* run's crash (older dumps are stale and ignored).
+  let currentRunStartedAtMs = 0;
 
   const log = (line: string) => logWriter.writeLines([`[squash] ${line}`]);
 
@@ -92,19 +95,24 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     resetTimer = undefined;
   };
 
+  // When rwr_server crashes on Windows its engine writes <cwd>/rwr_crashdump.dmp
+  // and pops its own modal "An unhandled exception occurred!" dialog, which hangs
+  // the process in a message loop — node-pty never sees an exit, so onExit never
+  // fires. A dump file newer than this run's start is the signal that the process
+  // has crashed and is now stuck behind that dialog.
   const startWatchdog = () => {
     if (!watchdogEnabled) {
       return;
     }
     stopWatchdog();
     watchdogTimer = setInterval(async () => {
-      const pid = processRef?.pid;
-      if (pid === undefined || runtime.status !== 'running') {
+      if (processRef === undefined || runtime.status !== 'running') {
         return;
       }
-      const hung = await detectWerFaultFor(pid);
-      if (hung && processRef && runtime.status === 'running') {
-        await log('WerFault.exe detected — instance crashed and is hanging; force-killing process tree');
+      const dumpMtime = await readCrashDumpMtime(config.cwd);
+      const crashed = dumpMtime !== undefined && dumpMtime > currentRunStartedAtMs;
+      if (crashed && processRef && runtime.status === 'running') {
+        await log('crash detected (fresh rwr_crashdump.dmp) — instance is hanging behind a dialog; force-killing process tree');
         // Force-kill triggers onExit → crashed → scheduleRestart.
         processRef.kill();
       }
@@ -195,6 +203,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   const start = async () => {
     assertInstanceState(canStart(runtime.status), `Cannot start instance from state ${runtime.status}`);
     outputBuffer = '';
+    currentRunStartedAtMs = Date.now();
     runtime = markRuntime(runtime, {
       status: 'starting',
       startedAt: now(),

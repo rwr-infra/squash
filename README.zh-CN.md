@@ -20,7 +20,7 @@
 - **实时终端流**——基于 WebSocket + xterm.js 的终端
 - **实例生命周期管理**——启动、停止、重启、删除实例
 - **崩溃自动重启**——按实例可选开启,带指数退避、最大重试次数上限,以及在稳定运行一段时间后重置计数器的冷却机制
-- **Windows 崩溃弹窗恢复**——内置 WerFault 看门狗,会强制结束卡死的崩溃进程(另附一份注册表脚本,从源头抑制该弹窗)
+- **Windows 崩溃弹窗恢复**——检测引擎生成的 `rwr_crashdump.dmp`,强制结束卡在「未处理异常」弹窗后面的进程,使自动重启仍能触发
 - **带时间戳的日志**——按实例分文件、按行缓冲输出的日志
 
 ## 技术栈
@@ -39,7 +39,7 @@ squash/
 │   ├── services/          # 业务逻辑
 │   └── api/               # HTTP + WebSocket 接口
 ├── frontend/              # 前端(React + Vite)
-├── scripts/               # 开发脚本(PTY 冒烟测试、打包、WER 禁用脚本)
+├── scripts/               # 开发脚本(PTY 冒烟测试、打包)
 ├── config/                # 实例配置(instances.json)
 ├── Dockerfile             # 容器镜像
 └── LICENSE
@@ -265,84 +265,21 @@ WebSocket(终端流):`ws://localhost:3000/api/terminal/:instanceId?token=<token>
 
 ## Windows 部署
 
-当 `rwr_server.exe` 在 Windows 上崩溃时,Windows 错误报告(WER)会弹出一个
-「已停止工作」对话框,且进程会**卡死**等待该弹窗被关闭——于是进程永远不会真正退出,
-自动重启也无法触发。squash 通过两层机制来处理:
+当 `rwr_server.exe` 在 Windows 上崩溃时,RWR **引擎自带的崩溃处理器**会先写出一个
+转储文件(`rwr_crashdump.dmp`),然后弹出一个模态对话框 **「An unhandled exception
+occurred!」**(内存不足时是 `bad allocation` 那一种)。此时进程会**卡死**在这个弹窗的
+消息循环里——它不会自行退出,所以 `onExit` 永远不会触发,普通的自动重启也就无从触发。
 
-1. **根因修复(推荐):** 以管理员身份运行内置脚本,让 WER 不再为
-   `rwr_server.exe` 弹窗。这样崩溃时进程会立即退出,自动重启也就正常工作。
+> 注意:这**不是** Windows 错误报告(WER)的弹窗。异常在到达 WER 之前就被引擎自己的
+> 处理器接住了,所以抑制 WER(改注册表之类)对它毫无作用。
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts\windows-disable-wer.ps1
-   ```
+squash 的处理方式是**检测崩溃转储文件**:引擎在崩溃时会把 `rwr_crashdump.dmp` 写到
+服务器**同一工作目录**(实例的 `cwd`)下。对开启了 `autoRestart` 的实例,squash 的看门狗
+每隔几秒检查该文件;一旦发现一个**比本次启动更新**的转储,就强制结束卡死的进程树
+(`taskkill /T /F`,它能终结一个卡在 `MessageBox` 里的进程),然后自动重启。
 
-2. **后备机制(始终开启):** 对开启了 `autoRestart` 的实例,squash 会运行一个
-   应用内看门狗,检测属于该实例的 `WerFault.exe` 进程,并强制结束整个进程树
-   (`taskkill /T /F`),从而让崩溃得以传播、自动重启得以触发——即使没有改注册表也有效。
-
-### windows-disable-wer.ps1 脚本怎么用
-
-这个脚本是上面「根因修复」的具体实现。它的作用是把 `rwr_server.exe` 加入 WER 的
-**排除应用(ExcludedApplications)** 列表,这样该程序崩溃时会被立即终止、**不再弹窗**,
-squash 也就能立刻看到进程退出并自动重启。
-
-脚本位置:[scripts/windows-disable-wer.ps1](scripts/windows-disable-wer.ps1)
-
-**前提条件:**
-
-- 只在 **Windows** 上需要(Linux / macOS 不存在此问题)。
-- 必须以**管理员身份**运行——脚本会写入 `HKLM`(本机注册表),非管理员会直接报错退出。
-
-**基本用法**(在「管理员 PowerShell」窗口中执行):
-
-```powershell
-# 进入脚本所在目录,例如发行包解压后的目录或仓库根目录的 scripts 下
-cd scripts
-
-# 默认排除 rwr_server.exe
-powershell -ExecutionPolicy Bypass -File .\windows-disable-wer.ps1
-```
-
-> `-ExecutionPolicy Bypass` 用于绕过 PowerShell 默认的脚本执行策略,
-> 让这个未签名的本地脚本能直接运行,而不会改变系统的全局执行策略。
-
-**可选参数:**
-
-| 参数 | 说明 |
-|------|------|
-| `-ExeName <名称>` | 要排除的可执行文件名,默认 `rwr_server.exe`。若你的服务器程序改了名字,用它指定。 |
-| `-GlobalDisableUi` | 额外设置 `DontShowUI=1`,在**全机器范围**抑制 WER 弹窗(影响所有程序)。请谨慎使用。 |
-
-**示例:**
-
-```powershell
-# 指定不同的可执行文件名
-powershell -ExecutionPolicy Bypass -File .\windows-disable-wer.ps1 -ExeName my_server.exe
-
-# 既排除指定程序,又全机器关闭 WER 弹窗 UI
-powershell -ExecutionPolicy Bypass -File .\windows-disable-wer.ps1 -ExeName rwr_server.exe -GlobalDisableUi
-```
-
-**执行成功后**会看到类似输出:
-
-```
-[OK] Added 'rwr_server.exe' to WER ExcludedApplications. Crashes will no longer show a dialog.
-
-Done. rwr_server.exe will now exit immediately on crash, letting squash auto-restart it.
-```
-
-**它具体改了什么(便于回滚):**
-
-脚本向注册表写入了如下内容:
-
-- `HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\ExcludedApplications` 下新增一个名为
-  `rwr_server.exe`(或你指定的名字)、值为 `1` 的 DWORD。
-- 若使用了 `-GlobalDisableUi`,则在 `...\Windows Error Reporting` 下新增 `DontShowUI=1`(DWORD)。
-
-如需**撤销**,删除上述对应的注册表项/值即可(同样需要管理员权限)。
-
-> 如果你**无法**运行此脚本(例如没有管理员权限),不必担心:上面提到的
-> 第 2 层「应用内 WerFault 看门狗」始终开启,会作为后备保证自动重启仍能工作。
+你也可以随时在 UI 上点 **「重启(Restart)」** 手动恢复——它用的是同一套强杀逻辑,
+无论弹窗是哪种类型都能把卡死的进程端掉再拉起。
 
 ## 自动重启
 

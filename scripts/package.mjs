@@ -106,11 +106,13 @@ Edit \`start.bat\` / \`start.sh\` to set \`AUTH_TOKEN\` before exposing the serv
 \`config/\` (instance definitions) and \`logs/\` (per-instance logs) are created
 next to this folder on first run.
 
-## Windows: stop crash dialogs hanging the server
+## Windows: crash auto-recovery
 
-If a game server crashes on Windows, a Windows Error Reporting dialog can hang the
-process. squash auto-recovers via a built-in watchdog, but for a clean fix run the
-bundled \`windows-disable-wer.ps1\` (in the repo's scripts/) as Administrator.
+When rwr_server.exe crashes on Windows its engine pops a modal "An unhandled
+exception occurred!" dialog and the process hangs (it never exits on its own).
+For instances with auto-restart enabled, squash watches for the engine's crash
+dump (\`rwr_crashdump.dmp\`, written next to the server) and, when a fresh one
+appears, force-kills the hung process and restarts it automatically.
 `;
 fs.writeFileSync(path.join(stageDir, 'DEPLOY.md'), deploy);
 

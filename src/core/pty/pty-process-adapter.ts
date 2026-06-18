@@ -5,9 +5,11 @@ import type { PtyProcess, PtyExitInfo, SpawnPtyOptions } from './pty-types.js';
 const isWindows = process.platform === 'win32';
 
 /**
- * On Windows a crashed rwr_server.exe can spawn a WerFault.exe child and hang.
- * node-pty's kill() only terminates the ConPTY process, leaving the dialog /
- * fault handler alive. `taskkill /T /F` tears down the whole process tree.
+ * On Windows a crashed rwr_server.exe hangs behind a modal crash dialog (the
+ * engine's own "An unhandled exception occurred!" box). node-pty's kill() only
+ * terminates the ConPTY process, leaving the hung process and its dialog alive.
+ * `taskkill /T /F` (TerminateProcess) tears down the whole process tree,
+ * including a process stuck in a MessageBox message loop.
  */
 const killProcessTree = (pid: number) => {
   execFile('taskkill', ['/PID', String(pid), '/T', '/F'], () => {

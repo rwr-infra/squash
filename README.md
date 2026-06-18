@@ -20,7 +20,7 @@ All **Running With Rifles** related content, assets, and trademarks—including 
 - **Real-time terminal streaming** — WebSocket-based terminal with xterm.js
 - **Instance lifecycle management** — start, stop, restart, delete instances
 - **Crash auto-restart** — opt-in per instance, with exponential backoff, a max-attempt cap, and a cooldown that resets the counter after stable uptime
-- **Windows crash-dialog recovery** — a WerFault watchdog force-kills a hung crashed process (plus a registry script to suppress the dialog at the source)
+- **Windows crash-dialog recovery** — detects the engine's `rwr_crashdump.dmp` and force-kills a process hung behind the "unhandled exception" dialog, so auto-restart still fires
 - **Timestamped logging** — per-instance log files with line-buffered output
 
 ## Tech Stack
@@ -270,23 +270,23 @@ WebSocket (terminal stream): `ws://localhost:3000/api/terminal/:instanceId?token
 
 ## Windows deployment
 
-When `rwr_server.exe` crashes on Windows, Windows Error Reporting (WER) shows a
-"has stopped working" dialog and the process **hangs** waiting for it to be
-dismissed — so the process never truly exits and auto-restart cannot trigger.
-squash handles this in two layers:
+When `rwr_server.exe` crashes on Windows, the RWR engine's own crash handler
+writes a dump (`rwr_crashdump.dmp`) and pops a modal **"An unhandled exception
+occurred!"** dialog (a `bad allocation` variant shows on out-of-memory). The
+process then **hangs** in that dialog's message loop — it never exits on its
+own, so `onExit` never fires and ordinary auto-restart cannot trigger. Note this
+is *not* a Windows Error Reporting (WER) dialog: the engine catches the exception
+before WER ever sees it, so suppressing WER does nothing here.
 
-1. **Root cause (recommended):** run the bundled script as Administrator to stop
-   WER from showing a dialog for `rwr_server.exe`. The process then exits
-   immediately on crash and auto-restart works normally.
+For instances with `autoRestart` enabled, squash runs a watchdog that detects
+the crash dump: the engine writes `rwr_crashdump.dmp` next to the server (in the
+instance's working directory) at crash time, so when a dump newer than the
+current run appears, squash force-kills the hung process tree (`taskkill /T /F`,
+which terminates a process even while it's stuck in a `MessageBox`) and then
+auto-restarts it.
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts\windows-disable-wer.ps1
-   ```
-
-2. **Fallback (always on):** for instances with `autoRestart` enabled, squash
-   runs an in-app watchdog that detects a `WerFault.exe` process for the instance
-   and force-kills the whole process tree (`taskkill /T /F`), which lets the
-   crash propagate and auto-restart kick in — even without the registry change.
+You can also always recover manually by clicking **Restart** in the UI — it
+force-kills the hung process the same way, regardless of dialog type.
 
 ## Auto-restart
 
