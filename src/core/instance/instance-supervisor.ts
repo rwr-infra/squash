@@ -134,7 +134,17 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   };
 
   const bindProcessEvents = (ptyProcess: PtyProcess) => {
+    // Guard against a stale process: a manual restart() force-kills the current
+    // process and starts a new one synchronously, but `taskkill /T /F` reaps a
+    // hung (e.g. WER-stuck) process asynchronously — so the old process's
+    // onData/onExit can fire *after* the replacement is already running. Only
+    // the process that is still `processRef` may mutate shared runtime state.
+    const isCurrent = () => processRef === ptyProcess;
+
     ptyProcess.onData(async (chunk) => {
+      if (!isCurrent()) {
+        return;
+      }
       runtime = markRuntime(runtime, {
         status: 'running',
         lastOutputAt: now()
@@ -151,6 +161,11 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     });
 
     ptyProcess.onExit(async ({ exitCode, signal }) => {
+      if (!isCurrent()) {
+        // A process we already replaced finally exited — ignore it so it can't
+        // clobber the new process's status to `crashed` or null out processRef.
+        return;
+      }
       stopWatchdog();
       clearTimer(resetTimer);
       resetTimer = undefined;

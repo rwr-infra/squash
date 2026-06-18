@@ -1,5 +1,7 @@
 # squash
 
+> [中文说明](README.zh-CN.md) | English
+
 > [!WARNING]
 > **Active Development**: This project is in its early stages and should be considered **unstable**. Features may change or break without notice.
 
