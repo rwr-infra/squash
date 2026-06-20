@@ -91,16 +91,27 @@ fs.writeFileSync(path.join(stageDir, 'start.sh'), startSh, { mode: 0o755 });
 // Windows installs ("CouldNotAutoloadMatchingModule"). Windows 10 1803+
 // ships `tar.exe` (bsdtar), which `-a` lets us emit a real .zip from — so we
 // keep the Windows-friendly .zip output without depending on PowerShell at all.
+//
+// We list the staged dir's top-level entries explicitly and pass them to tar
+// with `-C stageDir`. Two reasons vs the simpler `-C stageDir .`:
+//   1. No wrapping directory — entries sit at the archive root, so unzipping
+//      drops files in place instead of into a `squash-<ver>-<plat>-<arch>/`
+//      subfolder.
+//   2. No `./` prefix on entries (bsdtar emits `./foo` for `-C dir .`), which
+//      some picky unpackers handle poorly.
+// tar recurses into directories automatically, so `node_modules` (created by
+// `npm ci` above) is included without being named explicitly.
+const entries = fs.readdirSync(stageDir);
 let artifact;
 try {
   if (platform === 'win32') {
     artifact = path.join(releaseDir, `${name}.zip`);
     fs.rmSync(artifact, { force: true });
-    execFileSync('tar', ['-a', '-cf', artifact, '-C', releaseDir, name], { stdio: 'inherit' });
+    execFileSync('tar', ['-a', '-cf', artifact, '-C', stageDir, ...entries], { stdio: 'inherit' });
   } else {
     artifact = path.join(releaseDir, `${name}.tar.gz`);
     fs.rmSync(artifact, { force: true });
-    execFileSync('tar', ['-czf', artifact, '-C', releaseDir, name], { stdio: 'inherit' });
+    execFileSync('tar', ['-czf', artifact, '-C', stageDir, ...entries], { stdio: 'inherit' });
   }
   log(`created ${path.relative(rootDir, artifact)}`);
 } catch (err) {
