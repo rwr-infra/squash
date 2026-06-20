@@ -25,7 +25,7 @@
 
 ## 技术栈
 
-**后端**:Node.js 20 + TypeScript + Fastify + node-pty + Zod + Pino
+**后端**:Node.js 24 + TypeScript + Fastify + node-pty + Zod + Pino
 **前端**:React + Vite + Ant Design + xterm.js + TanStack Query
 
 ## 项目结构
@@ -59,7 +59,7 @@ squash/
 # 构建镜像
 docker build -t rwr-infra/squash .
 
-# 运行容器(带登录凭据)
+# 运行容器(登录默认开启;暴露端口前请务必修改密码——默认值 admin/admin 是公开的弱口令)
 docker run -d \
   --name squash \
   -p 3000:3000 \
@@ -110,23 +110,26 @@ cp .env.example .env
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP 服务器端口 |
-| `HOST` | `0.0.0.0` | 绑定地址 |
+| `HOST` | `0.0.0.0` | 绑定地址。**当使用默认凭据时,会回退为 `127.0.0.1`**,使解压即用的实例无法被网络访问——要暴露到网络,必须先设置真实凭据。 |
 | `LOG_LEVEL` | `info` | Pino 日志级别 |
-| `AUTH_USERNAME` | _(无)_ | 登录用户名——与 `AUTH_PASSWORD` 同时设置即可要求登录 |
-| `AUTH_PASSWORD` | _(无)_ | 登录密码 |
+| `AUTH_USERNAME` | `admin` | 登录用户名。登录**默认开启**(admin/admin);暴露服务器前请修改。 |
+| `AUTH_PASSWORD` | `admin` | 登录密码。 |
 | `AUTH_TOKEN` | _(无)_ | 可选的静态 bearer token(与登录并存;遗留方式) |
 | `CORS_ORIGIN` | `*` | API 允许的 CORS 源 |
 | `SQUASH_STATIC_DIR` | _(应用同级目录)_ | 前端静态文件路径(自动推导;仅在你迁移了 `frontend/dist` 时才需覆盖) |
 
 ### 鉴权
 
-**同时**设置 `AUTH_USERNAME` 和 `AUTH_PASSWORD`,即可要求 Web UI 和 API 进行用户名/密码登录。
+登录**默认开启**,凭据为 `admin` / `admin`。这是有意为之:解压即用的实例不应被
+第一个访问到该端口的人直接驱动。这两个默认值是公开的弱口令,因此**暴露服务器前请务必修改**——
+作为兜底,在默认凭据生效期间,服务器只绑定 `127.0.0.1`(见 `HOST`),根本无法被网络访问。
+默认凭据生效时,启动日志会打印一条警告。
+
 登录(`POST /api/auth/login`)会签发一个会话 token(有效期 7 天,保存在内存中——重启服务器会使会话失效)。
 前端将 token 存入 `localStorage`,并以 `Authorization: Bearer <token>` 形式发送
 (终端 WebSocket 则通过 `?token=` 查询参数传递)。
 
-如果两个凭据都未设置,则鉴权**禁用**,访问完全开放。静态的
-`AUTH_TOKEN` 仍会被接受,用于向后兼容/程序化访问。
+静态的 `AUTH_TOKEN` 仍会被接受,用于向后兼容/程序化访问,与登录并存。
 
 ### 审计日志
 
@@ -140,7 +143,8 @@ cp .env.example .env
 
 `npm run package` 会为**当前操作系统/架构**在 `release/` 下生成一个自包含的发行包
 (Windows 上是 `.zip`,其他平台是 `.tar.gz`),内含编译后的服务器、构建好的前端、
-生产环境的 `node_modules`,以及 `start.bat` / `start.sh` 启动脚本。
+生产环境的 `node_modules`、`start.bat` / `start.sh` 启动脚本,以及一份
+`.env.example` 模板(真正的 `.env`——如果你创建了——绝不会被打包进去)。
 
 ```bash
 npm run package
@@ -149,9 +153,11 @@ npm run package
 在目标机器上(仅需安装 **Node.js >= 24**——无需构建工具):
 
 1. 解压发行包。
-2. 设置凭据:编辑 `start.bat` / `start.sh`(或在它们旁边放一个 `.env`),填入
-   `AUTH_USERNAME` / `AUTH_PASSWORD`。
-3. 运行 `start.bat` / `./start.sh`。打开 `http://localhost:3000`。
+2. 运行 `start.bat` / `./start.sh`。开箱即用,默认 `admin/admin` 登录(绑定 `127.0.0.1`,
+   仅本机可访问)。打开 `http://localhost:3000`。
+3. 如需暴露到网络:把 `.env.example` 复制为 `.env`(或编辑启动脚本),将
+   `AUTH_USERNAME` 和 `AUTH_PASSWORD` **同时**设置为强口令——只有设置了真实凭据,
+   服务器才会绑定 `0.0.0.0`。
 
 > 由于 `node-pty` 是原生模块,发行包必须在它将要运行的**同一操作系统/架构**上构建。
 > 要生成 Windows 发行版,请在 Windows 机器上构建(或使用下方的 CI 矩阵)。

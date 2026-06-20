@@ -39,6 +39,9 @@ fs.cpSync(path.join(rootDir, 'dist'), path.join(stageDir, 'dist'), { recursive: 
 fs.cpSync(path.join(rootDir, 'frontend', 'dist'), path.join(stageDir, 'frontend', 'dist'), { recursive: true });
 fs.copyFileSync(path.join(rootDir, 'package.json'), path.join(stageDir, 'package.json'));
 fs.copyFileSync(path.join(rootDir, 'package-lock.json'), path.join(stageDir, 'package-lock.json'));
+// Ship the env template so operators know which variables exist; .env itself
+// (real secrets) is intentionally NOT included.
+fs.copyFileSync(path.join(rootDir, '.env.example'), path.join(stageDir, '.env.example'));
 
 // --- Install production dependencies (pulls node-pty's platform binary) ------
 log('installing production dependencies (this resolves node-pty for this platform)');

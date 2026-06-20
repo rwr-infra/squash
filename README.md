@@ -25,7 +25,7 @@ All **Running With Rifles** related content, assets, and trademarks—including 
 
 ## Tech Stack
 
-**Backend**: Node.js 20 + TypeScript + Fastify + node-pty + Zod + Pino
+**Backend**: Node.js 24 + TypeScript + Fastify + node-pty + Zod + Pino
 **Frontend**: React + Vite + Ant Design + xterm.js + TanStack Query
 
 ## Project Structure
@@ -59,7 +59,8 @@ squash/
 # Build image
 docker build -t rwr-infra/squash .
 
-# Run container (with login credentials)
+# Run container (login is enabled by default; CHANGE the password before
+# exposing the port — the defaults admin/admin are well-known)
 docker run -d \
   --name squash \
   -p 3000:3000 \
@@ -110,24 +111,31 @@ Environment variables (all optional; settable via `.env` or the real environment
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP server port |
-| `HOST` | `0.0.0.0` | Bind address |
+| `HOST` | `0.0.0.0` | Bind address. **When the default credentials are in use, this falls back to `127.0.0.1`** so a freshly unpacked instance can't be reached from the network — set real credentials to expose it. |
 | `LOG_LEVEL` | `info` | Pino log level |
-| `AUTH_USERNAME` | _(none)_ | Login username — set together with `AUTH_PASSWORD` to require login |
-| `AUTH_PASSWORD` | _(none)_ | Login password |
+| `AUTH_USERNAME` | `admin` | Login username. Login is enabled **by default** with `admin/admin`; change before exposing the server. |
+| `AUTH_PASSWORD` | `admin` | Login password. |
 | `AUTH_TOKEN` | _(none)_ | Optional static bearer token (accepted alongside login; legacy) |
 | `CORS_ORIGIN` | `*` | Allowed CORS origin for the API |
 | `SQUASH_STATIC_DIR` | _(next to the app)_ | Frontend static files path (auto-derived; override only if you relocate `frontend/dist`) |
 
 ### Authentication
 
-Set **both** `AUTH_USERNAME` and `AUTH_PASSWORD` to require a username/password login
-on the web UI and API. The login (`POST /api/auth/login`) issues a session token (7-day TTL,
-kept in memory — restarting the server invalidates sessions). The frontend stores the
-token in `localStorage` and sends it as `Authorization: Bearer <token>` (and as a
-`?token=` query param for the terminal WebSocket).
+Login is **enabled by default** with the credentials `admin` / `admin`. This is
+deliberate: a freshly unpacked instance shouldn't be drivable by the first
+person to reach its port. The defaults are well-known weak values, so **change
+them before exposing the server** — and as a safety net, while the defaults are
+in effect the server binds to `127.0.0.1` only (see `HOST`), so it can't be
+reached from the network at all. The boot log prints a warning when the default
+credentials are active.
 
-If neither credential is set, auth is **disabled** and access is open. A static
-`AUTH_TOKEN` is still accepted for backward-compatible/programmatic use.
+The login (`POST /api/auth/login`) issues a session token (7-day TTL, kept in
+memory — restarting the server invalidates sessions). The frontend stores the
+token in `localStorage` and sends it as `Authorization: Bearer <token>` (and as
+a `?token=` query param for the terminal WebSocket).
+
+A static `AUTH_TOKEN` is still accepted for backward-compatible/programmatic
+use, alongside login.
 
 ### Audit log
 
@@ -141,7 +149,8 @@ in the **Audit log** drawer on the instance list page.
 
 `npm run package` produces a self-contained bundle for the **current OS/arch** under
 `release/` (a `.zip` on Windows, `.tar.gz` elsewhere) containing the compiled server,
-the built frontend, production `node_modules`, and `start.bat` / `start.sh` launchers.
+the built frontend, production `node_modules`, `start.bat` / `start.sh` launchers,
+and a `.env.example` template (the real `.env`, if you create one, is never bundled).
 
 ```bash
 npm run package
@@ -150,9 +159,12 @@ npm run package
 On the target machine (which only needs **Node.js >= 24** installed — no build tools):
 
 1. Unzip the bundle.
-2. Set credentials: edit `start.bat` / `start.sh` (or drop a `.env` next to them) with
-   `AUTH_USERNAME` / `AUTH_PASSWORD`.
-3. Run `start.bat` / `./start.sh`. Open `http://localhost:3000`.
+2. Run `start.bat` / `./start.sh`. It works out of the box with the default
+   `admin/admin` login (bound to `127.0.0.1`, so only reachable locally). Open
+   `http://localhost:3000`.
+3. To expose it on the network: copy `.env.example` to `.env` (or edit the
+   launcher) and set **both** `AUTH_USERNAME` and `AUTH_PASSWORD` to strong
+   values — the server binds to `0.0.0.0` only once real credentials are set.
 
 > Because `node-pty` is a native module, a bundle must be produced **on the same OS/arch**
 > it will run on. Build it on a Windows machine (or use the CI matrix below) for a Windows
