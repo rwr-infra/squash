@@ -26,6 +26,21 @@ jobs:
           node-version: 24
           cache: npm
 
+      # Tag is the source of truth for the version. Strip the leading `v` and
+      # stamp it into package.json so every artifact (zip/tar.gz name, bundled
+      # package.json) carries the tag's version — without this, `package.json`
+      # would lag behind and artifacts would be named after the stale version
+      # (e.g. v0.1.1 tag still producing squash-0.1.0-* files). Only runs on tag
+      # pushes; plain branch pushes leave package.json untouched.
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          node -e "const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p));j.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')" "$version"
+          echo "Stamped version $version"
+
       - name: Install dependencies
         run: npm ci
 
