@@ -153,6 +153,14 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       if (!isCurrent()) {
         return;
       }
+      // On Windows node-pty fills the child PID asynchronously (only after the
+      // ConPTY data pipe is ready), so the PID captured in start() is still the
+      // placeholder 0 at that point. The first output arrives AFTER the pipe is
+      // up, so by now ptyProcess.pid holds the real value — patch it in.
+      if (runtime.pid !== ptyProcess.pid) {
+        runtime = markRuntime(runtime, { pid: ptyProcess.pid });
+        notifyStatus();
+      }
       runtime = markRuntime(runtime, {
         status: 'running',
         lastOutputAt: now()

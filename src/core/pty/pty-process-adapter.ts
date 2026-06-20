@@ -68,7 +68,14 @@ export const createPtyProcess = (options: SpawnPtyOptions): PtyProcess => {
   });
 
   return {
-    pid: ptyProcess.pid,
+    // Live getter, not a snapshot: on Windows node-pty fills the child PID
+    // asynchronously after spawn (see windowsTerminal.js — `_pid` is updated
+    // on the socket's `ready_datapipe` event), so capturing `ptyProcess.pid`
+    // once here would freeze the placeholder 0 forever. Reading it live each
+    // time returns the real PID once ConPTY connects.
+    get pid() {
+      return ptyProcess.pid;
+    },
     write: (data) => {
       ptyProcess.write(data);
     },
