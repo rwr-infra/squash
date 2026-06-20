@@ -36,6 +36,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           TAG: ${{ github.ref_name }}
+        # Explicit bash: this step uses bash parameter expansion (${TAG#v}),
+        # but Windows runners default to PowerShell, which can't parse it. bash
+        # (Git Bash) is present on every GitHub-hosted runner, so this works
+        # uniformly across the ubuntu/macos/windows matrix.
+        shell: bash
         run: |
           version="${TAG#v}"
           node -e "const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p));j.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')" "$version"
