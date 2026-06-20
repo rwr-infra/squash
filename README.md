@@ -150,7 +150,8 @@ in the **Audit log** drawer on the instance list page.
 `npm run package` produces a self-contained bundle for the **current OS/arch** under
 `release/` (a `.zip` on Windows, `.tar.gz` elsewhere) containing the compiled server,
 the built frontend, production `node_modules`, `start.bat` / `start.sh` launchers,
-and a `.env.example` template (the real `.env`, if you create one, is never bundled).
+a `.env.example` template (the real `.env`, if you create one, is never bundled),
+and both `README.md` / `README.zh-CN.md`.
 
 ```bash
 npm run package
@@ -159,12 +160,16 @@ npm run package
 On the target machine (which only needs **Node.js >= 24** installed — no build tools):
 
 1. Unzip the bundle.
-2. Run `start.bat` / `./start.sh`. It works out of the box with the default
+2. Launch it: on Windows double-click `start.bat` (or run it in a terminal); on
+   Linux/macOS run `./start.sh`. It works out of the box with the default
    `admin/admin` login (bound to `127.0.0.1`, so only reachable locally). Open
    `http://localhost:3000`.
 3. To expose it on the network: copy `.env.example` to `.env` (or edit the
    launcher) and set **both** `AUTH_USERNAME` and `AUTH_PASSWORD` to strong
    values — the server binds to `0.0.0.0` only once real credentials are set.
+
+`config/` (instance definitions) and `logs/` (per-instance logs) are created
+next to the bundle on first run.
 
 > Because `node-pty` is a native module, a bundle must be produced **on the same OS/arch**
 > it will run on. Build it on a Windows machine (or use the CI matrix below) for a Windows

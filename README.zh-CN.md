@@ -143,8 +143,9 @@ cp .env.example .env
 
 `npm run package` 会为**当前操作系统/架构**在 `release/` 下生成一个自包含的发行包
 (Windows 上是 `.zip`,其他平台是 `.tar.gz`),内含编译后的服务器、构建好的前端、
-生产环境的 `node_modules`、`start.bat` / `start.sh` 启动脚本,以及一份
-`.env.example` 模板(真正的 `.env`——如果你创建了——绝不会被打包进去)。
+生产环境的 `node_modules`、`start.bat` / `start.sh` 启动脚本、一份 `.env.example`
+模板(真正的 `.env`——如果你创建了——绝不会被打包进去),以及 `README.md` /
+`README.zh-CN.md` 两份说明。
 
 ```bash
 npm run package
@@ -153,11 +154,14 @@ npm run package
 在目标机器上(仅需安装 **Node.js >= 24**——无需构建工具):
 
 1. 解压发行包。
-2. 运行 `start.bat` / `./start.sh`。开箱即用,默认 `admin/admin` 登录(绑定 `127.0.0.1`,
-   仅本机可访问)。打开 `http://localhost:3000`。
+2. 启动:Windows 上双击 `start.bat`(或在终端里运行它);Linux/macOS 上运行 `./start.sh`。
+   开箱即用,默认 `admin/admin` 登录(绑定 `127.0.0.1`,仅本机可访问)。打开
+   `http://localhost:3000`。
 3. 如需暴露到网络:把 `.env.example` 复制为 `.env`(或编辑启动脚本),将
    `AUTH_USERNAME` 和 `AUTH_PASSWORD` **同时**设置为强口令——只有设置了真实凭据,
    服务器才会绑定 `0.0.0.0`。
+
+`config/`(实例定义)和 `logs/`(按实例分文件的日志)会在首次运行时创建在发行包同级目录。
 
 > 由于 `node-pty` 是原生模块,发行包必须在它将要运行的**同一操作系统/架构**上构建。
 > 要生成 Windows 发行版,请在 Windows 机器上构建(或使用下方的 CI 矩阵)。
