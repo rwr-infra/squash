@@ -49,7 +49,7 @@ squash/
 
 ### Prerequisites
 
-- Node.js >= 24 (the only runtime requirement; works on Linux, macOS, and Windows)
+- [Node.js](https://nodejs.org/en/download) >= 24 (the only runtime requirement; works on Linux, macOS, and Windows)
 - Docker — optional, for containerized deployment
 - PTY behavior is validated on Linux; macOS has known node-pty permission quirks (see Known Issues)
 
@@ -157,7 +157,8 @@ and both `README.md` / `README.zh-CN.md`.
 npm run package
 ```
 
-On the target machine (which only needs **Node.js >= 24** installed — no build tools):
+On the target machine (**Node.js >= 24 must be installed first** — download it
+from <https://nodejs.org/en/download>. No build tools are needed):
 
 1. Unzip the bundle.
 2. Launch it: on Windows double-click `start.bat` (or run it in a terminal); on

@@ -49,7 +49,7 @@ squash/
 
 ### 环境要求
 
-- Node.js >= 24(唯一的运行时要求;支持 Linux、macOS 和 Windows)
+- [Node.js](https://nodejs.org/en/download) >= 24(唯一的运行时要求;支持 Linux、macOS 和 Windows)
 - Docker——可选,用于容器化部署
 - PTY 行为仅在 Linux 上验证过;macOS 存在已知的 node-pty 权限问题(见「已知问题」)
 
@@ -151,7 +151,8 @@ cp .env.example .env
 npm run package
 ```
 
-在目标机器上(仅需安装 **Node.js >= 24**——无需构建工具):
+在目标机器上(**必须先安装 Node.js >= 24**——从
+<https://nodejs.org/en/download> 下载。无需构建工具):
 
 1. 解压发行包。
 2. 启动:Windows 上双击 `start.bat`(或在终端里运行它);Linux/macOS 上运行 `./start.sh`。
