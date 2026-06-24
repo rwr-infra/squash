@@ -137,11 +137,40 @@ Recorded actions: `login`, `create`, `start`, `stop`, `restart`, `delete`, and `
 has `time`, `user`, `action`, and optional `instanceId` / `detail`. The web UI shows them
 in the **Audit log** drawer on the instance list page.
 
-### Portable distribution (Windows without Docker)
+### Single-file executable (no Node.js required)
+
+`npm run package:exe` produces **one self-contained executable** for the current OS/arch
+under `dist-bin/` (`squash`, or `squash.exe` on Windows). It bundles the Node runtime, the
+server, `node-pty`'s native binary, and the built frontend — the target machine needs
+**nothing installed**.
+
+```bash
+npm run package:exe
+```
+
+On the target machine, just run it:
+
+```bash
+PORT=3000 ./squash          # Linux/macOS
+squash.exe                  # Windows (double-click or run from a terminal)
+```
+
+`config/` (instance definitions) and `logs/` (per-instance logs) are created **next to the
+executable** on first run. Configure via environment variables (`PORT`, `HOST`, `AUTH_TOKEN`,
+`AUTH_USERNAME`/`AUTH_PASSWORD`, `LOG_LEVEL`) or a `.env` file in the working directory.
+
+> Because `node-pty` is a native module, the executable must be built **on the same OS/arch**
+> it will run on — that is what the CI matrix below is for. The build chain is esbuild
+> (ESM → single CJS) → [@yao-pkg/pkg](https://github.com/yao-pkg/pkg), plus a small
+> `patch-package` patch ([patches/](patches/)) that lets `node-pty`'s `spawn-helper` run from
+> inside the packed binary.
+
+### Portable distribution (requires Node.js on target)
 
 `npm run package` produces a self-contained bundle for the **current OS/arch** under
 `release/` (a `.zip` on Windows, `.tar.gz` elsewhere) containing the compiled server,
 the built frontend, production `node_modules`, and `start.bat` / `start.sh` launchers.
+Prefer the single-file executable above unless you specifically want this layout.
 
 ```bash
 npm run package
@@ -160,9 +189,10 @@ On the target machine (which only needs **Node.js >= 24** installed — no build
 
 ### Cross-platform builds (CI)
 
-[`.github/workflows/release.yml`](.github/workflows/release.yml) runs `npm run package` on a
-matrix of `ubuntu-latest`, `macos-latest`, and `windows-latest`, uploading each bundle as a
-build artifact. Pushing a `v*` tag additionally publishes them to a GitHub Release.
+[`.github/workflows/release.yml`](.github/workflows/release.yml) runs both `npm run package`
+and `npm run package:exe` on a matrix of `ubuntu-latest`, `macos-latest`, and
+`windows-latest`, uploading the portable bundle and the single-file executable as build
+artifacts. Pushing a `v*` tag additionally publishes them to a GitHub Release.
 
 ### Frontend (Development)
 

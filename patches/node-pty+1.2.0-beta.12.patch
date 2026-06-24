@@ -1,0 +1,25 @@
+diff --git a/node_modules/node-pty/lib/unixTerminal.js b/node_modules/node-pty/lib/unixTerminal.js
+index 2f0957b..4dc5824 100644
+--- a/node_modules/node-pty/lib/unixTerminal.js
++++ b/node_modules/node-pty/lib/unixTerminal.js
+@@ -30,6 +30,20 @@ var helperPath = native.dir + '/spawn-helper';
+ helperPath = path.resolve(__dirname, helperPath);
+ helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');
+ helperPath = helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked');
++// squash: under a @yao-pkg/pkg single-file build, spawn-helper lives inside the
++// read-only virtual snapshot (/snapshot/...), which the OS cannot posix_spawn.
++// Materialize it to a real temp path with the exec bit so forkpty can run it.
++if (process.pkg) {
++    var _os = require('os');
++    var _fs = require('fs');
++    var _dest = path.join(_os.tmpdir(), 'squash-node-pty-spawn-helper');
++    try {
++        _fs.writeFileSync(_dest, _fs.readFileSync(helperPath));
++        _fs.chmodSync(_dest, 0o755);
++        helperPath = _dest;
++    }
++    catch (e) { /* fall back to the original (snapshot) path */ }
++}
+ var DEFAULT_FILE = 'sh';
+ var DEFAULT_NAME = 'xterm';
+ var DESTROY_SOCKET_TIMEOUT_MS = 200;

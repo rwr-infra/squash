@@ -31,8 +31,13 @@ jobs:
       # build (server + frontend) + assemble the portable bundle for THIS OS.
       # node-pty is native, so each runner produces its own platform binary —
       # that is the whole reason this matrix exists.
-      - name: Package
+      - name: Package (portable bundle, requires Node on target)
         run: npm run package
+
+      # Single-file self-contained executable (no Node required on target). Built
+      # for the host triple so node-pty's prebuilt binary matches this OS/arch.
+      - name: Package (single-file executable)
+        run: npm run package:exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -41,6 +46,8 @@ jobs:
           path: |
             release/*.zip
             release/*.tar.gz
+            dist-bin/squash
+            dist-bin/squash.exe
           if-no-files-found: error
 
   release:
