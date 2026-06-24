@@ -9,6 +9,7 @@ import { TerminalService } from './services/terminal-service.js';
 import { AuditService } from './services/audit-service.js';
 import { createHttpServer } from './api/http/http-server.js';
 import { createTerminalGateway } from './api/ws/terminal-gateway.js';
+import { isUsingDefaultCredentials } from './api/http/auth.js';
 
 const logger = pino({
   name: 'rwr-terminal-proxy',
@@ -17,7 +18,17 @@ const logger = pino({
 });
 
 const PORT = Number(process.env.PORT ?? 3000);
-const HOST = process.env.HOST ?? '0.0.0.0';
+// On a default-credentials instance the only thing standing between the network
+// and the panel is admin/admin. Force loopback so it can't be reached remotely;
+// operators who want to expose the server must set AUTH_USERNAME/AUTH_PASSWORD
+// first. An explicit HOST=... still wins, so this never silently overrides a
+// deliberate binding choice.
+const HOST = process.env.HOST ?? (isUsingDefaultCredentials ? '127.0.0.1' : '0.0.0.0');
+if (isUsingDefaultCredentials && process.env.HOST === undefined) {
+  logger.warn(
+    'Binding to loopback only because default credentials (admin/admin) are in use. Set AUTH_USERNAME and AUTH_PASSWORD to expose the server on the network.'
+  );
+}
 
 const main = async () => {
   const app = await bootstrapApp();

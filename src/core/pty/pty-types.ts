@@ -14,6 +14,10 @@ export type PtyExitInfo = {
 };
 
 export type PtyProcess = {
+  // On Windows the child PID is filled in asynchronously by node-pty AFTER
+  // spawn returns (the ConPTY data pipe isn't ready yet at construction), so
+  // this MUST be read live each time — a one-time snapshot captured at spawn
+  // would freeze the initial placeholder (0) forever.
   readonly pid: number;
   write: (data: string) => void;
   resize: (cols: number, rows: number) => void;

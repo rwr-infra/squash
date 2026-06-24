@@ -44,6 +44,11 @@ const stagedPkg = { ...pkg };
 delete stagedPkg.scripts;
 fs.writeFileSync(path.join(stageDir, 'package.json'), `${JSON.stringify(stagedPkg, null, 2)}\n`);
 fs.copyFileSync(path.join(rootDir, 'package-lock.json'), path.join(stageDir, 'package-lock.json'));
+// Ship the project READMEs (single source of truth for setup/config) and the
+// env template. .env itself (real secrets) is intentionally NOT included.
+fs.copyFileSync(path.join(rootDir, 'README.md'), path.join(stageDir, 'README.md'));
+fs.copyFileSync(path.join(rootDir, 'README.zh-CN.md'), path.join(stageDir, 'README.zh-CN.md'));
+fs.copyFileSync(path.join(rootDir, '.env.example'), path.join(stageDir, '.env.example'));
 
 // --- Install production dependencies (pulls node-pty's platform binary) ------
 log('installing production dependencies (this resolves node-pty for this platform)');
@@ -84,59 +89,34 @@ exec node dist/index.js
 `;
 fs.writeFileSync(path.join(stageDir, 'start.sh'), startSh, { mode: 0o755 });
 
-const deploy = `# squash — portable distribution (${platform}/${arch})
-
-Self-contained build of squash. **Requires Node.js >= 24 on the target machine.**
-
-## Run
-
-- Windows: double-click \`start.bat\` (or run it from a terminal)
-- Linux/macOS: \`./start.sh\`
-
-The server listens on port 3000 by default. Open http://localhost:3000.
-
-## Configuration (environment variables)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| PORT | 3000 | HTTP port |
-| HOST | 0.0.0.0 | Bind address |
-| AUTH_TOKEN | (none) | Bearer token required for the API/UI when set |
-| LOG_LEVEL | info | Log verbosity |
-
-Edit \`start.bat\` / \`start.sh\` to set \`AUTH_TOKEN\` before exposing the server.
-
-## Data
-
-\`config/\` (instance definitions) and \`logs/\` (per-instance logs) are created
-next to this folder on first run.
-
-## Windows: crash auto-recovery
-
-When rwr_server.exe crashes on Windows its engine pops a modal "An unhandled
-exception occurred!" dialog and the process hangs (it never exits on its own).
-For instances with auto-restart enabled, squash watches for the engine's crash
-dump (\`rwr_crashdump.dmp\`, written next to the server) and, when a fresh one
-appears, force-kills the hung process and restarts it automatically.
-`;
-fs.writeFileSync(path.join(stageDir, 'DEPLOY.md'), deploy);
-
 // --- Compress ----------------------------------------------------------------
+// Compress with `tar` on every platform. We used to call PowerShell's
+// `Compress-Archive` on Windows, but that cmdlet lives in the
+// `Microsoft.PowerShell.Archive` module, which fails to autoload on some
+// Windows installs ("CouldNotAutoloadMatchingModule"). Windows 10 1803+
+// ships `tar.exe` (bsdtar), which `-a` lets us emit a real .zip from — so we
+// keep the Windows-friendly .zip output without depending on PowerShell at all.
+//
+// We list the staged dir's top-level entries explicitly and pass them to tar
+// with `-C stageDir`. Two reasons vs the simpler `-C stageDir .`:
+//   1. No wrapping directory — entries sit at the archive root, so unzipping
+//      drops files in place instead of into a `squash-<ver>-<plat>-<arch>/`
+//      subfolder.
+//   2. No `./` prefix on entries (bsdtar emits `./foo` for `-C dir .`), which
+//      some picky unpackers handle poorly.
+// tar recurses into directories automatically, so `node_modules` (created by
+// `npm ci` above) is included without being named explicitly.
+const entries = fs.readdirSync(stageDir);
 let artifact;
 try {
   if (platform === 'win32') {
     artifact = path.join(releaseDir, `${name}.zip`);
     fs.rmSync(artifact, { force: true });
-    execFileSync(
-      'powershell',
-      ['-NoProfile', '-Command', `Compress-Archive -Path "${stageDir}/*" -DestinationPath "${artifact}" -Force`],
-      { stdio: 'inherit' }
-    );
+    execFileSync('tar', ['-a', '-cf', artifact, '-C', stageDir, ...entries], { stdio: 'inherit' });
   } else {
-    // tar is present on modern Windows too, but zip is friendlier on Unix.
     artifact = path.join(releaseDir, `${name}.tar.gz`);
     fs.rmSync(artifact, { force: true });
-    execFileSync('tar', ['-czf', artifact, '-C', releaseDir, name], { stdio: 'inherit' });
+    execFileSync('tar', ['-czf', artifact, '-C', stageDir, ...entries], { stdio: 'inherit' });
   }
   log(`created ${path.relative(rootDir, artifact)}`);
 } catch (err) {

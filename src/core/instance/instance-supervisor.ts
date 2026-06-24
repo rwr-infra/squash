@@ -153,6 +153,14 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       if (!isCurrent()) {
         return;
       }
+      // On Windows node-pty fills the child PID asynchronously (only after the
+      // ConPTY data pipe is ready), so the PID captured in start() is still the
+      // placeholder 0 at that point. The first output arrives AFTER the pipe is
+      // up, so by now ptyProcess.pid holds the real value — patch it in.
+      if (runtime.pid !== ptyProcess.pid) {
+        runtime = markRuntime(runtime, { pid: ptyProcess.pid });
+        notifyStatus();
+      }
       runtime = markRuntime(runtime, {
         status: 'running',
         lastOutputAt: now()
@@ -212,16 +220,33 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       exitSignal: undefined
     });
 
-    processRef = createPtyProcess({
-      command: config.executable,
-      args: config.args,
-      cwd: config.cwd,
-      env: { ...process.env, ...config.env, PATH: process.env.PATH, HOME: process.env.HOME },
-      cols: DEFAULT_COLS,
-      rows: DEFAULT_ROWS,
-      name: DEFAULT_TERM_NAME
-    });
+    let ptyProcess: PtyProcess;
+    try {
+      ptyProcess = createPtyProcess({
+        command: config.executable,
+        args: config.args,
+        cwd: config.cwd,
+        env: { ...process.env, ...config.env, PATH: process.env.PATH, HOME: process.env.HOME },
+        cols: DEFAULT_COLS,
+        rows: DEFAULT_ROWS,
+        name: DEFAULT_TERM_NAME
+      });
+    } catch (err) {
+      // The spawn itself failed (e.g. node-pty couldn't resolve the executable —
+      // a Windows relative-path ENOENT). There is now no process, so onExit will
+      // never fire and nothing would ever move us out of 'starting' — which in
+      // turn wedges stop()/edit. Roll back to a recoverable state. We do NOT
+      // scheduleRestart here: a broken config would just loop MAX_RESTART_ATTEMPTS
+      // times for nothing; the user should fix the config and retry.
+      runtime = markRuntime(runtime, {
+        status: 'crashed',
+        stoppedAt: now()
+      });
+      notifyStatus();
+      throw err;
+    }
 
+    processRef = ptyProcess;
     bindProcessEvents(processRef);
     runtime = markRuntime(runtime, {
       status: 'running',
@@ -251,7 +276,16 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     stopWatchdog();
     runtime = markRuntime(runtime, { status: 'stopping', restartCount: 0 });
     notifyStatus();
-    processRef?.kill();
+    // If there is no live process to kill (e.g. spawn failed leaving status in
+    // 'starting'/'running' with processRef === undefined), onExit will never fire
+    // and we'd be stuck in 'stopping' forever — unblocking stop()/edit. Flip
+    // straight to 'stopped' in that case.
+    if (processRef) {
+      processRef.kill();
+    } else {
+      runtime = markRuntime(runtime, { status: 'stopped', stoppedAt: now() });
+      notifyStatus();
+    }
   };
 
   return {
