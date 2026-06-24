@@ -37,7 +37,12 @@ fs.mkdirSync(stageDir, { recursive: true });
 log('copying compiled server and frontend');
 fs.cpSync(path.join(rootDir, 'dist'), path.join(stageDir, 'dist'), { recursive: true });
 fs.cpSync(path.join(rootDir, 'frontend', 'dist'), path.join(stageDir, 'frontend', 'dist'), { recursive: true });
-fs.copyFileSync(path.join(rootDir, 'package.json'), path.join(stageDir, 'package.json'));
+// Stage a trimmed package.json WITHOUT scripts: the staged `npm ci --omit=dev`
+// below must not fire lifecycle hooks (e.g. postinstall: patch-package, whose
+// binary is a devDependency absent from this production-only install).
+const stagedPkg = { ...pkg };
+delete stagedPkg.scripts;
+fs.writeFileSync(path.join(stageDir, 'package.json'), `${JSON.stringify(stagedPkg, null, 2)}\n`);
 fs.copyFileSync(path.join(rootDir, 'package-lock.json'), path.join(stageDir, 'package-lock.json'));
 // Ship the project READMEs (single source of truth for setup/config) and the
 // env template. .env itself (real secrets) is intentionally NOT included.

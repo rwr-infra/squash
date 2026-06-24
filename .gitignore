@@ -2,6 +2,7 @@ node_modules/
 /logs/
 *.log
 dist/
+dist-bin/
 /release/
 .DS_Store
 .opencode/

@@ -139,13 +139,40 @@ cp .env.example .env
 `time`、`user`、`action`,以及可选的 `instanceId` / `detail`。Web UI 在实例列表页的
 **审计日志(Audit log)** 抽屉中展示这些记录。
 
-### 便携式发行版(Windows 免 Docker)
+### 单文件可执行程序(目标机免装 Node.js)
+
+`npm run package:exe` 会为当前操作系统/架构在 `dist-bin/` 下生成**一个自包含可执行文件**
+(`squash`,Windows 上为 `squash.exe`)。它把 Node 运行时、服务器、`node-pty` 的原生二进制
+以及构建好的前端全部打进去——目标机器**无需安装任何东西**。
+
+```bash
+npm run package:exe
+```
+
+在目标机器上直接运行即可:
+
+```bash
+PORT=3000 ./squash          # Linux/macOS
+squash.exe                  # Windows(双击或在终端运行)
+```
+
+首次运行时会在**可执行文件旁边**创建 `config/`(实例定义)与 `logs/`(各实例日志)。
+通过环境变量(`PORT`、`HOST`、`AUTH_TOKEN`、`AUTH_USERNAME`/`AUTH_PASSWORD`、`LOG_LEVEL`)
+或工作目录下的 `.env` 文件进行配置。
+
+> 由于 `node-pty` 是原生模块,可执行文件必须在它将要运行的**同一操作系统/架构**上构建——
+> 这正是下方 CI 矩阵的用途。构建链为 esbuild(ESM → 单个 CJS)→
+> [@yao-pkg/pkg](https://github.com/yao-pkg/pkg),外加一个小的 `patch-package` 补丁
+> ([patches/](patches/)),让 `node-pty` 的 `spawn-helper` 能从打包后的二进制内运行。
+
+### 便携式发行版(需目标机装 Node.js)
 
 `npm run package` 会为**当前操作系统/架构**在 `release/` 下生成一个自包含的发行包
 (Windows 上是 `.zip`,其他平台是 `.tar.gz`),内含编译后的服务器、构建好的前端、
 生产环境的 `node_modules`、`start.bat` / `start.sh` 启动脚本、一份 `.env.example`
 模板(真正的 `.env`——如果你创建了——绝不会被打包进去),以及 `README.md` /
-`README.zh-CN.md` 两份说明。
+`README.zh-CN.md` 两份说明。除非你特别需要这种
+目录结构,否则推荐使用上面的单文件可执行程序。
 
 ```bash
 npm run package
@@ -170,8 +197,9 @@ npm run package
 ### 跨平台构建(CI)
 
 [`.github/workflows/release.yml`](.github/workflows/release.yml) 会在
-`ubuntu-latest`、`macos-latest` 和 `windows-latest` 的矩阵上运行 `npm run package`,
-并将每个发行包作为构建产物上传。推送 `v*` 标签时,还会额外将它们发布到 GitHub Release。
+`ubuntu-latest`、`macos-latest` 和 `windows-latest` 的矩阵上同时运行 `npm run package`
+与 `npm run package:exe`,并将便携发行包与单文件可执行程序作为构建产物上传。
+推送 `v*` 标签时,还会额外将它们发布到 GitHub Release。
 
 ### 前端(开发)
 
