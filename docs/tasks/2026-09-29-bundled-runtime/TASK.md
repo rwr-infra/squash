@@ -70,7 +70,7 @@
 - [x] 3. 最终归档冒烟：`scripts/smoke-release.mjs` + `npm run smoke:release`，覆盖 Acceptance 成功路径与门禁拒绝用例；本机通过
       证据：`npm run smoke:release`（darwin-arm64，按 HEAD 重打的包）→ 27 项 PASS、10s、exit 0：无 .env、runtime 版本、前端无烘焙 origin、启动器 env 无 node、仅回环（局域网 IP 探测 ECONNREFUSED）、health/前端/登录/401、PTY 双向（WS input→output、command capture、WS 广播）、stop→`stopped`、终止启动器→服务退出且端口释放、强口令+0.0.0.0→局域网可达、3 种弱保护+0.0.0.0→exit 1+fatal 指引+从未监听。变异测试全部检出：前端注入 localhost:4747 / 局域网 origin、start.sh 改系统 node、start.sh 去掉 exec（不再挂起、无孤儿）、stop 判为 crashed。未证：Windows/Linux 分支（→ cp4 CI） ｜ commit：见 git log（test(release) smoke-test the final archive…）
 - [ ] 4. CI：`setup-node` 读 `.node-version`；Package 后跑冒烟；release job 生成并上传 `SHA256SUMS.txt`
-      证据： ｜ commit：
+      证据（本地）：actionlint 1.7.12 + shellcheck 0.11.0 → rc=0；PyYAML 结构断言（setup-node 仅 node-version-file、Package<Smoke<Upload、release needs package）；Collect 步骤模拟 4 场景（正常→SHA256SUMS 且 `sha256sum -c` OK；重名/缺平台/多余归档→exit 1）；审查：无 high/medium，low 已修（draft→upload→publish、`pattern: squash-*`、每 artifact 恰一归档）。证据（CI）：待 push 后三平台实跑 ｜ commit：见 git log（ci(release) smoke-test archives…）
 - [ ] 5. 文档：README.md / README.zh-CN.md —— 无 Node 前置、下载选择与校验、默认仅本机、远程访问步骤、门禁行为、升级时保留 `config/` `logs/`、平台支持边界；升级破坏性变化提示（旧 `.env` 含 `HOST=0.0.0.0`+admin、Docker 未传密码 → 启动即退出）；"仅 token 鉴权"配置方式（`AUTH_PASSWORD=` 空 + `AUTH_TOKEN`）
       证据： ｜ commit：
 
