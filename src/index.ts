@@ -10,7 +10,7 @@ import { AuditService } from './services/audit-service.js';
 import { createHttpServer } from './api/http/http-server.js';
 import { createTerminalGateway } from './api/ws/terminal-gateway.js';
 import { isAuthEnabled, isWeaklyProtected } from './api/http/auth.js';
-import { resolveBindHost } from './app/bind-host.js';
+import { describeListenError, resolveBindHost } from './app/bind-host.js';
 
 const logger = pino({
   name: 'rwr-terminal-proxy',
@@ -63,7 +63,7 @@ const main = async () => {
     await httpServer.listen({ port: PORT, host: HOST });
     logger.info({ port: PORT, host: HOST }, 'HTTP server running');
   } catch (err) {
-    logger.error({ err }, 'Failed to start HTTP server');
+    logger.fatal({ err }, describeListenError(err, HOST, PORT));
     process.exit(1);
   }
 
@@ -80,6 +80,8 @@ const main = async () => {
 };
 
 main().catch((error: unknown) => {
-  logger.error({ err: error }, 'Application bootstrap failed');
+  // The message is the actionable part (e.g. bootstrap's "Cannot write to ..."),
+  // so put it on msg and log at fatal like the other startup failures.
+  logger.fatal({ err: error }, error instanceof Error ? error.message : 'Application bootstrap failed');
   process.exit(1);
 });

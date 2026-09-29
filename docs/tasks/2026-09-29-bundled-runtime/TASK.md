@@ -26,6 +26,9 @@
 - 弱保护判定：密码 trim + 忽略大小写后等于 `admin` 或为空白也算默认 —— 审查发现 `Admin`/空格同样可猜；不扩展成通用弱口令黑名单（服务端无法判断强度，文档如实说明）（2026-09-29）
 - "HOST 未设 → 127.0.0.1" 仅指弱保护情形；非弱保护 + HOST 未设 → `0.0.0.0` 为既有行为，保持不变（2026-09-29）
 - Node 版本由仓库根 `.node-version` 固定，CI `setup-node` 与打包下载同读此文件 —— 构建与包内运行时一致（2026-09-29）
+- 运行时哈希钉在仓库 `scripts/node-runtime.sha256`（SHASUMS256 格式、按带版本号的文件名索引），不在构建时拉官方 SHASUMS —— 构建可复现、镜像无法替换二进制；升级 `.node-version` 而忘更新哈希时打包直接失败（2026-09-29）
+- `SQUASH_NODE_MIRROR` 可换下载源（如 npmmirror），哈希钉仍生效 —— 国内/代理网络可用（2026-09-29）
+- 打包前拒绝把 `frontend/.env*` 的 `VITE_API_URL`/`VITE_WS_URL`/`VITE_AUTH_TOKEN` 烘焙进产物，按 Vite 优先级计算生效值；`VITE_API_URL= npm run package` 可在不动开发者文件的情况下覆盖；`SQUASH_ALLOW_FRONTEND_ENV=1` 显式放行 —— 审查发现本机打包会把 dev 地址 `localhost:4747` 写进前端（原有缺陷）（2026-09-29）
 - 回环地址白名单：`127.0.0.0/8`、`localhost`、`::1` —— 其余（含 `0.0.0.0`、`::`、局域网 IP、`[::1]`/`::ffff:127.x`/zone 写法）视为非回环，拒绝而非信任罕见写法（2026-09-29）
 
 ## Acceptance
@@ -62,8 +65,8 @@
 ## Checkpoints
 - [x] 1. 安全门禁：按值判定弱保护；弱保护 + 显式非回环 → exit 1；`.env.example` 注释掉 HOST；Dockerfile/README 相关说明同步
       证据：`npm run typecheck` → 通过；门禁矩阵（tsx，23 组 env）→ 23/23；`node dist/index.js` + HOST=0.0.0.0 → exit 1、fatal 日志；复制 `.env.example` 为 `.env` → 仅 127.0.0.1（lsof）；Diff + Conformance 审查发现已修（trim/大小写、白名单收紧、fatal 级、Docker 示例随机密码）；用户已阅 diff ｜ commit：见 git log（feat(auth) refuse non-loopback…）
-- [ ] 2. 包内运行时：`.node-version`；下载 + SHA-256 校验 + 缓存；`runtime/` + LICENSE + `build-info.json`；启动器改用包内 node 并处理缺失/出错；监听错误友好提示；本机 `npm run package` 成功
-      证据： ｜ commit：
+- [x] 2. 包内运行时：`.node-version`；下载 + SHA-256 校验 + 缓存；`runtime/` + LICENSE + `build-info.json`；启动器改用包内 node 并处理缺失/出错；监听错误友好提示；本机 `npm run package` 成功
+      证据：`npm run typecheck` rc=0；`VITE_API_URL= npm run package` → 下载/缓存 v24.21.0 darwin-arm64、哈希校验通过、产物前端无 `localhost:4747`；前端 env 守卫 4 拒 1 放；运行时负向脚本 5/5 + 不可达镜像报 ECONNREFUSED 与代理提示；6 条哈希与官方 SHASUMS256 逐行一致；解压包在无 node 的 PATH 下经 start.sh 冒烟 19/19；只读 logs、端口占用、runtime 缺失均 exit 1 且提示明确；Diff + Conformance 审查发现已修（gitignore 粘行、bat `%~dp0`/pushd/Ctrl+C、System32 tar、fetch cause、写入探测、EACCES 平台化、压缩失败退出、build-info dirty）。未证：start.bat 在 Windows 实跑（→ cp4 CI + 人工） ｜ commit：见 git log（feat(package) bundle pinned Node runtime…）
 - [ ] 3. 最终归档冒烟：`scripts/smoke-release.mjs` + `npm run smoke:release`，覆盖 Acceptance 成功路径与门禁拒绝用例；本机通过
       证据： ｜ commit：
 - [ ] 4. CI：`setup-node` 读 `.node-version`；Package 后跑冒烟；release job 生成并上传 `SHA256SUMS.txt`
@@ -72,7 +75,24 @@
       证据： ｜ commit：
 
 ## Pitfalls
-（出现时追加）
+### Pitfall: Vite 在 production 构建也读 `frontend/.env.local`
+- 现象：本机 `npm run package` 产物前端 API 指向 `http://localhost:4747/api`
+- 状态：CONFIRMED
+- 原因：Vite 所有模式都加载 `.env.local`；前端 `VITE_API_URL ?? ''` 取值
+- 已否决：`--mode` 切换（`.env.local` 仍加载）
+- 来源：`frontend/src/services/apiService.ts:6`、`scripts/package.mjs` 守卫
+- 下一步：打包前守卫；空环境变量可覆盖文件值（已实测 Vite 8）
+
+### Pitfall: `VITE_WS_URL` 置空不会回落同源
+- 现象：空串经 `??` 保留为 ''，WebSocket 地址失效
+- 状态：CONFIRMED（静态）
+- 来源：`frontend/src/services/terminalService.ts:25`
+- 下一步：守卫对 `VITE_WS_URL` 空值同样拒绝，需从文件删除
+
+### Pitfall: 仓库文件末尾无换行，追加内容粘行
+- 现象：`.gitignore` 变成 `.cursor//.cache/`，两条规则都失效
+- 状态：CONFIRMED
+- 下一步：追加前检查末尾换行，用 `git check-ignore -v` 验证
 
 ## Sources
 - 调研报告（用户提供，2026-09-29）：阶段 0/1、CI/CD 建议、风险表

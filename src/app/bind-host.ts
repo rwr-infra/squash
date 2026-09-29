@@ -36,3 +36,26 @@ export const resolveBindHost = (explicitHost: string | undefined, weaklyProtecte
   }
   return { kind: 'listen', host, forcedLoopback: false };
 };
+
+/** Turns a failed `listen()` into an actionable message for the operator. */
+export const describeListenError = (err: unknown, host: string, port: number): string => {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  switch (code) {
+    case 'EADDRINUSE':
+      return `Port ${port} is already in use on ${host}. Stop the other program using it, or set a different PORT (in .env or the environment).`;
+    case 'EACCES':
+      // Windows has no privileged ports; there EACCES usually means the port sits
+      // in a range reserved by Hyper-V/WSL/WinNAT (3000 often is).
+      if (process.platform === 'win32') {
+        return `No permission to listen on ${host}:${port}. The port may be reserved by Windows (check \`netsh interface ipv4 show excludedportrange protocol=tcp\`) — set a different PORT.`;
+      }
+      return port < 1024
+        ? `No permission to listen on ${host}:${port}. Ports below 1024 need elevated privileges — set a higher PORT.`
+        : `No permission to listen on ${host}:${port} (blocked by the OS or a security policy) — set a different PORT.`;
+    case 'EADDRNOTAVAIL':
+    case 'ENOTFOUND':
+      return `Address ${host} is not available on this machine. Check HOST (unset it to use the default).`;
+    default:
+      return 'Failed to start HTTP server';
+  }
+};
