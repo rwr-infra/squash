@@ -67,8 +67,8 @@
       证据：`npm run typecheck` → 通过；门禁矩阵（tsx，23 组 env）→ 23/23；`node dist/index.js` + HOST=0.0.0.0 → exit 1、fatal 日志；复制 `.env.example` 为 `.env` → 仅 127.0.0.1（lsof）；Diff + Conformance 审查发现已修（trim/大小写、白名单收紧、fatal 级、Docker 示例随机密码）；用户已阅 diff ｜ commit：见 git log（feat(auth) refuse non-loopback…）
 - [x] 2. 包内运行时：`.node-version`；下载 + SHA-256 校验 + 缓存；`runtime/` + LICENSE + `build-info.json`；启动器改用包内 node 并处理缺失/出错；监听错误友好提示；本机 `npm run package` 成功
       证据：`npm run typecheck` rc=0；`VITE_API_URL= npm run package` → 下载/缓存 v24.21.0 darwin-arm64、哈希校验通过、产物前端无 `localhost:4747`；前端 env 守卫 4 拒 1 放；运行时负向脚本 5/5 + 不可达镜像报 ECONNREFUSED 与代理提示；6 条哈希与官方 SHASUMS256 逐行一致；解压包在无 node 的 PATH 下经 start.sh 冒烟 19/19；只读 logs、端口占用、runtime 缺失均 exit 1 且提示明确；Diff + Conformance 审查发现已修（gitignore 粘行、bat `%~dp0`/pushd/Ctrl+C、System32 tar、fetch cause、写入探测、EACCES 平台化、压缩失败退出、build-info dirty）。未证：start.bat 在 Windows 实跑（→ cp4 CI + 人工） ｜ commit：见 git log（feat(package) bundle pinned Node runtime…）
-- [ ] 3. 最终归档冒烟：`scripts/smoke-release.mjs` + `npm run smoke:release`，覆盖 Acceptance 成功路径与门禁拒绝用例；本机通过
-      证据： ｜ commit：
+- [x] 3. 最终归档冒烟：`scripts/smoke-release.mjs` + `npm run smoke:release`，覆盖 Acceptance 成功路径与门禁拒绝用例；本机通过
+      证据：`npm run smoke:release`（darwin-arm64，按 HEAD 重打的包）→ 27 项 PASS、10s、exit 0：无 .env、runtime 版本、前端无烘焙 origin、启动器 env 无 node、仅回环（局域网 IP 探测 ECONNREFUSED）、health/前端/登录/401、PTY 双向（WS input→output、command capture、WS 广播）、stop→`stopped`、终止启动器→服务退出且端口释放、强口令+0.0.0.0→局域网可达、3 种弱保护+0.0.0.0→exit 1+fatal 指引+从未监听。变异测试全部检出：前端注入 localhost:4747 / 局域网 origin、start.sh 改系统 node、start.sh 去掉 exec（不再挂起、无孤儿）、stop 判为 crashed。未证：Windows/Linux 分支（→ cp4 CI） ｜ commit：见 git log（test(release) smoke-test the final archive…）
 - [ ] 4. CI：`setup-node` 读 `.node-version`；Package 后跑冒烟；release job 生成并上传 `SHA256SUMS.txt`
       证据： ｜ commit：
 - [ ] 5. 文档：README.md / README.zh-CN.md —— 无 Node 前置、下载选择与校验、默认仅本机、远程访问步骤、门禁行为、升级时保留 `config/` `logs/`、平台支持边界；升级破坏性变化提示（旧 `.env` 含 `HOST=0.0.0.0`+admin、Docker 未传密码 → 启动即退出）；"仅 token 鉴权"配置方式（`AUTH_PASSWORD=` 空 + `AUTH_TOKEN`）
@@ -88,6 +88,17 @@
 - 状态：CONFIRMED（静态）
 - 来源：`frontend/src/services/terminalService.ts:25`
 - 下一步：守卫对 `VITE_WS_URL` 空值同样拒绝，需从文件删除
+
+### Pitfall: 手动 Stop 可能被判为 crashed（产品缺陷，范围外）
+- 现象：停止后、进程退出前若有输出，onExit 见到 status=running → 判 `crashed`，开了 autoRestart 会被拉起
+- 状态：CONFIRMED（静态阅读；/bin/sh 冒烟未触发）
+- 原因：`src/core/instance/instance-supervisor.ts:164-167` onData 无条件把 status 设回 `running`，覆盖 `stopProcess` 设的 `stopping`
+- 下一步：另起任务；真实 rwr_server 停服会打印日志，极可能触发
+
+### Pitfall: Windows 系统 tar 的 `-C` 非 ASCII 路径
+- 现象：bsdtar 窄字符 argv 按 ANSI 代码页转换，CJK 路径在 1252 下变 `??`（libarchive#2092）
+- 状态：HYPOTHESIS（审查依据上游 issue，未在 Windows 实跑）
+- 下一步：解压目标用 `cwd` 传而非 `-C`（已改）；cp4 CI 验证
 
 ### Pitfall: 仓库文件末尾无换行，追加内容粘行
 - 现象：`.gitignore` 变成 `.cursor//.cache/`，两条规则都失效
