@@ -59,12 +59,14 @@ squash/
 # 构建镜像
 docker build -t rwr-infra/squash .
 
-# 运行容器(登录默认开启;暴露端口前请务必修改密码——默认值 admin/admin 是公开的弱口令)
+# 运行容器。必须设置 AUTH_PASSWORD:镜像监听 0.0.0.0,而默认密码下服务器拒绝在非回环地址启动。
+# 生成一个随机密码并记下打印出的值——它就是登录密码。
+SQUASH_PASSWORD="$(openssl rand -hex 16)"; echo "squash password: $SQUASH_PASSWORD"
 docker run -d \
   --name squash \
   -p 3000:3000 \
   -e AUTH_USERNAME=admin \
-  -e AUTH_PASSWORD=change-me \
+  -e AUTH_PASSWORD="$SQUASH_PASSWORD" \
   -v squash-data:/app/config \
   -v squash-logs:/app/logs \
   rwr-infra/squash
@@ -76,7 +78,8 @@ docker run -d \
 
 与下方 [配置(`.env`)](#配置-env) 一节相同
 (`PORT`、`HOST`、`LOG_LEVEL`、`AUTH_USERNAME`、`AUTH_PASSWORD`、`AUTH_TOKEN`、`CORS_ORIGIN`)。
-镜像中 `SQUASH_STATIC_DIR` 默认为 `/app/frontend/dist`。将 `/app/config` 与
+镜像中 `HOST` 默认为 `0.0.0.0`(因此容器内不会回退到回环地址——没有非默认的 `AUTH_PASSWORD` 就拒绝启动),
+`SQUASH_STATIC_DIR` 默认为 `/app/frontend/dist`。将 `/app/config` 与
 `/app/logs` 挂载为数据卷以持久化实例配置和日志。
 
 ### 开发模式
@@ -110,7 +113,7 @@ cp .env.example .env
 | 变量 | 默认值 | 说明 |
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP 服务器端口 |
-| `HOST` | `0.0.0.0` | 绑定地址。**当使用默认凭据时,会回退为 `127.0.0.1`**,使解压即用的实例无法被网络访问——要暴露到网络,必须先设置真实凭据。 |
+| `HOST` | _(自动)_ | 绑定地址。未设置时:面板处于**弱保护**(密码为默认值 `admin`(不区分大小写)、为空白,或完全没有鉴权)则绑定 `127.0.0.1`,否则绑定 `0.0.0.0`。弱保护下显式设置非回环 `HOST`(如 `0.0.0.0`)会使服务器**拒绝启动**——请先设置强 `AUTH_PASSWORD`。回环地址(`127.x.x.x`、`localhost`、`::1`)始终允许。 |
 | `LOG_LEVEL` | `info` | Pino 日志级别 |
 | `AUTH_USERNAME` | `admin` | 登录用户名。登录**默认开启**(admin/admin);暴露服务器前请修改。 |
 | `AUTH_PASSWORD` | `admin` | 登录密码。 |
@@ -122,8 +125,9 @@ cp .env.example .env
 
 登录**默认开启**,凭据为 `admin` / `admin`。这是有意为之:解压即用的实例不应被
 第一个访问到该端口的人直接驱动。这两个默认值是公开的弱口令,因此**暴露服务器前请务必修改**——
-作为兜底,在默认凭据生效期间,服务器只绑定 `127.0.0.1`(见 `HOST`),根本无法被网络访问。
-默认凭据生效时,启动日志会打印一条警告。
+作为兜底,只要密码仍是 `admin`(无论未设置还是显式写入,例如直接复制了 `.env.example`),
+或完全没有配置鉴权,服务器就只监听回环地址:未设置 `HOST` 时回退为 `127.0.0.1`,
+显式设置非回环 `HOST` 则启动报错退出(见 `HOST`)。默认密码生效时,启动日志会打印一条警告。
 
 登录(`POST /api/auth/login`)会签发一个会话 token(有效期 7 天,保存在内存中——重启服务器会使会话失效)。
 前端将 token 存入 `localStorage`,并以 `Authorization: Bearer <token>` 形式发送
@@ -158,9 +162,8 @@ npm run package
 2. 启动:Windows 上双击 `start.bat`(或在终端里运行它);Linux/macOS 上运行 `./start.sh`。
    开箱即用,默认 `admin/admin` 登录(绑定 `127.0.0.1`,仅本机可访问)。打开
    `http://localhost:3000`。
-3. 如需暴露到网络:把 `.env.example` 复制为 `.env`(或编辑启动脚本),将
-   `AUTH_USERNAME` 和 `AUTH_PASSWORD` **同时**设置为强口令——只有设置了真实凭据,
-   服务器才会绑定 `0.0.0.0`。
+3. 如需暴露到网络:把 `.env.example` 复制为 `.env`,将 `AUTH_USERNAME` 和
+   `AUTH_PASSWORD` **同时**设置为强口令——只有密码不再是 `admin`,服务器才会绑定 `0.0.0.0`。
 
 `config/`(实例定义)和 `logs/`(按实例分文件的日志)会在首次运行时创建在发行包同级目录。
 

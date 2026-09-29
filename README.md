@@ -59,13 +59,15 @@ squash/
 # Build image
 docker build -t rwr-infra/squash .
 
-# Run container (login is enabled by default; CHANGE the password before
-# exposing the port — the defaults admin/admin are well-known)
+# Run container. AUTH_PASSWORD is REQUIRED: the image listens on 0.0.0.0, and the
+# server refuses to start on a non-loopback address with the default password.
+# Generate a random one and keep the printed value — it's your login password.
+SQUASH_PASSWORD="$(openssl rand -hex 16)"; echo "squash password: $SQUASH_PASSWORD"
 docker run -d \
   --name squash \
   -p 3000:3000 \
   -e AUTH_USERNAME=admin \
-  -e AUTH_PASSWORD=change-me \
+  -e AUTH_PASSWORD="$SQUASH_PASSWORD" \
   -v squash-data:/app/config \
   -v squash-logs:/app/logs \
   rwr-infra/squash
@@ -77,7 +79,9 @@ Then open `http://localhost:3000`.
 
 Same variables as the [Configuration](#configuration-env) section below
 (`PORT`, `HOST`, `LOG_LEVEL`, `AUTH_USERNAME`, `AUTH_PASSWORD`, `AUTH_TOKEN`, `CORS_ORIGIN`).
-In the image `SQUASH_STATIC_DIR` defaults to `/app/frontend/dist`. Mount `/app/config` and
+In the image `HOST` defaults to `0.0.0.0` (so the container never falls back to loopback —
+it refuses to start without a non-default `AUTH_PASSWORD`) and `SQUASH_STATIC_DIR` defaults
+to `/app/frontend/dist`. Mount `/app/config` and
 `/app/logs` as volumes to persist instance configs and logs.
 
 ### Development
@@ -111,7 +115,7 @@ Environment variables (all optional; settable via `.env` or the real environment
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP server port |
-| `HOST` | `0.0.0.0` | Bind address. **When the default credentials are in use, this falls back to `127.0.0.1`** so a freshly unpacked instance can't be reached from the network — set real credentials to expose it. |
+| `HOST` | _(auto)_ | Bind address. Unset: `127.0.0.1` while the panel is **weakly protected** (password is the default `admin` in any case, blank, or no auth at all), `0.0.0.0` otherwise. An explicit non-loopback `HOST` (e.g. `0.0.0.0`) while weakly protected makes the server **refuse to start** — set a strong `AUTH_PASSWORD` first. Loopback values (`127.x.x.x`, `localhost`, `::1`) are always allowed. |
 | `LOG_LEVEL` | `info` | Pino log level |
 | `AUTH_USERNAME` | `admin` | Login username. Login is enabled **by default** with `admin/admin`; change before exposing the server. |
 | `AUTH_PASSWORD` | `admin` | Login password. |
@@ -124,10 +128,12 @@ Environment variables (all optional; settable via `.env` or the real environment
 Login is **enabled by default** with the credentials `admin` / `admin`. This is
 deliberate: a freshly unpacked instance shouldn't be drivable by the first
 person to reach its port. The defaults are well-known weak values, so **change
-them before exposing the server** — and as a safety net, while the defaults are
-in effect the server binds to `127.0.0.1` only (see `HOST`), so it can't be
-reached from the network at all. The boot log prints a warning when the default
-credentials are active.
+them before exposing the server** — and as a safety net, while the password is
+`admin` (whether left unset or written explicitly, e.g. by copying `.env.example`)
+or no authentication is configured at all, the server only listens on loopback:
+an unset `HOST` falls back to `127.0.0.1`, and an explicit non-loopback `HOST`
+aborts startup with an error (see `HOST`). The boot log prints a warning when the
+default password is active.
 
 The login (`POST /api/auth/login`) issues a session token (7-day TTL, kept in
 memory — restarting the server invalidates sessions). The frontend stores the
@@ -165,9 +171,9 @@ from <https://nodejs.org/en/download>. No build tools are needed):
    Linux/macOS run `./start.sh`. It works out of the box with the default
    `admin/admin` login (bound to `127.0.0.1`, so only reachable locally). Open
    `http://localhost:3000`.
-3. To expose it on the network: copy `.env.example` to `.env` (or edit the
-   launcher) and set **both** `AUTH_USERNAME` and `AUTH_PASSWORD` to strong
-   values — the server binds to `0.0.0.0` only once real credentials are set.
+3. To expose it on the network: copy `.env.example` to `.env` and set **both**
+   `AUTH_USERNAME` and `AUTH_PASSWORD` to strong values — the server binds to
+   `0.0.0.0` only once the password is no longer `admin`.
 
 `config/` (instance definitions) and `logs/` (per-instance logs) are created
 next to the bundle on first run.

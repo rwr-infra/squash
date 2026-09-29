@@ -9,7 +9,8 @@ import { TerminalService } from './services/terminal-service.js';
 import { AuditService } from './services/audit-service.js';
 import { createHttpServer } from './api/http/http-server.js';
 import { createTerminalGateway } from './api/ws/terminal-gateway.js';
-import { isUsingDefaultCredentials } from './api/http/auth.js';
+import { isAuthEnabled, isWeaklyProtected } from './api/http/auth.js';
+import { resolveBindHost } from './app/bind-host.js';
 
 const logger = pino({
   name: 'rwr-terminal-proxy',
@@ -18,19 +19,30 @@ const logger = pino({
 });
 
 const PORT = Number(process.env.PORT ?? 3000);
-// On a default-credentials instance the only thing standing between the network
-// and the panel is admin/admin. Force loopback so it can't be reached remotely;
-// operators who want to expose the server must set AUTH_USERNAME/AUTH_PASSWORD
-// first. An explicit HOST=... still wins, so this never silently overrides a
-// deliberate binding choice.
-const HOST = process.env.HOST ?? (isUsingDefaultCredentials ? '127.0.0.1' : '0.0.0.0');
-if (isUsingDefaultCredentials && process.env.HOST === undefined) {
-  logger.warn(
-    'Binding to loopback only because default credentials (admin/admin) are in use. Set AUTH_USERNAME and AUTH_PASSWORD to expose the server on the network.'
-  );
-}
+// While the default password works (or there is no auth at all), whoever reaches
+// the port owns every managed server. Such an instance may only listen on
+// loopback: an unset HOST falls back to 127.0.0.1, and an explicit non-loopback
+// HOST is refused outright (see resolveBindHost).
+const bind = resolveBindHost(process.env.HOST, isWeaklyProtected);
+const weakReason = isAuthEnabled ? 'the default password (admin) is in use' : 'authentication is disabled';
 
 const main = async () => {
+  if (bind.kind === 'refuse') {
+    // fatal, not error: must stay visible even with LOG_LEVEL=error/fatal.
+    logger.fatal(
+      { host: bind.host },
+      `Refusing to listen on ${bind.host} because ${weakReason}. Set AUTH_USERNAME and a strong AUTH_PASSWORD (in .env or the environment) before exposing the server, or bind to 127.0.0.1.`
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (bind.forcedLoopback) {
+    logger.warn(
+      `Binding to loopback only because ${weakReason}. Set AUTH_USERNAME and a strong AUTH_PASSWORD to expose the server on the network.`
+    );
+  }
+  const HOST = bind.host;
+
   const app = await bootstrapApp();
   logger.info({ paths: app.paths }, 'Application bootstrap complete');
 

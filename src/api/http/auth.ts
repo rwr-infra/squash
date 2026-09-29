@@ -12,22 +12,27 @@ const DEFAULT_PASSWORD = 'admin';
 
 const username = process.env.AUTH_USERNAME ?? DEFAULT_USERNAME;
 const password = process.env.AUTH_PASSWORD ?? DEFAULT_PASSWORD;
-const usingDefaultCredentials =
-  process.env.AUTH_USERNAME === undefined || process.env.AUTH_PASSWORD === undefined;
 const staticToken = process.env.AUTH_TOKEN;
 
 // Username/password login is enabled when both credentials are configured.
 export const isLoginEnabled = Boolean(username && password);
 // Any auth at all (login flow OR a static bearer token) gates the API.
 export const isAuthEnabled = isLoginEnabled || Boolean(staticToken);
-// True when the operator hasn't configured either credential — i.e. the server
-// is relying on the well-known admin/admin default. Used to force-loopback
-// binding so a default-credentials instance can't be reached from the network.
-export const isUsingDefaultCredentials = usingDefaultCredentials;
+// True when login accepts the well-known default password (or a blank one).
+// Judged by VALUE, not by whether the variable is set: `cp .env.example .env`
+// writes AUTH_PASSWORD=admin explicitly, and that is exactly as guessable as
+// leaving it unset. Case and surrounding whitespace don't make it any stronger.
+const normalizedPassword = password.trim().toLowerCase();
+export const isUsingDefaultCredentials =
+  isLoginEnabled && (normalizedPassword === DEFAULT_PASSWORD || normalizedPassword === '');
+// True when anyone who reaches the port can get in: either the default password
+// works, or there is no authentication at all (login disabled via an empty
+// credential and no AUTH_TOKEN). src/index.ts refuses non-loopback binding then.
+export const isWeaklyProtected = !isAuthEnabled || isUsingDefaultCredentials;
 
-if (usingDefaultCredentials && isLoginEnabled) {
+if (isUsingDefaultCredentials) {
   pino({ name: 'auth' }).warn(
-    `Using default credentials (admin/admin). Set AUTH_USERNAME and AUTH_PASSWORD before exposing this server.`
+    `Using the default password (admin). Set AUTH_USERNAME and AUTH_PASSWORD before exposing this server.`
   );
 }
 
