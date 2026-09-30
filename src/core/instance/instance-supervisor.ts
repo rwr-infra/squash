@@ -57,7 +57,7 @@ const canStop = (status: InstanceStatus) => status === 'starting' || status === 
 
 // config/instances.json is loaded without schema validation, so a hand-edited
 // value that is not an in-range integer / a string counts as unset.
-const resolveStopTimeoutMs = (value: unknown) =>
+export const resolveStopTimeoutMs = (value: unknown) =>
   typeof value === 'number' && Number.isInteger(value) && value >= MIN_STOP_TIMEOUT_MS && value <= MAX_STOP_TIMEOUT_MS
     ? value
     : DEFAULT_STOP_TIMEOUT_MS;
@@ -110,12 +110,19 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   // this was written by *this* run's crash (older dumps are stale and ignored).
   let currentRunStartedAtMs = 0;
 
-  // Best-effort: a failed write (log dir removed, disk full) must not become an
-  // unhandled rejection that takes squash down.
-  const log = (line: string) =>
-    logWriter.writeLines([`[squash] ${line}`]).catch(() => {
-      /* ignore */
-    });
+  // Queued, so lines keep their order and onExit can wait for them: squash may
+  // exit right after an instance stops (shutdown), and the line saying why it
+  // was force-killed must not be lost. Best-effort: a failed write (log dir
+  // removed, disk full) must not become an unhandled rejection either.
+  let logQueue: Promise<void> = Promise.resolve();
+  const log = (line: string) => {
+    logQueue = logQueue.then(() =>
+      logWriter.writeLines([`[squash] ${line}`]).catch(() => {
+        /* ignore */
+      })
+    );
+    return logQueue;
+  };
 
   const clearTimer = (timer: NodeJS.Timeout | undefined) => {
     if (timer) {
@@ -246,6 +253,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
         // A failed log write must not keep the status from settling — that
         // would leave the instance `stopping` forever.
       }
+      await logQueue;
       // Again: a stop()/dispose() during the await may have armed a new one.
       clearTimer(stopTimer);
       stopTimer = undefined;
