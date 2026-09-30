@@ -1,4 +1,4 @@
-import type { InstanceConfig, InstanceRuntime } from '../core/instance/instance-types.js';
+import type { InstanceConfig, InstanceRuntime, StopOptions } from '../core/instance/instance-types.js';
 import type { InstanceRegistry } from '../core/instance/instance-registry.js';
 import type { InstanceConfigStore } from '../core/config/instance-config-store.js';
 import { createInstanceSupervisor } from '../core/instance/instance-supervisor.js';
@@ -34,7 +34,7 @@ export class InstanceService {
 
     // Rebuild the supervisor: it captures config (executable/cwd/args/logDir) at
     // construction, so the only correct way to apply changes is a fresh one.
-    this.registry.getSupervisor(config.id)?.dispose();
+    await this.registry.getSupervisor(config.id)?.dispose();
     const supervisor = await createInstanceSupervisor(config);
     await this.configStore.save(config);
     await this.registry.register(config, supervisor);
@@ -68,13 +68,13 @@ export class InstanceService {
     return supervisor.getRuntime();
   }
 
-  async stopInstance(id: string): Promise<InstanceRuntime | undefined> {
+  async stopInstance(id: string, options?: StopOptions): Promise<InstanceRuntime | undefined> {
     const supervisor = this.registry.getSupervisor(id);
     if (!supervisor) {
       return undefined;
     }
 
-    supervisor.stop();
+    supervisor.stop(options);
     return supervisor.getRuntime();
   }
 
@@ -94,7 +94,7 @@ export class InstanceService {
       throw new Error(`Cannot delete running instance ${id}`);
     }
 
-    this.registry.getSupervisor(id)?.dispose();
+    await this.registry.getSupervisor(id)?.dispose();
     const deleted = await this.configStore.delete(id);
     if (deleted) {
       await this.registry.unregister(id);

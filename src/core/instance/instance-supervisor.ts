@@ -9,7 +9,8 @@ import type {
   InstanceConfig,
   InstanceRuntime,
   InstanceStatus,
-  InstanceSupervisor
+  InstanceSupervisor,
+  StopOptions
 } from './instance-types.js';
 
 const DEFAULT_COLS = 120;
@@ -22,6 +23,15 @@ const MAX_RESTART_DELAY_MS = 60_000;
 // Successful uptime past this window means the crash loop is over → reset counter.
 const RESET_AFTER_MS = 60_000;
 const WATCHDOG_INTERVAL_MS = 5000;
+const DEFAULT_STOP_TIMEOUT_MS = 15_000;
+const MIN_STOP_TIMEOUT_MS = 1000;
+const MAX_STOP_TIMEOUT_MS = 600_000;
+// How much longer than stopTimeoutMs restart() waits for the old process
+// before giving up (a force-kill that never produced an exit).
+const RESTART_EXIT_GRACE_MS = 5000;
+// Stop command lines go out this far apart, so a server can print its prompt
+// ("Exit requested") before the next line — the Enter it waits for — arrives.
+const STOP_COMMAND_LINE_GAP_MS = 1000;
 const MAX_CAPTURE_MS = 10_000;
 // Recent raw output (incl. ANSI) replayed to terminals that connect after the
 // process has already printed — e.g. a startup burst that finished before the
@@ -45,16 +55,39 @@ const markRuntime = (runtime: InstanceRuntime, changes: Partial<InstanceRuntime>
 });
 
 const canStart = (status: InstanceStatus) => status === 'stopped' || status === 'crashed';
-const canStop = (status: InstanceStatus) => status === 'starting' || status === 'running';
+// Stop while already `stopping` is a no-op, or a force stop when asked for.
+const canStop = (status: InstanceStatus) => status === 'starting' || status === 'running' || status === 'stopping';
+
+// config/instances.json is loaded without schema validation, so a hand-edited
+// value that is not an in-range integer / a string counts as unset.
+export const resolveStopTimeoutMs = (value: unknown) =>
+  typeof value === 'number' && Number.isInteger(value) && value >= MIN_STOP_TIMEOUT_MS && value <= MAX_STOP_TIMEOUT_MS
+    ? value
+    : DEFAULT_STOP_TIMEOUT_MS;
+// One command per line. A blank line (after the first command) sends a bare
+// Enter: rwr_server, for one, answers `quit` with "Exit requested" and exits
+// only on the next Enter. Leading blank lines are dropped; an all-blank value
+// counts as unset.
+const parseStopCommands = (value: unknown): readonly string[] => {
+  if (typeof value !== 'string') return [];
+  const lines = value.split(/\r?\n|\r/).map((line) => line.trim());
+  const first = lines.findIndex((line) => line.length > 0);
+  return first === -1 ? [] : lines.slice(first);
+};
 
 export const createInstanceSupervisor = async (config: InstanceConfig): Promise<InstanceSupervisor> => {
   const parser = createOutputParser();
   const logWriter = await createInstanceLogWriter(toInstanceLogFile(config.logDir, config.id));
   const restartDelayMs = config.restartDelayMs ?? DEFAULT_RESTART_DELAY_MS;
   const watchdogEnabled = isWindows && config.autoRestart === true;
+  const stopTimeoutMs = resolveStopTimeoutMs(config.stopTimeoutMs);
+  const stopCommands = parseStopCommands(config.stopCommand);
 
   let runtime = createRuntime(config.id, 'stopped');
   let processRef: PtyProcess | undefined;
+  // Settles once processRef's onExit has run (status updated, processRef
+  // cleared). Only meaningful while processRef is set — see waitForExit().
+  let processExit: Promise<void> = Promise.resolve();
   // Last size a viewer asked for. Every spawn uses it, so a restart (manual or
   // automatic, watched or not) keeps the browser's dimensions.
   let ptySize: { readonly cols: number; readonly rows: number } = { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
@@ -69,6 +102,18 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   };
 
   let restartAttempts = 0;
+  // Set by dispose(): this supervisor is being discarded (edit/delete/squash
+  // shutdown) and must never spawn again.
+  let disposed = false;
+  // Bumped by every stop()/dispose(): a restart() waiting for the old process
+  // to exit must not start a new one if someone asked to stop meanwhile.
+  let stopRequests = 0;
+  // A restart() in progress; concurrent calls (two tabs, two users) join it
+  // instead of racing each other to start().
+  let restartInFlight: Promise<InstanceRuntime> | undefined;
+  let stopTimer: NodeJS.Timeout | undefined;
+  // The stop command lines still to be sent.
+  let stopLineTimers: NodeJS.Timeout[] = [];
   let restartTimer: NodeJS.Timeout | undefined;
   let resetTimer: NodeJS.Timeout | undefined;
   let watchdogTimer: NodeJS.Timeout | undefined;
@@ -76,7 +121,19 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   // this was written by *this* run's crash (older dumps are stale and ignored).
   let currentRunStartedAtMs = 0;
 
-  const log = (line: string) => logWriter.writeLines([`[squash] ${line}`]);
+  // Queued, so lines keep their order and onExit can wait for them: squash may
+  // exit right after an instance stops (shutdown), and the line saying why it
+  // was force-killed must not be lost. Best-effort: a failed write (log dir
+  // removed, disk full) must not become an unhandled rejection either.
+  let logQueue: Promise<void> = Promise.resolve();
+  const log = (line: string) => {
+    logQueue = logQueue.then(() =>
+      logWriter.writeLines([`[squash] ${line}`]).catch(() => {
+        /* ignore */
+      })
+    );
+    return logQueue;
+  };
 
   const clearTimer = (timer: NodeJS.Timeout | undefined) => {
     if (timer) {
@@ -89,6 +146,17 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       clearInterval(watchdogTimer);
       watchdogTimer = undefined;
     }
+  };
+
+  const dropPendingStopLines = () => {
+    stopLineTimers.forEach(clearTimer);
+    stopLineTimers = [];
+  };
+
+  const clearStopTimers = () => {
+    clearTimer(stopTimer);
+    stopTimer = undefined;
+    dropPendingStopLines();
   };
 
   const clearRestartState = () => {
@@ -117,14 +185,14 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       if (crashed && processRef && runtime.status === 'running') {
         await log('crash detected (fresh rwr_crashdump.dmp) — instance is hanging behind a dialog; force-killing process tree');
         // Force-kill triggers onExit → crashed → scheduleRestart.
-        processRef.kill();
+        processRef.kill('force');
       }
     }, WATCHDOG_INTERVAL_MS);
   };
 
   const scheduleRestart = () => {
     clearTimer(restartTimer);
-    if (!config.autoRestart) {
+    if (!config.autoRestart || disposed) {
       return;
     }
     if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
@@ -144,13 +212,17 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     }, delay);
   };
 
-  const bindProcessEvents = (ptyProcess: PtyProcess) => {
-    // Guard against a stale process: a manual restart() force-kills the current
-    // process and starts a new one synchronously, but `taskkill /T /F` reaps a
-    // hung (e.g. WER-stuck) process asynchronously — so the old process's
-    // onData/onExit can fire *after* the replacement is already running. Only
-    // the process that is still `processRef` may mutate shared runtime state.
+  // Returns a promise that settles once this process's onExit has been handled.
+  const bindProcessEvents = (ptyProcess: PtyProcess): Promise<void> => {
+    // Guard against a stale process: only the process that is still
+    // `processRef` may mutate shared runtime state. restart() now waits for the
+    // old process's onExit before spawning, so this should never trigger; it
+    // stays as a backstop against a late onData/onExit from a replaced process.
     const isCurrent = () => processRef === ptyProcess;
+    let resolveExit = () => {};
+    const exited = new Promise<void>((resolve) => {
+      resolveExit = resolve;
+    });
 
     ptyProcess.onData(async (chunk) => {
       if (!isCurrent()) {
@@ -172,7 +244,12 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       outputBuffer = (outputBuffer + chunk).slice(-OUTPUT_BUFFER_LIMIT);
 
       const lines = parser.push(chunk);
-      await logWriter.writeLines(lines);
+      try {
+        await logWriter.writeLines(lines);
+      } catch {
+        // Keep relaying output: a failed log write must not become an
+        // unhandled rejection that takes squash down.
+      }
 
       for (const listener of dataListeners) {
         listener(chunk);
@@ -183,14 +260,23 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       if (!isCurrent()) {
         // A process we already replaced finally exited — ignore it so it can't
         // clobber the new process's status to `crashed` or null out processRef.
+        resolveExit();
         return;
       }
       stopWatchdog();
       clearTimer(resetTimer);
       resetTimer = undefined;
+      clearStopTimers();
 
-      const pending = parser.flush();
-      await logWriter.writeLines(pending);
+      try {
+        await logWriter.writeLines(parser.flush());
+      } catch {
+        // A failed log write must not keep the status from settling — that
+        // would leave the instance `stopping` forever.
+      }
+      await logQueue;
+      // Again: a stop()/dispose() during the await may have armed a new one.
+      clearStopTimers();
 
       const userStopped = runtime.status === 'stopping';
       // A clean exit (code 0, no signal) is a normal completion — e.g. a one-shot
@@ -204,14 +290,53 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       });
       processRef = undefined;
       notifyStatus();
+      resolveExit();
 
       if (!userStopped && !cleanExit) {
         scheduleRestart();
       }
     });
+
+    return exited;
+  };
+
+  const waitForExit = () => (processRef ? processExit : Promise.resolve());
+
+  const restart = async () => {
+    assertInstanceState(!disposed, 'Instance has been disposed');
+    clearRestartState();
+    restartAttempts = 0;
+    stopWatchdog();
+
+    if (processRef) {
+      // The new process starts only after the old one has exited — never both
+      // at once (ports, save files). A stop already under way is waited out,
+      // timeout and force-kill included.
+      const requests = stopRequests;
+      if (runtime.status !== 'stopping') {
+        beginStop(processRef);
+      }
+      let giveUp: NodeJS.Timeout | undefined;
+      const exited = await Promise.race([
+        waitForExit().then(() => true),
+        new Promise<boolean>((resolve) => {
+          giveUp = setTimeout(() => resolve(false), stopTimeoutMs + RESTART_EXIT_GRACE_MS);
+        })
+      ]);
+      clearTimer(giveUp);
+      assertInstanceState(exited, 'Restart failed: the process did not exit; it is still stopping');
+      assertInstanceState(stopRequests === requests, 'Restart cancelled: the instance was stopped while restarting');
+    } else if (!canStart(runtime.status)) {
+      // No live process to wait for: nothing to stop.
+      runtime = markRuntime(runtime, { status: 'stopped', stoppedAt: now() });
+    }
+
+    runtime = markRuntime(runtime, { restartCount: 0 });
+    return start();
   };
 
   const start = async () => {
+    assertInstanceState(!disposed, 'Instance has been disposed');
     assertInstanceState(canStart(runtime.status), `Cannot start instance from state ${runtime.status}`);
     outputBuffer = '';
     currentRunStartedAtMs = Date.now();
@@ -250,7 +375,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     }
 
     processRef = ptyProcess;
-    bindProcessEvents(processRef);
+    processExit = bindProcessEvents(processRef);
     runtime = markRuntime(runtime, {
       status: 'running',
       pid: processRef.pid
@@ -272,23 +397,82 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     return runtime;
   };
 
-  const stopProcess = () => {
+  // Ask the live process to exit — its stop command(s), else the platform's
+  // graceful kill — and force-kill it if it is still running after
+  // stopTimeoutMs. onExit settles the status.
+  const beginStop = (ptyProcess: PtyProcess) => {
+    runtime = markRuntime(runtime, { status: 'stopping', restartCount: 0 });
+    notifyStatus();
+
+    clearStopTimers();
+    stopTimer = setTimeout(() => {
+      stopTimer = undefined;
+      if (processRef !== ptyProcess) {
+        return;
+      }
+      void log(`stop timed out after ${stopTimeoutMs}ms; force-killing`);
+      // No more console input for a process that is being killed.
+      dropPendingStopLines();
+      ptyProcess.kill('force');
+    }, stopTimeoutMs);
+
+    if (stopCommands.length > 0) {
+      void log(`stopping: sending stop command; force-kill after ${stopTimeoutMs}ms`);
+      const [first, ...rest] = stopCommands;
+      if (rest.length * STOP_COMMAND_LINE_GAP_MS >= stopTimeoutMs) {
+        void log(
+          `stop command has ${stopCommands.length} lines sent ${STOP_COMMAND_LINE_GAP_MS}ms apart, but the force-kill comes after ${stopTimeoutMs}ms; raise stopTimeoutMs`
+        );
+      }
+      try {
+        ptyProcess.write(`${first}\r`);
+        stopLineTimers = rest.map((command, i) =>
+          setTimeout(() => {
+            if (processRef !== ptyProcess) {
+              return;
+            }
+            try {
+              ptyProcess.write(`${command}\r`);
+            } catch {
+              // On its way out; the stop timer still has the last word.
+            }
+          }, (i + 1) * STOP_COMMAND_LINE_GAP_MS)
+        );
+        return;
+      } catch (err) {
+        void log(`stop command failed (${err instanceof Error ? err.message : String(err)}); killing instead`);
+      }
+    } else {
+      void log(`stopping: ${isWindows ? 'taskkill' : 'SIGHUP'}; force-kill after ${stopTimeoutMs}ms`);
+    }
+    ptyProcess.kill('graceful');
+  };
+
+  const stopProcess = (options: StopOptions = {}) => {
     assertInstanceState(canStop(runtime.status), `Cannot stop instance from state ${runtime.status}`);
+    stopRequests += 1;
     clearRestartState();
     restartAttempts = 0;
     stopWatchdog();
-    runtime = markRuntime(runtime, { status: 'stopping', restartCount: 0 });
-    notifyStatus();
     // If there is no live process to kill (e.g. spawn failed leaving status in
     // 'starting'/'running' with processRef === undefined), onExit will never fire
     // and we'd be stuck in 'stopping' forever — unblocking stop()/edit. Flip
     // straight to 'stopped' in that case.
-    if (processRef) {
-      processRef.kill();
-    } else {
-      runtime = markRuntime(runtime, { status: 'stopped', stoppedAt: now() });
+    if (!processRef) {
+      clearStopTimers();
+      runtime = markRuntime(runtime, { status: 'stopped', stoppedAt: now(), restartCount: 0 });
       notifyStatus();
+      return;
     }
+    if (runtime.status === 'stopping') {
+      if (options.force) {
+        void log('force stop requested; force-killing');
+        dropPendingStopLines();
+        processRef.kill('force');
+      }
+      return;
+    }
+    beginStop(processRef);
   };
 
   return {
@@ -296,26 +480,14 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     async start() {
       return start();
     },
-    stop() {
-      stopProcess();
+    stop(options) {
+      stopProcess(options);
     },
-    async restart() {
-      clearRestartState();
-      restartAttempts = 0;
-      stopWatchdog();
-
-      if (canStop(runtime.status)) {
-        runtime = markRuntime(runtime, { status: 'stopping' });
-        processRef?.kill();
-      }
-
-      runtime = markRuntime(runtime, {
-        status: 'stopped',
-        pid: undefined,
-        restartCount: 0
+    restart() {
+      restartInFlight ??= restart().finally(() => {
+        restartInFlight = undefined;
       });
-
-      return start();
+      return restartInFlight;
     },
     sendCommand(command) {
       assertInstanceState(runtime.status === 'running', 'Cannot send command unless instance is running');
@@ -371,14 +543,17 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       statusListeners.add(listener);
       return () => statusListeners.delete(listener);
     },
-    dispose() {
+    async dispose() {
+      disposed = true;
+      stopRequests += 1;
       clearRestartState();
       restartAttempts = 0;
       stopWatchdog();
-      if (processRef && (runtime.status === 'running' || runtime.status === 'starting')) {
-        runtime = markRuntime(runtime, { status: 'stopping' });
-        processRef.kill();
+      // A stop already under way keeps its own timer.
+      if (processRef && runtime.status !== 'stopping') {
+        beginStop(processRef);
       }
+      await waitForExit();
     }
   };
 };

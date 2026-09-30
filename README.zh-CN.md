@@ -19,6 +19,7 @@
 - **多实例管理**——以独立工作目录运行多个游戏服务器实例
 - **实时终端流**——基于 WebSocket + xterm.js 的终端
 - **实例生命周期管理**——启动、停止、重启、删除实例
+- **有上限的优雅停止**——按实例配置控制台停止命令(如 `quit`)、停止超时后强制结束、重启会等旧进程退出、squash 退出前先停掉所有实例(见[停止](#停止))
 - **崩溃自动重启**——按实例可选开启,带指数退避、最大重试次数上限,以及在稳定运行一段时间后重置计数器的冷却机制
 - **Windows 崩溃弹窗恢复**——检测引擎生成的 `rwr_crashdump.dmp`,强制结束卡在「未处理异常」弹窗后面的进程,使自动重启仍能触发
 - **带时间戳的日志**——按实例分文件、按行缓冲输出的日志
@@ -54,7 +55,7 @@ squash/
 - **从源码运行:** [Node.js](https://nodejs.org/en/download) 24。CI 与发行包使用的确切版本
   固定在 [`.node-version`](.node-version) 中。
 - Docker——可选,用于容器化部署
-- CI 在 Linux、macOS、Windows 上用普通 shell 冒烟测试 PTY 往返;尚未用真实 `rwr_server` 验证,macOS 存在已知的 node-pty 问题(见「已知问题」)
+- CI 在 Linux、macOS、Windows 上用普通 shell 冒烟测试 PTY 往返;真实 `rwr_server` 已在 Windows Server 上人工验证过,Linux 尚未验证,macOS 存在已知的 node-pty 问题(见「已知问题」)
 
 ### Docker(推荐)
 
@@ -67,6 +68,7 @@ docker build -t rwr-infra/squash .
 SQUASH_PASSWORD="$(openssl rand -hex 16)"; echo "squash password: $SQUASH_PASSWORD"
 docker run -d \
   --name squash \
+  --stop-timeout 20 \
   -p 3000:3000 \
   -e AUTH_USERNAME=admin \
   -e AUTH_PASSWORD="$SQUASH_PASSWORD" \
@@ -76,6 +78,10 @@ docker run -d \
 ```
 
 然后打开 `http://localhost:3000`。
+
+`--stop-timeout 20` 不能省:`docker stop` 时 squash 会先停掉所有实例,最长需要各实例停止超时的最大值
+(默认 15 秒)再加 2 秒,而 Docker 默认只给 10 秒宽限,之后直接强杀全部进程。使用 Compose 时写
+`stop_grace_period: 20s`;如果配置了更长的停止超时,两者都要相应调大(见[停止](#停止))。
 
 ### Docker 环境变量
 
@@ -181,7 +187,7 @@ cp .env.example .env
    (所以不要放在 `C:\Program Files`)。Windows:右键 →「全部解压缩…」到例如 `C:\squash`。
    Linux/macOS:`mkdir squash && tar -xzf squash-<ver>-<platform>-<arch>.tar.gz -C squash`。
 3. **启动**:Windows 上双击 `start.bat`(启动失败时窗口会暂停,便于阅读错误);Linux/macOS 上运行
-   `./start.sh`。按 Ctrl+C 停止。使用默认的 `admin/admin` 登录时只监听 `127.0.0.1`。打开
+   `./start.sh`。按 Ctrl+C 或关闭窗口停止:squash 会先停掉所有运行中的实例(见[停止](#停止))。使用默认的 `admin/admin` 登录时只监听 `127.0.0.1`。打开
    `http://localhost:3000`。
 4. **如需暴露到网络**,用模板创建 `.env`(Windows 上 `copy .env.example .env`,其他平台
    `cp .env.example .env`——记事本可能会存成 `.env.txt`),将 `AUTH_USERNAME` 和 `AUTH_PASSWORD`
@@ -291,8 +297,8 @@ curl http://localhost:3000/api/instances
 | PUT | `/api/instances/:id` | 是 | 更新实例配置(必须处于 stopped/crashed 状态) |
 | DELETE | `/api/instances/:id` | 是 | 删除实例 |
 | POST | `/api/instances/:id/start` | 是 | 启动实例 |
-| POST | `/api/instances/:id/stop` | 是 | 停止实例 |
-| POST | `/api/instances/:id/restart` | 是 | 重启实例 |
+| POST | `/api/instances/:id/stop` | 是 | 停止实例;可选请求体 `{"force": true}` 会强制结束已处于 `stopping` 的实例(见[停止](#停止)) |
+| POST | `/api/instances/:id/restart` | 是 | 重启实例:等旧进程退出后再启动 |
 | POST | `/api/instances/:id/command` | 是 | 向实例的 stdin 发送命令 |
 | GET | `/api/instances/:id/logs/tail` | 是 | 拉取实例日志末尾 |
 | GET | `/api/audit` | 是 | 最近的审计日志条目(`?limit=`) |
@@ -342,8 +348,50 @@ squash 的处理方式是**检测崩溃转储文件**:引擎在崩溃时会把 `
 每隔几秒检查该文件;一旦发现一个**比本次启动更新**的转储,就强制结束卡死的进程树
 (`taskkill /T /F`,它能终结一个卡在 `MessageBox` 里的进程),然后自动重启。
 
-你也可以随时在 UI 上点 **「重启(Restart)」** 手动恢复——它用的是同一套强杀逻辑,
-无论弹窗是哪种类型都能把卡死的进程端掉再拉起。
+无论弹窗是哪种类型,你也可以随时手动恢复:**「停止(Stop)」**或**「重启(Restart)」**会用同样的
+`taskkill /T /F` 结束卡死的进程——没有配置停止命令的实例立即结束,配置了的在停止超时后结束;
+**「强制停止(Force stop)」**(实例处于 `stopping` 时的 Stop 按钮)则立即结束。
+
+## 停止
+
+一次停止——**Stop** 按钮、**Restart**,或 squash 自身关停——最终一定是进程退出、实例落到 `stopped`:
+
+1. squash 先请服务器自行退出:在控制台里输入该实例的**停止命令**;没有配置时用平台默认方式——
+   Linux/macOS 发送 SIGHUP,Windows 立即 `taskkill /T /F`(Windows 上没有更温和的信号)。
+2. 超过**停止超时**进程仍未退出,squash 就强制结束它及其启动的所有进程(向进程组发 SIGKILL;
+   Windows 上 `taskkill /T /F`),并在实例日志里写入 `[squash] stop timed out after <n>ms; force-killing`。
+
+按实例配置(实例表单,或创建/更新 API):
+
+| 字段 | 默认值 | 含义 |
+|------|--------|------|
+| `stopCommand` | 无 | 让服务器关闭的控制台命令,每行一条,逐条发送并回车,行与行之间间隔约 1 秒;第一条命令之后的空行只发送一次回车。留空 = 使用上面的平台默认方式。 |
+| `stopTimeoutMs` | `15000` | 等待进程退出的时长,超过后强制结束(1000–600000),从发送第一行命令时开始计算。 |
+
+**`rwr_server` 实例请把 `stopCommand` 设为 `quit` 加一个空行**——Windows 上也一样。`rwr_server` 收到 `quit`
+后回复 `Exit requested`,还要再收到一次回车才会退出,空行就是这次回车;只填 `quit` 时它会一直等到停止超时
+被强杀。完全不配置停止命令时,Windows 上的停止会立即强杀服务器,可能丢失自上次 `save_profiles` 以来的
+玩家进度——想先保存,就写三行:`save_profiles`、`quit`、一个空行。
+
+各行按固定时间表发送,每隔 1 秒一行,不会等服务器处理完上一行;停止超时从第一行开始计算,所以要比
+「每多一行 1 秒」宽裕得多(不够时 squash 会在日志里警告)。表单会在输入框下方显示将要发送的内容,
+包括结尾空行代表的那次回车。
+
+- **强制停止**:实例处于 `stopping` 时,Stop 按钮变为 **Force stop**(需二次确认),立即结束进程。
+  对应 API 是带 `{"force": true}` 的 `POST /api/instances/:id/stop`;`stopping` 中不带 force 的 Stop
+  什么都不做,所以双击或页面状态过期都不会打断正在进行的优雅关停。
+- **重启**走同样的停止流程,等旧进程退出后才启动新进程,不会出现新旧两个进程同时运行。实例处于
+  `stopping` 时 Restart 不可用;重启等待期间点 Stop 会取消这次重启。
+- **关停 squash**(Ctrl+C、关闭其窗口或终端、`docker stop`、SIGTERM)会以同样方式并行停止所有运行中的实例,
+  然后以退出码 0 退出,最长耗时为各实例 `stopTimeoutMs` 的最大值加 2 秒。第一次 Ctrl+C 之后隔 1 秒以上
+  再按一次,会强制结束剩下的实例并立即退出。Windows 上关闭控制台窗口时,系统只给约 5 秒就会结束 squash,
+  实例随控制台一起退出。
+- 放在反向代理后面时,**Restart** 请求会一直挂着,直到旧进程退出——最长为该实例的 `stopTimeoutMs`
+  加 5 秒。代理的读超时要大于这个值(nginx 的 `proxy_read_timeout` 默认 60 秒);否则页面可能报
+  重启失败,而服务器上的重启其实仍会完成。
+- `nohup ./start.sh` 不能让 squash 在 SSH 会话结束后继续运行——squash 会把挂断当作关停请求。请改用
+  `tmux`/`screen` 或服务管理器。systemd unit 需要 `KillMode=mixed`(默认的 `control-group` 会把 SIGTERM
+  直接发给各实例)以及不小于「最长停止超时 + 5 秒」的 `TimeoutStopSec=`。
 
 ## 自动重启
 
@@ -359,11 +407,10 @@ squash 的处理方式是**检测崩溃转储文件**:引擎在崩溃时会把 `
   `node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper`)。Linux 不受影响。
 - **macOS:用浏览器下载的发行包可能无法加载原生模块**——Gatekeeper 可能隔离仅 ad-hoc 签名的
   `pty.node` / `spawn-helper`。对解压后的目录清除该标记:`xattr -dr com.apple.quarantine <squash 目录>`。
-- **忽略 SIGHUP 的服务器会停在 `stopping`**:macOS/Linux 上 Stop 发送 SIGHUP(Windows 直接强制结束进程树)。
-  服务器若忽略该信号就不会退出,实例会一直显示 `stopping`,界面上无法停止或重启——在系统中结束该进程后即变为
-  `stopped`。计划加入停止超时与强制终止。
+- **Windows 上未配置 `stopCommand` 的停止就是立即强杀**:Windows 没有请控制台程序自行退出的信号,进程树会被
+  立即结束,未保存的状态可能丢失。请配置停止命令(`rwr_server` 用 `quit` 加一个空行,见[停止](#停止))。
 - **发行包未做代码签名**:Windows SmartScreen 可能在首次运行 `start.bat` 时给出警告。
-- **针对真实 `rwr_server` 的运行时验证**尚未在实际的游戏服务器二进制文件上进行过。
+- **针对真实 `rwr_server` 的运行时验证**只在 Windows Server 上人工做过;Linux 尚未用实际的游戏服务器二进制文件验证。
 
 ## 路线图
 

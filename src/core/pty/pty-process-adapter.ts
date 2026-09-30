@@ -48,6 +48,29 @@ const killProcessTree = (pid: number) => {
   });
 };
 
+/**
+ * The PTY child is a session leader (forkpty on Linux, posix_spawn with
+ * POSIX_SPAWN_SETSID on macOS), so its PID is also its process group ID:
+ * signalling -pid reaches whatever a wrapper script spawned, like `taskkill /T`
+ * does on Windows. Falls back to the PID alone if the group is already gone.
+ */
+const killProcessGroup = (pid: number) => {
+  // process.kill(-0) would signal squash's *own* process group, and -1 every
+  // process this user may signal.
+  if (pid <= 1) {
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+};
+
 const bindData = (ptyProcess: pty.IPty) => (listener: (chunk: string) => void) => {
   ptyProcess.onData(listener);
 };
@@ -82,11 +105,23 @@ export const createPtyProcess = (options: SpawnPtyOptions): PtyProcess => {
     resize: (cols, rows) => {
       ptyProcess.resize(cols, rows);
     },
-    kill: () => {
+    kill: (mode) => {
       if (isWindows) {
+        // Until ConPTY is ready the PID is the placeholder 0 (see `pid` above)
+        // and `taskkill /PID 0` does nothing; node-pty queues its own kill
+        // until then.
+        if (ptyProcess.pid <= 0) {
+          ptyProcess.kill();
+          return;
+        }
         killProcessTree(ptyProcess.pid);
         return;
       }
+      if (mode === 'force') {
+        killProcessGroup(ptyProcess.pid);
+        return;
+      }
+      // node-pty's default: SIGHUP to the child only (errors swallowed).
       ptyProcess.kill();
     },
     onData: bindData(ptyProcess),

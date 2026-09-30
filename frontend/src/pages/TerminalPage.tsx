@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Button, Tag, Space, message, Spin, Input, Grid, ConfigProvider, theme } from 'antd';
+import { Button, Tag, Space, message, Spin, Input, Grid, ConfigProvider, Popconfirm, theme } from 'antd';
 import { ArrowLeftOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, ExpandOutlined } from '@ant-design/icons';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { connectTerminal } from '../services/terminalService';
 import { fetchInstance, startInstance, stopInstance, restartInstance, sendCommand } from '../services/apiService';
-import type { InstanceStatus } from '../services/apiService';
+import type { InstanceRuntime, InstanceStatus } from '../services/apiService';
 
 const statusColor: Record<InstanceStatus, string> = {
   stopped: 'default',
@@ -26,7 +26,25 @@ const TerminalPage = () => {
   const connectionRef = useRef<ReturnType<typeof connectTerminal> | null>(null);
 
   const [status, setStatus] = useState<InstanceStatus>('stopped');
+  // A second click while the Stop request is in flight would reach the
+  // server as a Force stop; Start and Restart wait for it too.
+  const [stopPending, setStopPending] = useState(false);
+  // Restart waits for the old process to exit (up to its stop timeout) before
+  // it responds; the status meanwhile reads `stopping`, not `starting`.
+  const [restartPending, setRestartPending] = useState(false);
   const [pid, setPid] = useState<number | undefined>();
+  // Bumped by every runtime push over the WebSocket. The server pushes each
+  // state change before it answers the HTTP request that caused it, so the WS
+  // is the source of truth: an action's response only updates the page if no
+  // push arrived while it was in flight (e.g. the WS is down). Otherwise a
+  // late Stop response could put a page that has since seen `running` back to
+  // `stopping` with the old PID.
+  const runtimeRev = useRef(0);
+  const applyResponse = (revAtRequest: number, runtime: InstanceRuntime) => {
+    if (runtimeRev.current !== revAtRequest) return;
+    setStatus(runtime.status);
+    setPid(runtime.pid);
+  };
   const [loading, setLoading] = useState(true);
   const [quickCmd, setQuickCmd] = useState('');
 
@@ -80,10 +98,11 @@ const TerminalPage = () => {
       onOpen: sendSize,
       onOutput: (data) => terminal.write(data),
       onRuntime: ({ status: s, pid: p }) => {
+        runtimeRev.current += 1;
         setStatus(s as InstanceStatus);
         setPid(p);
-        // Sent on every `running` push, not only on a change: a restart from
-        // running reports running → running, with nothing in between.
+        // Sent on every `running` push, not only on a change: on Windows a
+        // start reports running twice (the PID arrives with the first output).
         if (s === 'running') sendSize();
       },
       onError: (msg) => message.error({ content: msg, duration: 5 }),
@@ -131,35 +150,41 @@ const TerminalPage = () => {
   const handleResize = () => fitAddonRef.current?.fit();
 
   const handleStart = async () => {
+    const rev = runtimeRev.current;
     try {
       const runtime = await startInstance(instanceId);
-      setStatus(runtime.status);
-      setPid(runtime.pid);
+      applyResponse(rev, runtime);
       message.success('Instance started');
     } catch (e) {
       message.error((e as Error).message);
     }
   };
 
-  const handleStop = async () => {
+  const handleStop = async (force: boolean) => {
+    setStopPending(true);
+    const rev = runtimeRev.current;
     try {
-      const runtime = await stopInstance(instanceId);
-      setStatus(runtime.status);
-      setPid(runtime.pid);
-      message.success('Instance stopped');
+      const runtime = await stopInstance(instanceId, { force });
+      applyResponse(rev, runtime);
+      message.success(force ? 'Force-stopping instance' : runtime.status === 'stopped' ? 'Instance stopped' : 'Stopping instance');
     } catch (e) {
       message.error((e as Error).message);
+    } finally {
+      setStopPending(false);
     }
   };
 
   const handleRestart = async () => {
+    setRestartPending(true);
+    const rev = runtimeRev.current;
     try {
       const runtime = await restartInstance(instanceId);
-      setStatus(runtime.status);
-      setPid(runtime.pid);
-      message.success('Instance restarting');
+      applyResponse(rev, runtime);
+      message.success('Instance restarted');
     } catch (e) {
       message.error((e as Error).message);
+    } finally {
+      setRestartPending(false);
     }
   };
 
@@ -178,6 +203,10 @@ const TerminalPage = () => {
   };
 
   const running = status === 'running' || status === 'starting';
+  // Stop stays enabled while a graceful stop is pending: it then asks for a
+  // force kill. Kept apart from `running`, which also drives the stopped banner
+  // and the command input.
+  const stopping = status === 'stopping';
 
   return (
     <ConfigProvider theme={{ algorithm: theme.darkAlgorithm }}>
@@ -188,9 +217,14 @@ const TerminalPage = () => {
         <Tag color={statusColor[status]} style={{ marginInlineEnd: 0 }}>{status.toUpperCase()}</Tag>
         {pid && <span style={{ color: '#888', fontSize: 12 }}>PID {pid}</span>}
         <Space style={{ marginLeft: 'auto' }} wrap>
-          <Button size="small" icon={<PlayCircleOutlined />} disabled={running} onClick={handleStart} title="Start">{isMobile ? null : 'Start'}</Button>
-          <Button size="small" icon={<StopOutlined />} disabled={!running} onClick={handleStop} title="Stop">{isMobile ? null : 'Stop'}</Button>
-          <Button size="small" icon={<SyncOutlined />} onClick={handleRestart} loading={status === 'starting'} title="Restart">{isMobile ? null : 'Restart'}</Button>
+          <Button size="small" icon={<PlayCircleOutlined />} disabled={running || stopping || stopPending} onClick={handleStart} title="Start">{isMobile ? null : 'Start'}</Button>
+          {/* Force stop asks first: a double click on Stop would otherwise land
+              on it, since Stop turns into Force stop as soon as the request
+              returns. */}
+          <Popconfirm title="Force stop?" description="Kills the server now instead of waiting for it to shut down. Unsaved progress may be lost." disabled={!stopping} onConfirm={() => handleStop(true)} okText="Force stop" okButtonProps={{ danger: true }}>
+            <Button size="small" icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => handleStop(false)} title={stopping ? 'Force stop' : 'Stop'}>{isMobile ? null : stopping ? 'Force stop' : 'Stop'}</Button>
+          </Popconfirm>
+          <Button size="small" icon={<SyncOutlined />} disabled={(stopping && !restartPending) || stopPending} onClick={handleRestart} loading={restartPending} title="Restart">{isMobile ? null : 'Restart'}</Button>
           <Button size="small" icon={<ExpandOutlined />} onClick={handleResize} title="Fit">{isMobile ? null : 'Fit'}</Button>
         </Space>
       </div>
@@ -204,7 +238,7 @@ const TerminalPage = () => {
           {!running && (
             <div style={{ padding: '8px 12px', background: '#3a2d2d', color: '#e0c0c0', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
               <span>Instance is {status}. Showing the last output below.</span>
-              <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={handleStart}>Start</Button>
+              <Button size="small" type="primary" icon={<PlayCircleOutlined />} disabled={stopping || stopPending} onClick={handleStart}>Start</Button>
             </div>
           )}
           <div ref={containerRef} style={{ flex: 1, padding: 8, minHeight: 0 }} />

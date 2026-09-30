@@ -21,7 +21,10 @@ export type PtyProcess = {
   readonly pid: number;
   write: (data: string) => void;
   resize: (cols: number, rows: number) => void;
-  kill: () => void;
+  // 'graceful' asks the process to exit (POSIX: SIGHUP to the process);
+  // 'force' ends it and everything it spawned (POSIX: SIGKILL to its process
+  // group). Windows has no graceful signal: both are `taskkill /T /F`.
+  kill: (mode: 'graceful' | 'force') => void;
   onData: (listener: (chunk: string) => void) => void;
   onExit: (listener: (event: PtyExitInfo) => void) => void;
 };

@@ -19,6 +19,7 @@ All **Running With Rifles** related content, assets, and trademarks—including 
 - **Multi-instance management** — run multiple game server instances with separate working directories
 - **Real-time terminal streaming** — WebSocket-based terminal with xterm.js
 - **Instance lifecycle management** — start, stop, restart, delete instances
+- **Bounded, graceful stops** — a per-instance console stop command (e.g. `quit`), a force-kill after a stop timeout, restarts that wait for the old process, and squash stopping every instance before it exits (see [Stopping](#stopping))
 - **Crash auto-restart** — opt-in per instance, with exponential backoff, a max-attempt cap, and a cooldown that resets the counter after stable uptime
 - **Windows crash-dialog recovery** — detects the engine's `rwr_crashdump.dmp` and force-kills a process hung behind the "unhandled exception" dialog, so auto-restart still fires
 - **Timestamped logging** — per-instance log files with line-buffered output
@@ -54,7 +55,7 @@ squash/
 - **From source:** [Node.js](https://nodejs.org/en/download) 24. The exact version that CI
   and the bundles use is pinned in [`.node-version`](.node-version).
 - Docker — optional, for containerized deployment
-- PTY round-trips are smoke-tested in CI on Linux, macOS and Windows with a plain shell; a real `rwr_server` hasn't been validated yet, and macOS has known node-pty quirks (see Known Issues)
+- PTY round-trips are smoke-tested in CI on Linux, macOS and Windows with a plain shell; a real `rwr_server` has been run by hand on Windows Server but not yet on Linux, and macOS has known node-pty quirks (see Known Issues)
 
 ### Docker (Recommended)
 
@@ -68,6 +69,7 @@ docker build -t rwr-infra/squash .
 SQUASH_PASSWORD="$(openssl rand -hex 16)"; echo "squash password: $SQUASH_PASSWORD"
 docker run -d \
   --name squash \
+  --stop-timeout 20 \
   -p 3000:3000 \
   -e AUTH_USERNAME=admin \
   -e AUTH_PASSWORD="$SQUASH_PASSWORD" \
@@ -77,6 +79,12 @@ docker run -d \
 ```
 
 Then open `http://localhost:3000`.
+
+`--stop-timeout 20` matters: on `docker stop` squash first stops its instances, which
+takes up to the longest instance stop timeout (default 15s) plus 2s, and Docker's default
+grace period is only 10s before it kills everything. With Compose use
+`stop_grace_period: 20s`; raise both if you configure longer stop timeouts (see
+[Stopping](#stopping)).
 
 ### Docker Environment Variables
 
@@ -198,7 +206,8 @@ built with `npm run package` on that platform, but aren't released or tested in 
    `C:\squash`. Linux/macOS: `mkdir squash && tar -xzf squash-<ver>-<platform>-<arch>.tar.gz -C squash`.
 3. **Start** it: on Windows double-click `start.bat` (if startup fails, the window
    pauses so the error can be read); on Linux/macOS run `./start.sh`. Stop it with
-   Ctrl+C. With the default `admin/admin` login it listens on `127.0.0.1` only. Open
+   Ctrl+C or by closing the window: squash first stops every running instance (see
+   [Stopping](#stopping)). With the default `admin/admin` login it listens on `127.0.0.1` only. Open
    `http://localhost:3000`.
 4. **To expose it on the network**, create `.env` from the template (`copy .env.example .env`
    on Windows, `cp .env.example .env` elsewhere — Notepad may save it as `.env.txt`),
@@ -320,8 +329,8 @@ All backend endpoints are served under the `/api` prefix; every other path is th
 | PUT | `/api/instances/:id` | yes | Update instance config (must be stopped/crashed) |
 | DELETE | `/api/instances/:id` | yes | Delete instance |
 | POST | `/api/instances/:id/start` | yes | Start instance |
-| POST | `/api/instances/:id/stop` | yes | Stop instance |
-| POST | `/api/instances/:id/restart` | yes | Restart instance |
+| POST | `/api/instances/:id/stop` | yes | Stop instance; optional body `{"force": true}` kills an instance that is already `stopping` (see [Stopping](#stopping)) |
+| POST | `/api/instances/:id/restart` | yes | Restart instance: waits for the old process to exit, then starts it again |
 | POST | `/api/instances/:id/command` | yes | Send a command to the instance's stdin |
 | GET | `/api/instances/:id/logs/tail` | yes | Tail instance logs |
 | GET | `/api/audit` | yes | Recent audit-log entries (`?limit=`) |
@@ -375,8 +384,64 @@ current run appears, squash force-kills the hung process tree (`taskkill /T /F`,
 which terminates a process even while it's stuck in a `MessageBox`) and then
 auto-restarts it.
 
-You can also always recover manually by clicking **Restart** in the UI — it
-force-kills the hung process the same way, regardless of dialog type.
+You can also always recover manually, regardless of dialog type: **Stop** or
+**Restart** ends the hung process with the same `taskkill /T /F` — at once for an
+instance without a stop command, after its stop timeout otherwise — and **Force stop**
+(Stop while the instance is `stopping`) does so immediately.
+
+## Stopping
+
+A stop — the **Stop** button, a **Restart**, or squash
+itself shutting down — always ends with the process gone and the instance `stopped`:
+
+1. squash asks the server to exit: it types the instance's **stop command** into the
+   console, or, without one, uses the platform default — SIGHUP on Linux/macOS, an
+   immediate `taskkill /T /F` on Windows (there is no gentler signal there).
+2. If the process is still running after the **stop timeout**, squash force-kills it and
+   everything it started (SIGKILL to its process group; `taskkill /T /F` on Windows) and
+   writes `[squash] stop timed out after <n>ms; force-killing` to the instance log.
+
+Per-instance settings (in the instance form, or the create/update API):
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `stopCommand` | none | Console command(s) that shut the server down, one per line, sent about a second apart, each followed by Enter; an empty line (after the first command) sends just Enter. Blank = the platform default above. |
+| `stopTimeoutMs` | `15000` | How long to wait for the process to exit before force-killing it (1000–600000), counted from the first command line. |
+
+**For `rwr_server`, set `stopCommand` to `quit` followed by an empty line** — on Windows
+too. `rwr_server` answers `quit` with `Exit requested` and only exits after one more
+Enter, which the empty line provides; with `quit` alone it waits until the stop timeout
+force-kills it. Without any stop command a Windows stop kills the server at once, which
+may lose player progress saved since the last `save_profiles` — to save first, use
+`save_profiles`, `quit`, then an empty line.
+
+The lines go out on a fixed schedule, one second apart, not when the server has answered
+the previous one, and the stop timeout starts with the first line: leave it well above a
+second per extra line (squash logs a warning when it isn't). The form shows below the
+field what will be sent, including the Enter of a trailing empty line.
+
+- **Force stop**: while an instance is `stopping`, its Stop button turns into **Force
+  stop** (after a confirmation) and kills the process at once. Over the API that is
+  `POST /api/instances/:id/stop` with `{"force": true}`; a plain Stop while stopping
+  changes nothing, so a double click or a stale page can't cut a graceful shutdown short.
+- **Restart** runs the same stop and starts the new process only once the old one has
+  exited, so two copies never run side by side. It is disabled while the instance is
+  `stopping`; a Stop while a restart waits cancels the restart.
+- **Shutting squash down** (Ctrl+C, closing its window or terminal, `docker stop`,
+  SIGTERM) stops every running instance the same way, in parallel, and then exits with
+  code 0. It takes at most the longest `stopTimeoutMs` plus 2s. A second Ctrl+C a second
+  or more after the first force-kills what is left and exits at once. On Windows, closing
+  the console window gives squash only about 5 seconds before Windows ends it; the
+  instances then go down with the console.
+- Behind a reverse proxy, a **Restart** request stays open until the old process has
+  exited — up to its `stopTimeoutMs` plus 5s. Set the proxy's read timeout above that
+  (nginx's `proxy_read_timeout` defaults to 60s); otherwise the page may report the
+  restart as failed while it still completes on the server.
+- `nohup ./start.sh` does not keep squash running after an SSH session ends — squash
+  treats the hangup as a request to shut down. Use `tmux`/`screen` or a service manager.
+  A systemd unit needs `KillMode=mixed` (the default `control-group` also sends SIGTERM
+  straight to the instances) and `TimeoutStopSec=` of at least the longest stop timeout
+  plus 5s.
 
 ## Auto-restart
 
@@ -392,12 +457,11 @@ attempts; the instance then stays `crashed`. Once an instance runs cleanly for
 - **macOS: a bundle downloaded with a browser may fail to load its native modules** —
   Gatekeeper can quarantine the ad-hoc-signed `pty.node` / `spawn-helper`. Clear the flag on
   the unpacked folder: `xattr -dr com.apple.quarantine <squash-folder>`.
-- **A server that ignores SIGHUP stays in `stopping`**: on macOS/Linux, Stop sends SIGHUP
-  (Windows force-kills the process tree). A server that ignores it never exits, so the instance
-  keeps showing `stopping` and can't be stopped or restarted from the UI — end the process from
-  the OS and it settles to `stopped`. A stop timeout with forced termination is planned.
+- **Windows stops without a `stopCommand` are immediate kills**: there is no signal to ask a
+  console program to exit, so the process tree is ended at once and unsaved state may be
+  lost. Configure a stop command (`quit` plus an empty line for `rwr_server`, see [Stopping](#stopping)).
 - **Bundles are not code-signed**: Windows SmartScreen may warn on first launch of `start.bat`.
-- **Real `rwr_server` runtime validation** has not been performed on an actual game server binary yet.
+- **Real `rwr_server` runtime validation** has been done by hand on Windows Server only; Linux hasn't been validated with an actual game server binary yet.
 
 ## Roadmap
 

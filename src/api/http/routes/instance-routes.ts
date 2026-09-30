@@ -4,7 +4,7 @@ import type { LogService } from '../../../services/log-service.js';
 import type { TerminalService } from '../../../services/terminal-service.js';
 import type { AuditService } from '../../../services/audit-service.js';
 import { currentUser } from '../auth.js';
-import { CreateInstanceSchema, type CreateInstanceRequest, InstanceIdParamSchema, type InstanceIdParam, TailLogQuerySchema, type TailLogQuery, SendCommandSchema, type SendCommandRequest } from '../schemas/instance-schemas.js';
+import { CreateInstanceSchema, type CreateInstanceRequest, InstanceIdParamSchema, type InstanceIdParam, TailLogQuerySchema, type TailLogQuery, SendCommandSchema, type SendCommandRequest, StopInstanceSchema, type StopInstanceRequest } from '../schemas/instance-schemas.js';
 
 type RouteDeps = {
   instanceService: InstanceService;
@@ -118,10 +118,25 @@ export const registerInstanceRoutes = async (fastify: FastifyInstance, deps: Rou
     }
   });
 
-  fastify.post('/instances/:id/stop', async (request: FastifyRequest<{ Params: InstanceIdParam }>, reply) => {
+  fastify.post('/instances/:id/stop', async (request: FastifyRequest<{ Params: InstanceIdParam; Body: StopInstanceRequest | undefined }>, reply) => {
     const { id } = request.params;
+    // The body is optional: a plain POST (no body, or an empty text body) is a
+    // graceful stop. An empty body sent as application/json is rejected by
+    // Fastify's JSON parser before this handler runs.
+    const raw: unknown = request.body;
+    const body = StopInstanceSchema.safeParse(raw === undefined || raw === null || raw === '' ? {} : raw);
+    if (!body.success) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: 'INVALID_REQUEST',
+          message: body.error.message
+        }
+      });
+    }
     try {
-      const runtime = await deps.instanceService.stopInstance(id);
+      const before = (await deps.instanceService.getInstance(id))?.runtime.status;
+      const runtime = await deps.instanceService.stopInstance(id, { force: body.data.force });
       if (!runtime) {
         return reply.status(404).send({
           success: false,
@@ -131,7 +146,10 @@ export const registerInstanceRoutes = async (fastify: FastifyInstance, deps: Rou
           }
         });
       }
-      await deps.auditService.record('stop', currentUser(request.headers.authorization), id);
+      // Audit what happened: `force` only takes effect on an instance that was
+      // already stopping.
+      const forced = body.data.force && before === 'stopping';
+      await deps.auditService.record('stop', currentUser(request.headers.authorization), id, forced ? 'force' : undefined);
       return reply.status(200).send({
         success: true,
         data: runtime

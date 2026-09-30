@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Table, Tag, Button, Space, Modal, Form, Input, InputNumber, Switch, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
 import { ReloadOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, DeleteOutlined, PlusOutlined, ApartmentOutlined, EditOutlined, HistoryOutlined, LogoutOutlined } from '@ant-design/icons';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query';
 import type { InstanceStatus, CreateInstanceRequest, InstanceWithRuntime, AuditEntry } from '../services/apiService';
 import { fetchInstances, createInstance, updateInstance, startInstance, stopInstance, restartInstance, deleteInstance, fetchAudit, getAuthStatus, logout } from '../services/apiService';
 
@@ -15,6 +15,31 @@ const auditActionColor: Record<AuditEntry['action'], string> = {
   restart: 'gold',
   delete: 'red',
   command: 'purple'
+};
+
+// The form instance outlives the modal's content, and a remounted <Form> lets
+// the values left in its store win over new initialValues — editing B right
+// after A would show, and save, A's values. Rendered inside the <Form> — as
+// its LAST child: only fields mounted before it hear the reset — this resets
+// it to the current initialValues once it has mounted, before the browser
+// paints. (Not clearOnDestroy: StrictMode's simulated unmount would
+// empty the store behind inputs that still show values. Not an effect in the
+// page: the modal's content mounts in a later commit than the page's.)
+const ResetFormOnMount = () => {
+  const form = Form.useFormInstance();
+  useLayoutEffect(() => {
+    form.resetFields();
+  }, [form]);
+  return null;
+};
+
+// What a stop will type into the console, parsed the way the supervisor does:
+// in the text box a trailing empty line (an Enter) is invisible.
+const describeStopCommand = (value: string | undefined) => {
+  const lines = (value ?? '').split(/\r?\n|\r/).map((line) => line.trim());
+  const first = lines.findIndex((line) => line.length > 0);
+  if (first === -1) return 'Blank: SIGHUP on Linux/macOS, an immediate kill on Windows.';
+  return `Sends, a second apart: ${lines.slice(first).map((line) => (line ? `${line} ⏎` : '⏎ (Enter)')).join(' → ')}`;
 };
 
 const CREATE_DEFAULTS: Partial<CreateInstanceRequest> = {
@@ -47,6 +72,7 @@ const formatUptime = (startedAt?: string, status?: InstanceStatus): string => {
 const InstanceListPage = () => {
   const navigate = useNavigate();
   const [form] = Form.useForm<CreateInstanceRequest>();
+  const stopCommandValue = Form.useWatch('stopCommand', form);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<InstanceWithRuntime | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
@@ -75,8 +101,39 @@ const InstanceListPage = () => {
   };
 
   const startMut = useMutation({ mutationFn: startInstance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }) });
-  const stopMut = useMutation({ mutationFn: stopInstance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }) });
-  const restartMut = useMutation({ mutationFn: restartInstance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }) });
+  const stopMut = useMutation({
+    mutationKey: ['stop'],
+    mutationFn: ({ id, force }: { id: string; force: boolean }) => stopInstance(id, { force }),
+    // Show `stopping` right away: until the refetch lands the row would still
+    // read "Stop", inviting a second click.
+    onSuccess: (runtime, { id }) => {
+      queryClient.setQueryData<InstanceWithRuntime[]>(['instances'], (rows) =>
+        rows?.map((row) => (row.config.id === id ? { ...row, runtime } : row))
+      );
+      queryClient.invalidateQueries({ queryKey: ['instances'] });
+    }
+  });
+  // Rows with a Stop request in flight (stopMut.variables only tracks the
+  // latest call).
+  const pendingStopIds = useMutationState({
+    filters: { mutationKey: ['stop'], status: 'pending' },
+    select: (mutation) => (mutation.state.variables as { id: string } | undefined)?.id
+  });
+  const restartMut = useMutation({
+    mutationKey: ['restart'],
+    mutationFn: restartInstance,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }),
+    // A restart can now fail after a long wait (cancelled by a Stop, spawn
+    // error): say so instead of silently dropping the spinner.
+    onError: (e: Error) => {
+      message.error(e.message);
+      queryClient.invalidateQueries({ queryKey: ['instances'] });
+    }
+  });
+  const pendingRestartIds = useMutationState({
+    filters: { mutationKey: ['restart'], status: 'pending' },
+    select: (mutation) => mutation.state.variables as string | undefined
+  });
   const deleteMut = useMutation({ mutationFn: deleteInstance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }) });
 
   const openCreate = () => {
@@ -95,7 +152,13 @@ const InstanceListPage = () => {
       const parsed: CreateInstanceRequest = {
         ...values,
         name: values.name?.trim() || values.id,
-        args: argsStr ? argsStr.split(',').map((s: string) => s.trim()).filter(Boolean) : []
+        args: argsStr ? argsStr.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+        // Kept as typed: a trailing empty line is an Enter (rwr_server needs one
+        // after `quit`). Only an all-blank value means "none".
+        stopCommand: values.stopCommand?.trim() ? values.stopCommand : undefined,
+        // A cleared InputNumber reports null, which the schema rejects; omit it
+        // so the server-side default applies.
+        stopTimeoutMs: values.stopTimeoutMs ?? undefined
       };
       if (editing) {
         await updateInstance(editing.config.id, parsed);
@@ -122,15 +185,23 @@ const InstanceListPage = () => {
   const renderActions = (record: InstanceWithRuntime, size: 'small' | 'middle') => {
     const running = record.runtime.status === 'running' || record.runtime.status === 'starting';
     const stopped = record.runtime.status === 'stopped' || record.runtime.status === 'crashed';
+    // While a graceful stop is pending, Stop becomes an explicit Force stop.
+    const stopping = record.runtime.status === 'stopping';
+    const stopPending = pendingStopIds.includes(record.config.id);
+    const restartPending = pendingRestartIds.includes(record.config.id);
     return (
       <Space wrap>
         <Button size={size} icon={<ApartmentOutlined />} onClick={() => navigate(`/terminal/${record.config.id}`)} title="Open Terminal" />
-        <Button size={size} icon={<PlayCircleOutlined />} disabled={running} onClick={() => startMut.mutate(record.config.id)} title="Start" />
-        <Button size={size} icon={<StopOutlined />} disabled={!running} onClick={() => stopMut.mutate(record.config.id)} title="Stop" />
-        <Button size={size} icon={<SyncOutlined />} disabled={!running && !stopped} onClick={() => restartMut.mutate(record.config.id)} loading={restartMut.isPending} title="Restart" />
+        <Button size={size} icon={<PlayCircleOutlined />} disabled={running || stopping} onClick={() => startMut.mutate(record.config.id)} title="Start" />
+        {/* Force stop asks first: a double click on Stop would otherwise land
+            on it once the first request has returned. */}
+        <Popconfirm title="Force stop?" description="Kills the server now instead of waiting for it to shut down. Unsaved progress may be lost." disabled={!stopping} onConfirm={() => stopMut.mutate({ id: record.config.id, force: true })} okText="Force stop" okButtonProps={{ danger: true }}>
+          <Button size={size} icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => stopMut.mutate({ id: record.config.id, force: false })} title={stopping ? 'Force stop' : 'Stop'} />
+        </Popconfirm>
+        <Button size={size} icon={<SyncOutlined />} disabled={(!running && !stopped) || restartPending} onClick={() => restartMut.mutate(record.config.id)} loading={restartPending} title="Restart" />
         <Button size={size} icon={<EditOutlined />} disabled={!stopped} onClick={() => openEdit(record)} title={stopped ? 'Edit' : 'Stop the instance before editing'} />
         <Popconfirm title="Delete this instance?" onConfirm={() => deleteMut.mutate(record.config.id)}>
-          <Button size={size} danger icon={<DeleteOutlined />} disabled={running} loading={deleteMut.isPending} title="Delete" />
+          <Button size={size} danger icon={<DeleteOutlined />} disabled={running || stopping} loading={deleteMut.isPending} title="Delete" />
         </Popconfirm>
       </Space>
     );
@@ -260,6 +331,18 @@ const InstanceListPage = () => {
           <Form.Item name="restartDelayMs" label="Restart Delay (ms)">
             <InputNumber min={0} step={1000} style={{ width: '100%' }} />
           </Form.Item>
+          <Form.Item
+            name="stopCommand"
+            label="Stop Command"
+            tooltip="Console command(s) that shut the server down, one per line, sent about a second apart; an empty line presses Enter. rwr_server: quit, then an empty line (it waits for Enter after 'Exit requested')."
+            extra={describeStopCommand(stopCommandValue)}
+          >
+            <Input.TextArea placeholder={'quit\n(empty line = press Enter)'} autoSize={{ minRows: 1, maxRows: 5 }} />
+          </Form.Item>
+          <Form.Item name="stopTimeoutMs" label="Stop Timeout (ms)" tooltip="Force-kill the server if it is still running this long after the stop began (counted from the first stop command line, so allow a second per extra line). Blank: 15000">
+            <InputNumber min={1000} max={600000} step={1000} precision={0} placeholder="15000" style={{ width: '100%' }} />
+          </Form.Item>
+          <ResetFormOnMount />
         </Form>
       </Modal>
 

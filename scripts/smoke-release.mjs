@@ -9,7 +9,10 @@
 //   - a shell instance round-trips PTY input/output in both directions:
 //     WebSocket input → WebSocket output, and the command-capture endpoint
 //   - stopping the instance ends in `stopped` (not `crashed`)
-//   - terminating the LAUNCHER stops the server and frees the port
+//   - terminating the LAUNCHER stops the server and frees the port; on POSIX
+//     (SIGTERM, sent twice as a terminal or npm often does) squash first stops
+//     its instances — one that ignores SIGHUP is force-killed after its
+//     stopTimeoutMs rather than orphaned — and exits 0, also with no instances
 //   - a strong password + HOST=0.0.0.0 listens on all interfaces
 //   - weak protection + HOST=0.0.0.0 is refused (default password written in
 //     .env, credentials unset, auth disabled) with the operator hint and no
@@ -40,6 +43,14 @@ const check = (label, ok, detail = '') => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const withTimeout = (promise, ms) => Promise.race([promise, sleep(ms).then(() => undefined)]);
+const isAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+};
 const tail = (text, n = 600) => JSON.stringify(text.slice(-n));
 // ConPTY and shells emit cursor/colour sequences that could split a marker.
 const stripAnsi = (text) => text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
@@ -205,20 +216,27 @@ const forceKill = (proc) => {
 
 // Terminates the launcher the way an operator or service manager would (the
 // launcher PID only — on POSIX start.sh must `exec` node for this to work) and
-// reports whether everything exited. Always cleans up afterwards.
-const terminate = async (proc) => {
-  if (proc.isClosed) return true;
+// reports whether everything exited, and how. Always cleans up afterwards.
+// `twice` repeats the POSIX signal shortly after, the way one keypress or
+// closed window often delivers it twice.
+const terminate = async (proc, { twice = false } = {}) => {
+  if (proc.isClosed) return { exited: true, ...(await proc.closed) };
   if (isWindows) {
     try { execFileSync('taskkill', ['/pid', String(proc.child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* gone */ }
   } else {
     try { process.kill(proc.child.pid, 'SIGTERM'); } catch { /* gone */ }
+    if (twice) {
+      await sleep(20);
+      try { process.kill(proc.child.pid, 'SIGTERM'); } catch { /* gone */ }
+    }
   }
-  const exited = Boolean(await withTimeout(proc.closed, 15000));
-  if (!exited) {
+  const outcome = await withTimeout(proc.closed, 15000);
+  if (!outcome) {
     forceKill(proc);
     await withTimeout(proc.closed, 5000);
+    return { exited: false };
   }
-  return exited;
+  return { exited: true, ...outcome };
 };
 
 const findLogLine = (text, predicate) => {
@@ -266,6 +284,8 @@ const api = async (port, method, url, { token, body, host = '127.0.0.1' } = {}) 
 };
 
 const serverLogs = [];
+// Set once the SIGHUP-ignoring instance of section 1 runs (POSIX only).
+let orphan;
 
 // --- 1. Default config: full user journey --------------------------------------
 const port = await freePort();
@@ -369,10 +389,62 @@ try {
   }, 15000, 500);
   check('stopped instance ends in `stopped` (not `crashed`)', finalStatus === 'stopped', `status=${finalStatus}`);
   await api(port, 'DELETE', `/api/instances/${instanceId}`, { token });
+
+  // An instance that ignores SIGHUP survives the PTY closing, so only squash
+  // stopping it on the way out (force-kill after its stopTimeoutMs) keeps it
+  // from being orphaned. Windows can't take this path here: terminate() uses
+  // taskkill /T /F, which never reaches squash's signal handling.
+  if (!isWindows) {
+    const orphanId = 'smoke-orphan';
+    const orphanLogDir = path.join(workRoot, 'orphan logs');
+    const orphanCreated = await api(port, 'POST', '/api/instances', {
+      token,
+      body: {
+        id: orphanId,
+        name: 'smoke orphan',
+        cwd: shellCwd,
+        executable: '/bin/sh',
+        args: ['-c', 'trap "" HUP; echo orphan-ready; while :; do sleep 1; done'],
+        logDir: orphanLogDir,
+        autoRestart: false,
+        stopTimeoutMs: 2000
+      }
+    });
+    check('create a SIGHUP-ignoring instance', orphanCreated.status === 200 || orphanCreated.status === 201, `status=${orphanCreated.status} ${orphanCreated.text.slice(0, 300)}`);
+    const orphanStarted = await api(port, 'POST', `/api/instances/${orphanId}/start`, { token });
+    const orphanPid = orphanStarted.json?.data?.pid;
+    const logFile = path.join(orphanLogDir, `${orphanId}.log`);
+    const readLog = () => {
+      try { return fs.readFileSync(logFile, 'utf8'); } catch { return ''; }
+    };
+    // Kill it on the way out whatever happens: it would outlive a failed run.
+    if (orphanPid > 0) orphan = { pid: orphanPid, readLog, ready: false };
+    // Its trap is in place once it has printed.
+    const ready = await waitFor(() => readLog().includes('orphan-ready'), 8000);
+    if (check('start it', orphanStarted.status === 200 && orphanPid > 0 && Boolean(ready), `status=${orphanStarted.status} pid=${orphanPid}`)) {
+      orphan.ready = true;
+    }
+  }
 } catch (err) {
   if (err.message !== 'abort') check('smoke run', false, err.stack);
 } finally {
-  check('terminating the launcher stops the server', await terminate(server));
+  const result = await terminate(server, { twice: Boolean(orphan) });
+  check('terminating the launcher stops the server', result.exited);
+  if (orphan?.ready) {
+    check('launcher exits 0 after stopping its instances', result.code === 0, `code=${result.code} signal=${result.signal}`);
+    // Right away, no grace period: squash must not exit before its instance.
+    const gone = !isAlive(orphan.pid);
+    check('no orphaned instance process after shutdown', gone, gone ? '' : `pid ${orphan.pid} still alive`);
+    const instanceLog = orphan.readLog();
+    check(
+      'instance log shows the shutdown stop and its force-kill',
+      instanceLog.includes('[squash] stopping: SIGHUP') && instanceLog.includes('stop timed out after 2000ms; force-killing'),
+      tail(instanceLog)
+    );
+  }
+  if (orphan && isAlive(orphan.pid)) {
+    try { process.kill(-orphan.pid, 'SIGKILL'); } catch { /* gone */ }
+  }
   const after = await tcpProbe('127.0.0.1', port);
   check('port released after exit', after !== 'connected', after);
 }
@@ -391,7 +463,10 @@ try {
     const viaLan = await api(strongPort, 'GET', '/api/health', { host: lanAddress }).catch((err) => ({ status: err.message }));
     check(`reachable via LAN address ${lanAddress}`, viaLan.status === 200, `status=${viaLan.status}`);
   }
-  await terminate(open);
+  const openResult = await terminate(open);
+  if (!isWindows) {
+    check('with no instances the launcher exits 0 too', openResult.code === 0, `code=${openResult.code} signal=${openResult.signal}`);
+  }
 }
 
 // --- 3. Weak protection + HOST=0.0.0.0 must not start ---------------------------
