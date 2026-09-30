@@ -58,6 +58,14 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Drives the real supervisor + node-pty against a fake child: a user stop
+      # ends in `stopped` with no auto-restart, a crash is still `crashed` and
+      # restarted. Runs before Package so a status regression fails in seconds,
+      # not after a 20-minute build — and, on a tag, blocks the release.
+      - name: Smoke-test the supervisor state machine
+        run: npm run smoke:supervisor
+        timeout-minutes: 5
+
       # build (server + frontend) + assemble the portable bundle for THIS OS.
       # node-pty is native, so each runner produces its own platform binary —
       # that is the whole reason this matrix exists.
