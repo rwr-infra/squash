@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Table, Tag, Button, Space, Modal, Form, Input, InputNumber, Switch, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
 import { ReloadOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, DeleteOutlined, PlusOutlined, ApartmentOutlined, EditOutlined, HistoryOutlined, LogoutOutlined } from '@ant-design/icons';
@@ -15,6 +15,22 @@ const auditActionColor: Record<AuditEntry['action'], string> = {
   restart: 'gold',
   delete: 'red',
   command: 'purple'
+};
+
+// The form instance outlives the modal's content, and a remounted <Form> lets
+// the values left in its store win over new initialValues — editing B right
+// after A would show, and save, A's values. Rendered inside the <Form> — as
+// its LAST child: only fields mounted before it hear the reset — this resets
+// it to the current initialValues once it has mounted, before the browser
+// paints. (Not clearOnDestroy: StrictMode's simulated unmount would
+// empty the store behind inputs that still show values. Not an effect in the
+// page: the modal's content mounts in a later commit than the page's.)
+const ResetFormOnMount = () => {
+  const form = Form.useFormInstance();
+  useLayoutEffect(() => {
+    form.resetFields();
+  }, [form]);
+  return null;
 };
 
 const CREATE_DEFAULTS: Partial<CreateInstanceRequest> = {
@@ -309,6 +325,7 @@ const InstanceListPage = () => {
           <Form.Item name="stopTimeoutMs" label="Stop Timeout (ms)" tooltip="Force-kill the server if it is still running this long after a stop. Blank: 15000">
             <InputNumber min={1000} max={120000} step={1000} precision={0} placeholder="15000" style={{ width: '100%' }} />
           </Form.Item>
+          <ResetFormOnMount />
         </Form>
       </Modal>
 
