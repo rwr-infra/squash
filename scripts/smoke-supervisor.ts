@@ -21,6 +21,10 @@
 //   - Stop while `stopping` leaves the graceful stop alone; Stop with `force`
 //     kills at once
 //   - a disposed supervisor refuses to start again
+//   - restart() starts the new process only after the old one has exited —
+//     also when called while a stop is under way — and a Stop, force stop or
+//     dispose() meanwhile cancels the restart instead of starting a new
+//     process; concurrent restarts join into one
 //
 // Usage: npm run smoke:supervisor
 
@@ -186,8 +190,8 @@ const createHarness = async (mode: string, overrides: Partial<InstanceConfig> = 
       return;
     }
     strays.add(runtime.pid);
-    // restart() replaces the process without a status for the old one: drop
-    // its PID once it is gone.
+    // Belt and braces for a replaced process whose own `stopped` was missed:
+    // drop its PID once it is gone.
     const previous = lastPid;
     if (previous !== undefined && previous !== runtime.pid) {
       void waitFor(() => !isAlive(previous), 10_000).then((gone) => {
@@ -199,6 +203,9 @@ const createHarness = async (mode: string, overrides: Partial<InstanceConfig> = 
   const chunks: string[] = [];
   supervisor.onData((chunk) => {
     chunks.push(chunk);
+    // A stubborn child spawns a grandchild on every start, restarts included.
+    // Matched on whole lines of the full output: a chunk may end mid-PID.
+    for (const match of chunks.join('').matchAll(/grandchild (\d+)\r?\n/g)) strays.add(Number(match[1]));
   });
   const logFile = toInstanceLogFile(cwd, id);
   const instanceLog = () => {
@@ -523,28 +530,191 @@ const checkForceStop = async () => {
   if (!isAlive(grandchild)) strays.delete(grandchild);
 };
 
-// All checks take ~15s on macOS and roughly twice that on the Windows runner;
+const childReadyCount = (output: string) => output.split('child ready').length - 1;
+// Windows reports `running` twice per start (the PID is filled in with the
+// first output), so compare sequences with repeats collapsed.
+const collapse = (statuses: readonly InstanceStatus[]) => statuses.filter((status, i) => status !== statuses[i - 1]).join(' → ');
+
+// Whether the given processes were alive when the old run was reported
+// `stopped` — onExit sends that before restart() spawns the replacement, so a
+// PID recycled by the new process can't blur the answer.
+const aliveAtStop = (supervisor: InstanceSupervisor, pids: readonly number[]) => {
+  let result: boolean[] | undefined;
+  const off = supervisor.onStatus((runtime) => {
+    if (runtime.status === 'stopped' && result === undefined) {
+      result = pids.map(isAlive);
+      off();
+    }
+  });
+  return () => result;
+};
+
+// restart() must not spawn the new process until the old one has exited: the
+// old one here takes ~200ms to shut down after its stop command.
+const checkRestartWaits = async () => {
+  const { supervisor, statuses, output } = await createHarness('stop-command', { stopCommand: 'quit', stopTimeoutMs: 10_000 });
+  await supervisor.start();
+  const ready = await waitFor(() => output().includes('child ready') && (supervisor.getRuntime().pid ?? 0) > 0, 5000);
+  if (!check('restart: child started', ready, JSON.stringify(output()))) return;
+  const oldPid = supervisor.getRuntime().pid!;
+
+  statuses.length = 0;
+  const atStop = aliveAtStop(supervisor, [oldPid]);
+  await supervisor.restart();
+  check('restart: old process had exited before the new one started', atStop()?.[0] === false, `old pid ${oldPid} alive at stop=${atStop()?.[0]}`);
+  // restart() resolves once the new process is spawned, before it prints.
+  await waitFor(() => childReadyCount(output()) === 2, 5000);
+  const text = output();
+  check(
+    'restart: old shutdown output precedes the new start',
+    text.indexOf('shutting down 1') !== -1 && text.indexOf('shutting down 1') < text.lastIndexOf('child ready'),
+    JSON.stringify(text.slice(-300))
+  );
+  check('restart: went through stopping → stopped → running', collapse(statuses) === 'stopping → stopped → running', statuses.join(' → '));
+  const runtime = supervisor.getRuntime();
+  check('restart: new process is running', runtime.status === 'running', `status=${runtime.status} pid=${runtime.pid}`);
+
+  // Two restarts at once (two tabs) are one restart, not a start() race.
+  const results = await Promise.allSettled([supervisor.restart(), supervisor.restart()]);
+  await waitFor(() => childReadyCount(output()) === 3, 5000);
+  await sleep(RESTART_WINDOW_MS);
+  check(
+    'restart: concurrent restarts join into one',
+    results.every((result) => result.status === 'fulfilled') && childReadyCount(output()) === 3,
+    `${results.map((result) => result.status).join(',')} starts=${childReadyCount(output())}`
+  );
+
+  supervisor.stop();
+  await waitFor(() => isSettled(supervisor), 8000);
+};
+
+// restart() while a stop is under way waits it out (here: the stop command is
+// ignored, so until the force-kill) — the old process must be gone, grandchild
+// included, before the new one starts.
+const checkRestartWhileStopping = async () => {
+  const { supervisor, output, instanceLog } = await createHarness('stubborn', { stopCommand: 'quit', stopTimeoutMs: STOP_TIMEOUT_MS });
+  await supervisor.start();
+  const ready = await waitFor(() => /grandchild \d+/.test(output()) && (supervisor.getRuntime().pid ?? 0) > 0, 5000);
+  if (!check('restart while stopping: child and grandchild started', ready, JSON.stringify(output()))) return;
+  const oldPid = supervisor.getRuntime().pid!;
+  const grandchild = Number(/grandchild (\d+)/.exec(output())![1]);
+  strays.add(grandchild);
+
+  const stopAt = Date.now();
+  supervisor.stop();
+  const ignored = await waitFor(() => output().includes('got "quit"'), 3000);
+  if (!check('restart while stopping: child ignored the stop command', ignored && supervisor.getRuntime().status === 'stopping')) return;
+
+  const atStop = aliveAtStop(supervisor, [oldPid, grandchild]);
+  let restartError = '';
+  try {
+    await supervisor.restart();
+  } catch (err) {
+    restartError = err instanceof Error ? err.message : String(err);
+  }
+  const elapsed = Date.now() - stopAt;
+  check('restart while stopping: accepted', restartError === '', restartError);
+  check('restart while stopping: waited for the stop to finish', elapsed >= STOP_TIMEOUT_MS - 100, `${elapsed}ms`);
+  // The old child must be gone before the new start; the SIGKILLed
+  // grandchild may still await reaping at that instant.
+  const [childAtStop, grandchildAtStop] = atStop() ?? [true, true];
+  const grandchildGone = !grandchildAtStop || (await waitFor(() => !isAlive(grandchild), 3000));
+  check(
+    'restart while stopping: old process gone before the new start, grandchild killed',
+    !childAtStop && grandchildGone,
+    `child alive at stop=${childAtStop} grandchild alive=${isAlive(grandchild)}`
+  );
+  if (!isAlive(grandchild)) strays.delete(grandchild);
+  // The pending stop was joined, not restarted: one command, one stop.
+  const quits = commandsRead(output()).filter((command) => command === 'quit').length;
+  const stopLines = instanceLog().split('\n').filter((line) => line.includes('[squash] stopping:')).length;
+  check('restart while stopping: joined the pending stop', quits === 1 && stopLines === 1, `quits=${quits} stopLines=${stopLines}`);
+  const logged = await waitFor(() => instanceLog().includes('force-killing'), 2000);
+  check('restart while stopping: the stop was force-killed on timeout', logged, instanceLog());
+  const runtime = supervisor.getRuntime();
+  check('restart while stopping: new process is running', runtime.status === 'running' && runtime.pid !== oldPid, `status=${runtime.status} pid=${runtime.pid}`);
+
+  if (runtime.status === 'running') {
+    supervisor.stop();
+    supervisor.stop({ force: true });
+    await waitFor(() => isSettled(supervisor), 5000);
+  }
+};
+
+// A Stop (even a plain one) or dispose() while restart() waits for the old
+// process means "stop": the restart must fail and start nothing.
+const checkRestartCancelled = async (by: 'stop' | 'force' | 'dispose') => {
+  const label = `restart cancelled by ${by}`;
+  const { supervisor, output } = await createHarness('stubborn', { stopCommand: 'quit', stopTimeoutMs: STOP_TIMEOUT_MS });
+  await supervisor.start();
+  const ready = await waitFor(() => /grandchild \d+/.test(output()) && (supervisor.getRuntime().pid ?? 0) > 0, 5000);
+  if (!check(`${label}: child started`, ready, JSON.stringify(output()))) return;
+  strays.add(Number(/grandchild (\d+)/.exec(output())![1]));
+
+  let restartError: string | undefined;
+  const restarting = supervisor.restart().then(
+    () => {
+      restartError = '';
+    },
+    (err: unknown) => {
+      restartError = err instanceof Error ? err.message : String(err);
+    }
+  );
+  const waiting = await waitFor(() => output().includes('got "quit"'), 3000);
+  if (!check(`${label}: restart is waiting for the old process`, waiting && supervisor.getRuntime().status === 'stopping', supervisor.getRuntime().status)) return;
+
+  if (by === 'stop') {
+    supervisor.stop();
+  } else if (by === 'force') {
+    supervisor.stop({ force: true });
+  } else {
+    void supervisor.dispose();
+  }
+  await restarting;
+  await sleep(RESTART_WINDOW_MS);
+
+  const runtime = supervisor.getRuntime();
+  check(`${label}: restart failed`, restartError !== undefined && restartError !== '', restartError === '' ? 'restart resolved' : String(restartError));
+  check(`${label}: ends in stopped`, runtime.status === 'stopped', `status=${runtime.status}`);
+  check(`${label}: no new process was started`, childReadyCount(output()) === 1, JSON.stringify(output()));
+};
+
+// All checks take ~20s on macOS and somewhat more on the Windows runner;
 // a failing check waits out its timeouts, so leave room for the rest to run.
 setTimeout(() => {
   console.error('[smoke] timed out');
   process.exit(1);
 }, 90_000).unref();
 
-await checkUserStop('stop');
-await checkUserStop('dispose');
-await checkCrashRestarts();
-await checkCleanExit();
-await checkResize();
-await checkSendCommand();
-await checkStopCommand();
+// Forget PIDs that are gone right after each check, while a recycled PID is
+// least likely.
+const run = async (checkFn: () => Promise<void>) => {
+  await checkFn();
+  for (const pid of strays) {
+    if (!isAlive(pid)) strays.delete(pid);
+  }
+};
+
+await run(() => checkUserStop('stop'));
+await run(() => checkUserStop('dispose'));
+await run(checkCrashRestarts);
+await run(checkCleanExit);
+await run(checkResize);
+await run(checkSendCommand);
+await run(checkStopCommand);
 if (isWindows) {
   // No signals on Windows: without a stopCommand, stop is an immediate taskkill.
   log('skip stop timeout (signal) on Windows');
 } else {
-  await checkStopTimeout('signal');
+  await run(() => checkStopTimeout('signal'));
 }
-await checkStopTimeout('command');
-await checkForceStop();
+await run(() => checkStopTimeout('command'));
+await run(checkForceStop);
+await run(checkRestartWaits);
+await run(checkRestartWhileStopping);
+await run(() => checkRestartCancelled('stop'));
+await run(() => checkRestartCancelled('force'));
+await run(() => checkRestartCancelled('dispose'));
 
 if (failures.length > 0) {
   console.error(`[smoke] ${failures.length} check(s) failed: ${failures.join('; ')}`);

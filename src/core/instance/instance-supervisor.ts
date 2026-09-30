@@ -26,6 +26,9 @@ const WATCHDOG_INTERVAL_MS = 5000;
 const DEFAULT_STOP_TIMEOUT_MS = 15_000;
 const MIN_STOP_TIMEOUT_MS = 1000;
 const MAX_STOP_TIMEOUT_MS = 120_000;
+// How much longer than stopTimeoutMs restart() waits for the old process
+// before giving up (a force-kill that never produced an exit).
+const RESTART_EXIT_GRACE_MS = 5000;
 const MAX_CAPTURE_MS = 10_000;
 // Recent raw output (incl. ANSI) replayed to terminals that connect after the
 // process has already printed — e.g. a startup burst that finished before the
@@ -93,6 +96,12 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   // Set by dispose(): this supervisor is being discarded (edit/delete/squash
   // shutdown) and must never spawn again.
   let disposed = false;
+  // Bumped by every stop()/dispose(): a restart() waiting for the old process
+  // to exit must not start a new one if someone asked to stop meanwhile.
+  let stopRequests = 0;
+  // A restart() in progress; concurrent calls (two tabs, two users) join it
+  // instead of racing each other to start().
+  let restartInFlight: Promise<InstanceRuntime> | undefined;
   let stopTimer: NodeJS.Timeout | undefined;
   let restartTimer: NodeJS.Timeout | undefined;
   let resetTimer: NodeJS.Timeout | undefined;
@@ -176,11 +185,10 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
 
   // Returns a promise that settles once this process's onExit has been handled.
   const bindProcessEvents = (ptyProcess: PtyProcess): Promise<void> => {
-    // Guard against a stale process: a manual restart() force-kills the current
-    // process and starts a new one synchronously, but `taskkill /T /F` reaps a
-    // hung (e.g. WER-stuck) process asynchronously — so the old process's
-    // onData/onExit can fire *after* the replacement is already running. Only
-    // the process that is still `processRef` may mutate shared runtime state.
+    // Guard against a stale process: only the process that is still
+    // `processRef` may mutate shared runtime state. restart() now waits for the
+    // old process's onExit before spawning, so this should never trigger; it
+    // stays as a backstop against a late onData/onExit from a replaced process.
     const isCurrent = () => processRef === ptyProcess;
     let resolveExit = () => {};
     const exited = new Promise<void>((resolve) => {
@@ -265,6 +273,39 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   };
 
   const waitForExit = () => (processRef ? processExit : Promise.resolve());
+
+  const restart = async () => {
+    assertInstanceState(!disposed, 'Instance has been disposed');
+    clearRestartState();
+    restartAttempts = 0;
+    stopWatchdog();
+
+    if (processRef) {
+      // The new process starts only after the old one has exited — never both
+      // at once (ports, save files). A stop already under way is waited out,
+      // timeout and force-kill included.
+      const requests = stopRequests;
+      if (runtime.status !== 'stopping') {
+        beginStop(processRef);
+      }
+      let giveUp: NodeJS.Timeout | undefined;
+      const exited = await Promise.race([
+        waitForExit().then(() => true),
+        new Promise<boolean>((resolve) => {
+          giveUp = setTimeout(() => resolve(false), stopTimeoutMs + RESTART_EXIT_GRACE_MS);
+        })
+      ]);
+      clearTimer(giveUp);
+      assertInstanceState(exited, 'Restart failed: the process did not exit; it is still stopping');
+      assertInstanceState(stopRequests === requests, 'Restart cancelled: the instance was stopped while restarting');
+    } else if (!canStart(runtime.status)) {
+      // No live process to wait for: nothing to stop.
+      runtime = markRuntime(runtime, { status: 'stopped', stoppedAt: now() });
+    }
+
+    runtime = markRuntime(runtime, { restartCount: 0 });
+    return start();
+  };
 
   const start = async () => {
     assertInstanceState(!disposed, 'Instance has been disposed');
@@ -363,6 +404,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
 
   const stopProcess = (options: StopOptions = {}) => {
     assertInstanceState(canStop(runtime.status), `Cannot stop instance from state ${runtime.status}`);
+    stopRequests += 1;
     clearRestartState();
     restartAttempts = 0;
     stopWatchdog();
@@ -395,24 +437,11 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     stop(options) {
       stopProcess(options);
     },
-    async restart() {
-      assertInstanceState(!disposed, 'Instance has been disposed');
-      clearRestartState();
-      restartAttempts = 0;
-      stopWatchdog();
-
-      if (runtime.status === 'starting' || runtime.status === 'running') {
-        runtime = markRuntime(runtime, { status: 'stopping' });
-        processRef?.kill('graceful');
-      }
-
-      runtime = markRuntime(runtime, {
-        status: 'stopped',
-        pid: undefined,
-        restartCount: 0
+    restart() {
+      restartInFlight ??= restart().finally(() => {
+        restartInFlight = undefined;
       });
-
-      return start();
+      return restartInFlight;
     },
     sendCommand(command) {
       assertInstanceState(runtime.status === 'running', 'Cannot send command unless instance is running');
@@ -470,12 +499,11 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     },
     async dispose() {
       disposed = true;
+      stopRequests += 1;
       clearRestartState();
       restartAttempts = 0;
       stopWatchdog();
-      // A stop already under way keeps its own timer. The check is on
-      // processRef, not status: a failed spawn in restart() leaves `crashed`
-      // with the old process still attached.
+      // A stop already under way keeps its own timer.
       if (processRef && runtime.status !== 'stopping') {
         beginStop(processRef);
       }

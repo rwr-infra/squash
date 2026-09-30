@@ -29,6 +29,9 @@ const TerminalPage = () => {
   // A second click while the Stop request is in flight would reach the
   // server as a Force stop.
   const [stopPending, setStopPending] = useState(false);
+  // Restart waits for the old process to exit (up to its stop timeout) before
+  // it responds; the status meanwhile reads `stopping`, not `starting`.
+  const [restartPending, setRestartPending] = useState(false);
   const [pid, setPid] = useState<number | undefined>();
   const [loading, setLoading] = useState(true);
   const [quickCmd, setQuickCmd] = useState('');
@@ -85,8 +88,8 @@ const TerminalPage = () => {
       onRuntime: ({ status: s, pid: p }) => {
         setStatus(s as InstanceStatus);
         setPid(p);
-        // Sent on every `running` push, not only on a change: a restart from
-        // running reports running → running, with nothing in between.
+        // Sent on every `running` push, not only on a change: on Windows a
+        // start reports running twice (the PID arrives with the first output).
         if (s === 'running') sendSize();
       },
       onError: (msg) => message.error({ content: msg, duration: 5 }),
@@ -161,13 +164,16 @@ const TerminalPage = () => {
   };
 
   const handleRestart = async () => {
+    setRestartPending(true);
     try {
       const runtime = await restartInstance(instanceId);
       setStatus(runtime.status);
       setPid(runtime.pid);
-      message.success('Instance restarting');
+      message.success('Instance restarted');
     } catch (e) {
       message.error((e as Error).message);
+    } finally {
+      setRestartPending(false);
     }
   };
 
@@ -207,7 +213,7 @@ const TerminalPage = () => {
           <Popconfirm title="Force stop?" description="Kills the server now instead of waiting for it to shut down. Unsaved progress may be lost." disabled={!stopping} onConfirm={() => handleStop(true)} okText="Force stop" okButtonProps={{ danger: true }}>
             <Button size="small" icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => handleStop(false)} title={stopping ? 'Force stop' : 'Stop'}>{isMobile ? null : stopping ? 'Force stop' : 'Stop'}</Button>
           </Popconfirm>
-          <Button size="small" icon={<SyncOutlined />} onClick={handleRestart} loading={status === 'starting'} title="Restart">{isMobile ? null : 'Restart'}</Button>
+          <Button size="small" icon={<SyncOutlined />} disabled={stopping && !restartPending} onClick={handleRestart} loading={restartPending} title="Restart">{isMobile ? null : 'Restart'}</Button>
           <Button size="small" icon={<ExpandOutlined />} onClick={handleResize} title="Fit">{isMobile ? null : 'Fit'}</Button>
         </Space>
       </div>
