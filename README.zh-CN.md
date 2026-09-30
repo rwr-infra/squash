@@ -359,8 +359,9 @@ squash 的处理方式是**检测崩溃转储文件**:引擎在崩溃时会把 `
   `node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper`)。Linux 不受影响。
 - **macOS:用浏览器下载的发行包可能无法加载原生模块**——Gatekeeper 可能隔离仅 ad-hoc 签名的
   `pty.node` / `spawn-helper`。对解压后的目录清除该标记:`xattr -dr com.apple.quarantine <squash 目录>`。
-- **停止实例可能被记录为崩溃**:如果服务器在关闭过程中仍有输出,这次停止可能被报告为 `crashed`
-  并且——由于 `autoRestart` 默认开启——被自动重启。待修复。
+- **忽略 SIGHUP 的服务器会停在 `stopping`**:macOS/Linux 上 Stop 发送 SIGHUP(Windows 直接强制结束进程树)。
+  服务器若忽略该信号就不会退出,实例会一直显示 `stopping`,界面上无法停止或重启——在系统中结束该进程后即变为
+  `stopped`。计划加入停止超时与强制终止。
 - **发行包未做代码签名**:Windows SmartScreen 可能在首次运行 `start.bat` 时给出警告。
 - **针对真实 `rwr_server` 的运行时验证**尚未在实际的游戏服务器二进制文件上进行过。
 

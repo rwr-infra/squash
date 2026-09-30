@@ -392,9 +392,10 @@ attempts; the instance then stays `crashed`. Once an instance runs cleanly for
 - **macOS: a bundle downloaded with a browser may fail to load its native modules** —
   Gatekeeper can quarantine the ad-hoc-signed `pty.node` / `spawn-helper`. Clear the flag on
   the unpacked folder: `xattr -dr com.apple.quarantine <squash-folder>`.
-- **Stopping an instance can be recorded as a crash**: if the server prints output while it is
-  shutting down, the stop may be reported as `crashed` and — since `autoRestart` defaults to
-  on — restarted. Tracked for a fix.
+- **A server that ignores SIGHUP stays in `stopping`**: on macOS/Linux, Stop sends SIGHUP
+  (Windows force-kills the process tree). A server that ignores it never exits, so the instance
+  keeps showing `stopping` and can't be stopped or restarted from the UI — end the process from
+  the OS and it settles to `stopped`. A stop timeout with forced termination is planned.
 - **Bundles are not code-signed**: Windows SmartScreen may warn on first launch of `start.bat`.
 - **Real `rwr_server` runtime validation** has not been performed on an actual game server binary yet.
 
