@@ -49,9 +49,12 @@ squash/
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/en/download) >= 24 (the only runtime requirement; works on Linux, macOS, and Windows)
+- **Release bundles: nothing.** Each bundle ships its own Node.js runtime — download,
+  unzip, run (see [Portable distribution](#portable-distribution-no-nodejs-required)).
+- **From source:** [Node.js](https://nodejs.org/en/download) 24. The exact version that CI
+  and the bundles use is pinned in [`.node-version`](.node-version).
 - Docker — optional, for containerized deployment
-- PTY behavior is validated on Linux; macOS has known node-pty permission quirks (see Known Issues)
+- PTY round-trips are smoke-tested in CI on Linux, macOS and Windows with a plain shell; a real `rwr_server` hasn't been validated yet, and macOS has known node-pty quirks (see Known Issues)
 
 ### Docker (Recommended)
 
@@ -59,13 +62,15 @@ squash/
 # Build image
 docker build -t rwr-infra/squash .
 
-# Run container (login is enabled by default; CHANGE the password before
-# exposing the port — the defaults admin/admin are well-known)
+# Run container. AUTH_PASSWORD is REQUIRED: the image listens on 0.0.0.0, and the
+# server refuses to start on a non-loopback address with the default password.
+# Generate a random one and keep the printed value — it's your login password.
+SQUASH_PASSWORD="$(openssl rand -hex 16)"; echo "squash password: $SQUASH_PASSWORD"
 docker run -d \
   --name squash \
   -p 3000:3000 \
   -e AUTH_USERNAME=admin \
-  -e AUTH_PASSWORD=change-me \
+  -e AUTH_PASSWORD="$SQUASH_PASSWORD" \
   -v squash-data:/app/config \
   -v squash-logs:/app/logs \
   rwr-infra/squash
@@ -77,7 +82,9 @@ Then open `http://localhost:3000`.
 
 Same variables as the [Configuration](#configuration-env) section below
 (`PORT`, `HOST`, `LOG_LEVEL`, `AUTH_USERNAME`, `AUTH_PASSWORD`, `AUTH_TOKEN`, `CORS_ORIGIN`).
-In the image `SQUASH_STATIC_DIR` defaults to `/app/frontend/dist`. Mount `/app/config` and
+In the image `HOST` defaults to `0.0.0.0` (so the container never falls back to loopback —
+it refuses to start without a non-default `AUTH_PASSWORD`) and `SQUASH_STATIC_DIR` defaults
+to `/app/frontend/dist`. Mount `/app/config` and
 `/app/logs` as volumes to persist instance configs and logs.
 
 ### Development
@@ -111,7 +118,7 @@ Environment variables (all optional; settable via `.env` or the real environment
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP server port |
-| `HOST` | `0.0.0.0` | Bind address. **When the default credentials are in use, this falls back to `127.0.0.1`** so a freshly unpacked instance can't be reached from the network — set real credentials to expose it. |
+| `HOST` | _(auto)_ | Bind address. Unset: `127.0.0.1` while the panel is **weakly protected** (password is the default `admin` in any case, blank, or no auth at all), `0.0.0.0` otherwise. An explicit non-loopback `HOST` (e.g. `0.0.0.0`) while weakly protected makes the server **refuse to start** — set a strong `AUTH_PASSWORD` first. Loopback values (`127.x.x.x`, `localhost`, `::1`) are always allowed. |
 | `LOG_LEVEL` | `info` | Pino log level |
 | `AUTH_USERNAME` | `admin` | Login username. Login is enabled **by default** with `admin/admin`; change before exposing the server. |
 | `AUTH_PASSWORD` | `admin` | Login password. |
@@ -124,10 +131,12 @@ Environment variables (all optional; settable via `.env` or the real environment
 Login is **enabled by default** with the credentials `admin` / `admin`. This is
 deliberate: a freshly unpacked instance shouldn't be drivable by the first
 person to reach its port. The defaults are well-known weak values, so **change
-them before exposing the server** — and as a safety net, while the defaults are
-in effect the server binds to `127.0.0.1` only (see `HOST`), so it can't be
-reached from the network at all. The boot log prints a warning when the default
-credentials are active.
+them before exposing the server** — and as a safety net, while the password is
+`admin` (whether left unset or written explicitly, e.g. by copying `.env.example`)
+or no authentication is configured at all, the server only listens on loopback:
+an unset `HOST` falls back to `127.0.0.1`, and an explicit non-loopback `HOST`
+aborts startup with an error (see `HOST`). The boot log prints a warning when the
+default password is active.
 
 The login (`POST /api/auth/login`) issues a session token (7-day TTL, kept in
 memory — restarting the server invalidates sessions). The frontend stores the
@@ -137,6 +146,24 @@ a `?token=` query param for the terminal WebSocket).
 A static `AUTH_TOKEN` is still accepted for backward-compatible/programmatic
 use, alongside login.
 
+**Token-only (API/automation):** set `AUTH_PASSWORD=` (empty) to turn
+username/password login off and set `AUTH_TOKEN` to a long random value; clients
+then send `Authorization: Bearer <token>`. The web UI can't be used this way (it
+has no place to enter a token and its login page will reject every attempt), so
+keep login enabled if people use the browser. The token's strength isn't checked:
+with a non-empty `AUTH_TOKEN` and `HOST` unset the server listens on `0.0.0.0`.
+With neither a password nor a token the API is open — the server then refuses any
+non-loopback `HOST`.
+
+> **Upgrading from an earlier version:** the server now refuses to start (exit
+> code 1, `Refusing to listen on …` in the log) when `HOST` is a non-loopback
+> address while the password is still `admin` or no auth is configured. This
+> hits a `.env` copied from the old `.env.example` (which set `HOST=0.0.0.0`
+> with `admin/admin`) and `docker run` without `AUTH_PASSWORD`. Set a strong
+> `AUTH_PASSWORD`, or remove `HOST` to stay local-only. Likewise, with `HOST` unset
+> a password of `admin` written explicitly in `.env` (or no auth at all) now means
+> `127.0.0.1` only — previously it listened on `0.0.0.0`.
+
 ### Audit log
 
 User actions are recorded to `logs/audit.log` (JSONL) and exposed via `GET /api/audit`.
@@ -145,42 +172,87 @@ Recorded actions: `login`, `create`, `start`, `stop`, `restart`, `delete`, and `
 has `time`, `user`, `action`, and optional `instanceId` / `detail`. The web UI shows them
 in the **Audit log** drawer on the instance list page.
 
-### Portable distribution (Windows without Docker)
+### Portable distribution (no Node.js required)
 
-`npm run package` produces a self-contained bundle for the **current OS/arch** under
-`release/` (a `.zip` on Windows, `.tar.gz` elsewhere) containing the compiled server,
-the built frontend, production `node_modules`, `start.bat` / `start.sh` launchers,
-a `.env.example` template (the real `.env`, if you create one, is never bundled),
-and both `README.md` / `README.zh-CN.md`.
+Each [GitHub Release](https://github.com/rwr-infra/squash/releases) carries one archive
+per platform. The archive includes its own pinned Node.js runtime (`runtime/`), so the
+target machine needs **no Node.js, npm or build tools**.
+
+| Platform | Archive | Notes |
+|----------|---------|-------|
+| Windows x64 | `squash-<ver>-win32-x64.zip` | Windows 10/11, Server 2019+ (needs ConPTY); CI tests on Windows Server 2025 |
+| Linux x64 | `squash-<ver>-linux-x64.tar.gz` | glibc 2.28+ (e.g. Debian 10+, Ubuntu 20.04+, RHEL 8+); not Alpine/musl |
+| macOS Apple silicon | `squash-<ver>-darwin-arm64.tar.gz` | best effort — see Known Issues |
+
+Other targets (linux-arm64, win32-arm64, darwin-x64) have pinned runtimes and can be
+built with `npm run package` on that platform, but aren't released or tested in CI.
+
+1. **Verify** the download against `SHA256SUMS.txt` from the same release:
+   - Linux: `grep linux-x64 SHA256SUMS.txt | sha256sum -c`
+   - macOS: `grep darwin-arm64 SHA256SUMS.txt | shasum -a 256 -c`
+   - Windows (PowerShell): `(Get-FileHash .\squash-<ver>-win32-x64.zip).Hash` — compare with
+     the matching line (case doesn't matter).
+2. **Extract** into a new, empty folder your user can write to — the archive has no
+   top-level folder, and `config/` and `logs/` are created inside it (so not
+   `C:\Program Files`). Windows: right-click → *Extract All…* into e.g.
+   `C:\squash`. Linux/macOS: `mkdir squash && tar -xzf squash-<ver>-<platform>-<arch>.tar.gz -C squash`.
+3. **Start** it: on Windows double-click `start.bat` (if startup fails, the window
+   pauses so the error can be read); on Linux/macOS run `./start.sh`. Stop it with
+   Ctrl+C. With the default `admin/admin` login it listens on `127.0.0.1` only. Open
+   `http://localhost:3000`.
+4. **To expose it on the network**, create `.env` from the template (`copy .env.example .env`
+   on Windows, `cp .env.example .env` elsewhere — Notepad may save it as `.env.txt`),
+   set **both** `AUTH_USERNAME` and `AUTH_PASSWORD` to strong values and restart. The
+   server listens on `0.0.0.0` only once the password is no longer `admin` (see
+   [Authentication](#authentication)); allow the port in the firewall (Windows asks on
+   first start). Put it behind a reverse proxy with TLS if it will be reachable beyond a
+   trusted LAN.
+
+Startup problems end the process with a non-zero exit code and a log line whose `msg`
+says what to do — a port already in use (or reserved by Windows), a folder that isn't
+writable, a missing `runtime/` folder. `build-info.json` records the source commit and
+the bundled Node.js and node-pty versions for support requests.
+
+**Upgrading:** your data lives in `config/` (instance definitions), `logs/` (instance
+and audit logs) and `.env` inside the squash folder. Keep game server files **outside**
+the squash folder and give instances absolute `cwd` paths, so they don't depend on it.
+Stop the running instances and squash, extract the new version into a **new** folder,
+copy those three over from the old folder, then start the new one. Keep the old folder
+until the new version runs — rolling back is starting the old one again. (Launchers
+before this version forced `PORT=3000`; now `PORT` in `.env` takes effect.)
+
+**Building a bundle yourself** (on the OS/arch it's for — node-pty ships prebuilt
+native binaries per platform):
 
 ```bash
-npm run package
+npm run package          # build server + frontend, bundle for this OS/arch → release/
+npm run smoke:release    # extract the archive and test it the way a user runs it
 ```
 
-On the target machine (**Node.js >= 24 must be installed first** — download it
-from <https://nodejs.org/en/download>. No build tools are needed):
-
-1. Unzip the bundle.
-2. Launch it: on Windows double-click `start.bat` (or run it in a terminal); on
-   Linux/macOS run `./start.sh`. It works out of the box with the default
-   `admin/admin` login (bound to `127.0.0.1`, so only reachable locally). Open
-   `http://localhost:3000`.
-3. To expose it on the network: copy `.env.example` to `.env` (or edit the
-   launcher) and set **both** `AUTH_USERNAME` and `AUTH_PASSWORD` to strong
-   values — the server binds to `0.0.0.0` only once real credentials are set.
-
-`config/` (instance definitions) and `logs/` (per-instance logs) are created
-next to the bundle on first run.
-
-> Because `node-pty` is a native module, a bundle must be produced **on the same OS/arch**
-> it will run on. Build it on a Windows machine (or use the CI matrix below) for a Windows
-> distribution.
+- Packaging downloads the Node.js version from `.node-version` and checks it against the
+  SHA-256 pinned in [`scripts/node-runtime.sha256`](scripts/node-runtime.sha256)
+  (cached in `.cache/node-runtime/`). Behind a proxy set `NODE_USE_ENV_PROXY=1` (with
+  `HTTPS_PROXY`), or use a mirror: `SQUASH_NODE_MIRROR=https://npmmirror.com/mirrors/node`
+  — the pinned checksums still apply.
+- Packaging stops if `frontend/.env*` (or the environment) sets `VITE_API_URL`,
+  `VITE_WS_URL` or `VITE_AUTH_TOKEN`, because Vite would bake them into the bundle.
+  Move a dev `frontend/.env.local` aside while packaging. (If it sets only
+  `VITE_API_URL`, `VITE_API_URL= npm run package` in a POSIX shell also works; an
+  empty `VITE_WS_URL` is still rejected because it would break the WebSocket.)
+- To move to a newer Node.js, edit `.node-version`, replace the hash lines in
+  `scripts/node-runtime.sha256` (its header has the command), then run
+  `npm run package && npm run smoke:release`. The Docker image (`node:24-slim`)
+  doesn't follow `.node-version`.
 
 ### Cross-platform builds (CI)
 
-[`.github/workflows/release.yml`](.github/workflows/release.yml) runs `npm run package` on a
-matrix of `ubuntu-latest`, `macos-latest`, and `windows-latest`, uploading each bundle as a
-build artifact. Pushing a `v*` tag additionally publishes them to a GitHub Release.
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds on `ubuntu-latest`,
+`macos-latest` and `windows-latest` with the Node.js version from `.node-version`. Each job
+runs `npm run package` and then `npm run smoke:release` on its **final archive** (extracted to
+a path with spaces and non-ASCII characters, no system Node, started through the launcher):
+health, frontend, login, a PTY round-trip, loopback-only default, the weak-password refusal, and
+that terminating the launcher stops the server and frees its port. Pushing a `v*` tag publishes a GitHub Release only if every platform passed;
+the release gets the archives plus `SHA256SUMS.txt`.
 
 ### Frontend (Development)
 
@@ -316,7 +388,15 @@ attempts; the instance then stays `crashed`. Once an instance runs cleanly for
 
 ## Known Issues
 
-- **macOS `posix_spawnp failed`**: node-pty spawn-helper binary may lack execute bit on macOS. Fix: `chmod +x node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper`. Linux is unaffected.
+- **macOS `posix_spawnp failed`**: node-pty spawn-helper binary may lack execute bit on macOS. Fix: `chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper` (in a source checkout using pnpm: `node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper`). Linux is unaffected.
+- **macOS: a bundle downloaded with a browser may fail to load its native modules** —
+  Gatekeeper can quarantine the ad-hoc-signed `pty.node` / `spawn-helper`. Clear the flag on
+  the unpacked folder: `xattr -dr com.apple.quarantine <squash-folder>`.
+- **A server that ignores SIGHUP stays in `stopping`**: on macOS/Linux, Stop sends SIGHUP
+  (Windows force-kills the process tree). A server that ignores it never exits, so the instance
+  keeps showing `stopping` and can't be stopped or restarted from the UI — end the process from
+  the OS and it settles to `stopped`. A stop timeout with forced termination is planned.
+- **Bundles are not code-signed**: Windows SmartScreen may warn on first launch of `start.bat`.
 - **Real `rwr_server` runtime validation** has not been performed on an actual game server binary yet.
 
 ## Roadmap

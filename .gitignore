@@ -13,3 +13,4 @@ frontend/.env.local
 .claude/
 .codegraph/
 .cursor/
+/.cache/

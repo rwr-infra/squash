@@ -12,9 +12,13 @@ Backend (run from repo root):
 
 ```bash
 npm install
-npm run typecheck                 # tsc --noEmit — the ONLY backend verification command (no test runner configured)
-npm run smoke:pty                 # interactive PTY smoke harness (scripts/pty-rwr-smoke.ts)
-AUTH_TOKEN=secret npx tsx src/index.ts   # run the server (executed directly via tsx, never compiled)
+npm run typecheck      # tsc --noEmit — backend type gate (no unit test runner)
+npm run dev            # tsx watch src/index.ts
+npm run build          # tsc → dist/, plus the frontend build
+npm run package        # portable bundle for this OS/arch → release/ (downloads the pinned Node; needs network)
+npm run smoke:release  # extract that archive, run it via its launcher without system Node, check API/PTY/bind gate
+npm run smoke:pty      # interactive PTY smoke harness (scripts/pty-rwr-smoke.ts)
+npm run smoke:supervisor  # supervisor state-machine smoke (fake node child through node-pty)
 ```
 
 Frontend (run from `frontend/`):
@@ -26,7 +30,7 @@ npm run build      # tsc -b && vite build → frontend/dist
 npm run lint       # eslint
 ```
 
-There is **no test framework and no compiled build step** for the backend — `tsx` runs the `.ts` sources directly in dev and in the Docker image. `npm run typecheck` is the only gate; run it after backend changes.
+There is **no unit test framework**. The backend is compiled with `tsc` to `dist/`; `npm start`, the Docker image and the portable bundles all run `node dist/index.js` (`tsx` is dev-only). Run `npm run typecheck` after backend changes, `npm run smoke:supervisor` after changes to supervisor status/restart logic, and `npm run package && npm run smoke:release` after changes to packaging, launchers, startup, or auth/bind logic.
 
 ## ESM / import conventions
 
@@ -40,7 +44,7 @@ Layers (request flows downward; PTY output flows back up):
 
 - **`src/core/`** — domain primitives, written as factory functions returning closure-based objects (not classes):
   - `pty/pty-process-adapter.ts` wraps `node-pty` behind the `PtyProcess` interface so the rest of the code never touches `node-pty` directly.
-  - `instance/instance-supervisor.ts` is the heart: **one supervisor per instance**, owning a small state machine (`stopped → starting → running → stopping → stopped`, or `→ crashed` on unexpected exit). Transitions are guarded by `assertInstanceState`; `canStart` only from `stopped`/`crashed`, `canStop` only from `starting`/`running`. The supervisor binds PTY `onData`/`onExit`, pushes output through the parser to the log writer, and fans out to registered `dataListeners`.
+  - `instance/instance-supervisor.ts` is the heart: **one supervisor per instance**, owning a small state machine (`stopped → starting → running → stopping → stopped`, or `→ crashed` on unexpected exit). Transitions are guarded by `assertInstanceState`; `canStart` only from `stopped`/`crashed`, `canStop` only from `starting`/`running`. The supervisor binds PTY `onData`/`onExit`, pushes output through the parser to the log writer, and fans out to registered `dataListeners`. Only the lifecycle calls (`start`/`stop`/`restart`/`dispose`), spawn-failure rollback and `onExit` may change `status`; output and watchdog callbacks must not (a stray `running` write in `onData` once turned user stops into crash-restarts).
   - `instance/instance-registry.ts` holds three parallel `Map`s keyed by instance id: `configs`, `runtimes`, `supervisors`. This is the single source of truth shared across services and the WS gateway.
   - `log/output-parser.ts` is a stateful line-buffer (splits on `\r?\n`, retains the trailing partial line until the next chunk); `log/log-writer.ts` appends ISO-timestamped lines to `logs/<id>.log`.
 - **`src/services/`** — thin orchestration classes over the registry. `InstanceService` is the only one that mutates persistent state (creates supervisors, saves/deletes configs); `TerminalService` and `LogService` are stateless lookups.
@@ -53,12 +57,19 @@ Layers (request flows downward; PTY output flows back up):
 
 ### Auth
 
-When `AUTH_TOKEN` is set, a Fastify `preHandler` hook requires `Authorization: Bearer <token>` on all routes except `/health` and `/terminal*`. WebSocket connections authenticate via a `?token=` query parameter instead (browsers can't set WS headers). Frontend reads `VITE_AUTH_TOKEN`, `VITE_API_URL`, `VITE_WS_URL` from `frontend/.env.local`.
+Login is on by default (`admin`/`admin`, overridable via `AUTH_USERNAME`/`AUTH_PASSWORD`; `AUTH_TOKEN` is an optional static bearer token). All endpoints live under `/api`; a Fastify `preHandler` requires `Authorization: Bearer <token>` except for `/api/health`, `/api/auth/login|status` and `/api/terminal*`, which authenticates via a `?token=` query parameter (browsers can't set WS headers). Frontend dev overrides (`VITE_API_URL`, `VITE_WS_URL`, `VITE_AUTH_TOKEN`) live in `frontend/.env.local`.
 
-## Current incomplete state (important)
-
-The committed tree does **not** typecheck or run as-is: [src/index.ts](src/index.ts) imports `./core/config/instance-config-store.js` and [src/api/http/http-server.ts](src/api/http/http-server.ts) imports `./auth.js` (`validateBearerToken`, `isAuthEnabled`), but **neither `src/core/config/instance-config-store.ts` nor `src/api/http/auth.ts` exists** in the repo. These modules are referenced throughout (`InstanceConfigStore` is a typed dependency of `InstanceService` and the registry's `loadFromStore`). If you're asked to make the backend run, these two missing modules are the gap to fill — `instance-config-store` is expected to persist `InstanceConfig`s to `config/instances.json` (with `list()`/`save()`/`delete()`), and `auth` provides bearer-token validation. Run `npm run typecheck` to surface the current breakage.
+**Non-negotiable:** while weakly protected — password `admin` (case/whitespace-insensitive) or blank, or no auth at all (`isWeaklyProtected` in `src/api/http/auth.ts`) — the server must never listen on a non-loopback address: unset `HOST` falls back to `127.0.0.1`, an explicit non-loopback `HOST` aborts startup. The listen address is decided only by `resolveBindHost` in `src/app/bind-host.ts`; any new auth mechanism must update `isWeaklyProtected`.
 
 ## Platform notes
 
-PTY behavior is validated on Linux only. On macOS, `node-pty`'s `spawn-helper` may lack the execute bit (`posix_spawnp failed`); the README documents the `chmod +x` fix. The Docker image runs `tsx src/index.ts` under `tini` as a non-root `squash` user, with `config/` and `logs/` intended as mounted volumes.
+PTY round-trips are smoke-tested in CI on Linux, macOS and Windows (plain shell); a real `rwr_server` has not been validated. On macOS, `node-pty`'s `spawn-helper` may lack the execute bit (`posix_spawnp failed`); the README documents the `chmod +x` fix. The Docker image runs `node dist/index.js` under `tini` as a non-root `squash` user, with `config/` and `logs/` intended as mounted volumes.
+
+## Release bundles
+
+Portable archives carry their own Node runtime (`runtime/`) — see [docs/adr/0001](docs/adr/0001-portable-bundle-with-pinned-node-runtime.md).
+
+- The bundled runtime comes **only** from the official archive pinned by `.node-version` + `scripts/node-runtime.sha256` (`scripts/node-runtime.mjs`); never copy the build machine's `node`. Bump both files together (CI's setup-node reads `.node-version`).
+- Packaging refuses `VITE_API_URL` / `VITE_WS_URL` / `VITE_AUTH_TOKEN` from `frontend/.env*` because Vite bakes them into the bundle — move a dev `frontend/.env.local` aside before `npm run package`.
+- Windows: call tar via `tarCommand()` (System32 bsdtar, not Git's GNU tar) and pass non-ASCII target dirs as `cwd`, not `-C` (bsdtar mangles non-ASCII argv).
+- Launchers are generated in `scripts/package.mjs`: `start.bat` captures `%~dp0` once up front, uses `pushd`, never expands paths inside parenthesized blocks, and is written with CRLF; `start.sh` must `exec` the bundled node so signals reach the server.

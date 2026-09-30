@@ -6,6 +6,9 @@ name: build-and-package
 #   A tag fires the same `push` event whether created locally
 #   (`git push origin v1.0.0`) or on the GitHub platform (web UI / API) — in
 #   both cases `github.ref` is `refs/tags/*`, which the release job gates on.
+# - Every OS smoke-tests its FINAL archive (extracted, no system Node, through
+#   the launcher) before uploading it; the release job needs all of them, so a
+#   platform whose bundle fails never reaches a Release.
 on:
   push:
     branches: ['**']
@@ -21,9 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Same pinned version the bundle ships in runtime/ (scripts/node-runtime.mjs
+      # reads .node-version too). Don't add `node-version:` — it would take
+      # precedence over the file.
       - uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: npm
 
       # Tag is the source of truth for the version. Strip the leading `v` and
@@ -57,6 +63,14 @@ jobs:
       # that is the whole reason this matrix exists.
       - name: Package
         run: npm run package
+        timeout-minutes: 20
+
+      # Extracts release/<archive> for this OS into a temp dir, strips node from
+      # PATH and drives it through start.sh / start.bat: health, frontend, login,
+      # PTY round-trip, loopback-only default, weak-password refusal, clean exit.
+      - name: Smoke-test the release archive
+        run: npm run smoke:release
+        timeout-minutes: 10
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -77,7 +91,34 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: squash-*
           path: artifacts
+
+      # Flatten the per-OS artifact folders and publish one SHA256SUMS.txt so
+      # users can verify a download (`sha256sum -c --ignore-missing`). Exactly
+      # one archive per platform artifact: anything else is a missing platform
+      # or an extra file that no smoke test covered.
+      - name: Collect archives and checksums
+        shell: bash
+        run: |
+          shopt -s nullglob
+          dirs=(artifacts/*/)
+          archives=(artifacts/*/*.zip artifacts/*/*.tar.gz)
+          echo "platform artifacts: ${#dirs[@]}, archives: ${#archives[@]}"
+          if [ "${#dirs[@]}" -eq 0 ] || [ "${#archives[@]}" -ne "${#dirs[@]}" ]; then
+            echo "::error::expected exactly one archive per platform artifact"
+            exit 1
+          fi
+          dupes=$(printf '%s\n' "${archives[@]##*/}" | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::duplicate archive names: $dupes"
+            exit 1
+          fi
+          mkdir -p dist-release
+          cp -- "${archives[@]}" dist-release/
+          cd dist-release
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Publish GitHub Release
         env:
@@ -89,7 +130,10 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG already exists — uploading assets only."
           else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+            # Draft first, publish after the upload: a new release never goes
+            # public without its archives and SHA256SUMS.txt.
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --draft
           fi
           # --clobber overwrites any same-named assets from a previous run.
-          find artifacts -type f -exec gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber {} +
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber dist-release/*
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

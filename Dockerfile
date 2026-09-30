@@ -40,6 +40,9 @@ COPY --from=builder --chown=squash:squash /app/package.json ./package.json
 COPY --from=frontend-builder --chown=squash:squash /app/frontend/dist ./frontend/dist
 
 ENV PORT=3000
+# All interfaces, so the published port reaches the server. The server refuses to
+# start on a non-loopback HOST while the default password (or no auth) is in
+# effect, so `docker run` MUST pass a strong AUTH_PASSWORD (see README).
 ENV HOST=0.0.0.0
 ENV SQUASH_STATIC_DIR=/app/frontend/dist
 
