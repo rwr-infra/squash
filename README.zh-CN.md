@@ -49,9 +49,12 @@ squash/
 
 ### 环境要求
 
-- [Node.js](https://nodejs.org/en/download) >= 24(唯一的运行时要求;支持 Linux、macOS 和 Windows)
+- **发行包:无需任何依赖。** 每个发行包都自带 Node.js 运行时——下载、解压、运行即可
+  (见[便携发行包](#便携发行包无需-nodejs))。
+- **从源码运行:** [Node.js](https://nodejs.org/en/download) 24。CI 与发行包使用的确切版本
+  固定在 [`.node-version`](.node-version) 中。
 - Docker——可选,用于容器化部署
-- PTY 行为仅在 Linux 上验证过;macOS 存在已知的 node-pty 权限问题(见「已知问题」)
+- CI 在 Linux、macOS、Windows 上用普通 shell 冒烟测试 PTY 往返;尚未用真实 `rwr_server` 验证,macOS 存在已知的 node-pty 问题(见「已知问题」)
 
 ### Docker(推荐)
 
@@ -76,7 +79,7 @@ docker run -d \
 
 ### Docker 环境变量
 
-与下方 [配置(`.env`)](#配置-env) 一节相同
+与下方 [配置(`.env`)](#配置env) 一节相同
 (`PORT`、`HOST`、`LOG_LEVEL`、`AUTH_USERNAME`、`AUTH_PASSWORD`、`AUTH_TOKEN`、`CORS_ORIGIN`)。
 镜像中 `HOST` 默认为 `0.0.0.0`(因此容器内不会回退到回环地址——没有非默认的 `AUTH_PASSWORD` 就拒绝启动),
 `SQUASH_STATIC_DIR` 默认为 `/app/frontend/dist`。将 `/app/config` 与
@@ -135,6 +138,19 @@ cp .env.example .env
 
 静态的 `AUTH_TOKEN` 仍会被接受,用于向后兼容/程序化访问,与登录并存。
 
+**仅 token 鉴权(API/自动化):** 设置 `AUTH_PASSWORD=`(留空)关闭用户名/密码登录,并把
+`AUTH_TOKEN` 设为一个足够长的随机值;客户端发送 `Authorization: Bearer <token>`。
+这种方式下 Web 界面无法使用(没有输入 token 的地方,登录页也会拒绝所有尝试),所以有人通过
+浏览器使用时请保留登录。服务器不检查 token 强度:`AUTH_TOKEN` 非空且未设置 `HOST` 时会监听
+`0.0.0.0`。既没有密码也没有 token 时 API 完全开放——此时服务器拒绝任何非回环 `HOST`。
+
+> **从旧版本升级:** 当 `HOST` 为非回环地址、而密码仍是 `admin` 或未配置任何鉴权时,
+> 服务器现在会拒绝启动(退出码 1,日志含 `Refusing to listen on …`)。受影响的情形:
+> 从旧版 `.env.example` 复制的 `.env`(当时写了 `HOST=0.0.0.0` 和 `admin/admin`),以及
+> 未传 `AUTH_PASSWORD` 的 `docker run`。请设置强 `AUTH_PASSWORD`,或删除 `HOST` 仅供本机使用。
+> 同样地,未设置 `HOST` 时,在 `.env` 里显式写 `admin` 密码(或完全没有鉴权)现在只监听
+> `127.0.0.1`——以前会监听 `0.0.0.0`。
+
 ### 审计日志
 
 用户操作会记录到 `logs/audit.log`(JSONL 格式),并通过 `GET /api/audit` 暴露。
@@ -143,38 +159,72 @@ cp .env.example .env
 `time`、`user`、`action`,以及可选的 `instanceId` / `detail`。Web UI 在实例列表页的
 **审计日志(Audit log)** 抽屉中展示这些记录。
 
-### 便携式发行版(Windows 免 Docker)
+### 便携发行包(无需 Node.js)
 
-`npm run package` 会为**当前操作系统/架构**在 `release/` 下生成一个自包含的发行包
-(Windows 上是 `.zip`,其他平台是 `.tar.gz`),内含编译后的服务器、构建好的前端、
-生产环境的 `node_modules`、`start.bat` / `start.sh` 启动脚本、一份 `.env.example`
-模板(真正的 `.env`——如果你创建了——绝不会被打包进去),以及 `README.md` /
-`README.zh-CN.md` 两份说明。
+每个 [GitHub Release](https://github.com/rwr-infra/squash/releases) 为每个平台提供一个归档。
+归档内自带固定版本的 Node.js 运行时(`runtime/`),目标机器**无需安装 Node.js、npm 或构建工具**。
+
+| 平台 | 归档 | 说明 |
+|------|------|------|
+| Windows x64 | `squash-<ver>-win32-x64.zip` | Windows 10/11、Server 2019+(需要 ConPTY);CI 在 Windows Server 2025 上测试 |
+| Linux x64 | `squash-<ver>-linux-x64.tar.gz` | glibc 2.28+(如 Debian 10+、Ubuntu 20.04+、RHEL 8+);不支持 Alpine/musl |
+| macOS Apple 芯片 | `squash-<ver>-darwin-arm64.tar.gz` | 尽力支持——见「已知问题」 |
+
+其他平台(linux-arm64、win32-arm64、darwin-x64)已固定运行时校验和,可在对应平台上用
+`npm run package` 自行构建,但不随 Release 发布,CI 也未覆盖。
+
+1. **校验**下载文件,对照同一 Release 中的 `SHA256SUMS.txt`:
+   - Linux:`grep linux-x64 SHA256SUMS.txt | sha256sum -c`
+   - macOS:`grep darwin-arm64 SHA256SUMS.txt | shasum -a 256 -c`
+   - Windows(PowerShell):`(Get-FileHash .\squash-<ver>-win32-x64.zip).Hash`——与对应行比对(不区分大小写)。
+2. **解压**到一个当前用户可写的新空目录——归档没有顶层目录,`config/` 和 `logs/` 会创建在其中
+   (所以不要放在 `C:\Program Files`)。Windows:右键 →「全部解压缩…」到例如 `C:\squash`。
+   Linux/macOS:`mkdir squash && tar -xzf squash-<ver>-<platform>-<arch>.tar.gz -C squash`。
+3. **启动**:Windows 上双击 `start.bat`(启动失败时窗口会暂停,便于阅读错误);Linux/macOS 上运行
+   `./start.sh`。按 Ctrl+C 停止。使用默认的 `admin/admin` 登录时只监听 `127.0.0.1`。打开
+   `http://localhost:3000`。
+4. **如需暴露到网络**,用模板创建 `.env`(Windows 上 `copy .env.example .env`,其他平台
+   `cp .env.example .env`——记事本可能会存成 `.env.txt`),将 `AUTH_USERNAME` 和 `AUTH_PASSWORD`
+   **同时**设置为强口令并重启。只有密码不再是 `admin`,服务器才会监听 `0.0.0.0`(见[鉴权](#鉴权));
+   请在防火墙中放行该端口(Windows 首次启动时会询问)。若可被可信局域网以外访问,请放在带 TLS 的
+   反向代理之后。
+
+启动出错时进程以非 0 退出码退出,日志中该行的 `msg` 会说明如何处理——端口已被占用(或被 Windows
+保留)、目录不可写、缺少 `runtime/` 目录。`build-info.json` 记录了源码 commit 以及内置的 Node.js 与
+node-pty 版本,便于排查问题。
+
+**升级:** 数据保存在 squash 目录内的 `config/`(实例定义)、`logs/`(实例日志与审计日志)和 `.env` 中。
+请把游戏服务器文件放在 squash 目录**之外**,并给实例使用绝对路径的 `cwd`,使其不依赖 squash 目录。
+先停止运行中的实例和 squash,把新版本解压到一个**新**目录,从旧目录复制这三项过去,再启动新版本。
+在新版本跑通之前保留旧目录——回滚就是重新启动旧版本。(此前版本的启动脚本会强制 `PORT=3000`;
+现在 `.env` 中的 `PORT` 会生效。)
+
+**自行构建发行包**(需在目标操作系统/架构上构建——node-pty 按平台提供预编译原生二进制):
 
 ```bash
-npm run package
+npm run package          # 构建服务器与前端,为当前操作系统/架构打包 → release/
+npm run smoke:release    # 解压归档,按用户的实际使用方式进行测试
 ```
 
-在目标机器上(**必须先安装 Node.js >= 24**——从
-<https://nodejs.org/en/download> 下载。无需构建工具):
-
-1. 解压发行包。
-2. 启动:Windows 上双击 `start.bat`(或在终端里运行它);Linux/macOS 上运行 `./start.sh`。
-   开箱即用,默认 `admin/admin` 登录(绑定 `127.0.0.1`,仅本机可访问)。打开
-   `http://localhost:3000`。
-3. 如需暴露到网络:把 `.env.example` 复制为 `.env`,将 `AUTH_USERNAME` 和
-   `AUTH_PASSWORD` **同时**设置为强口令——只有密码不再是 `admin`,服务器才会绑定 `0.0.0.0`。
-
-`config/`(实例定义)和 `logs/`(按实例分文件的日志)会在首次运行时创建在发行包同级目录。
-
-> 由于 `node-pty` 是原生模块,发行包必须在它将要运行的**同一操作系统/架构**上构建。
-> 要生成 Windows 发行版,请在 Windows 机器上构建(或使用下方的 CI 矩阵)。
+- 打包时会下载 `.node-version` 指定的 Node.js,并用
+  [`scripts/node-runtime.sha256`](scripts/node-runtime.sha256) 中固定的 SHA-256 校验
+  (缓存在 `.cache/node-runtime/`)。在代理后面请设置 `NODE_USE_ENV_PROXY=1`(配合 `HTTPS_PROXY`),
+  或使用镜像:`SQUASH_NODE_MIRROR=https://npmmirror.com/mirrors/node`——固定的校验和依然生效。
+- 如果 `frontend/.env*`(或环境变量)设置了 `VITE_API_URL`、`VITE_WS_URL` 或 `VITE_AUTH_TOKEN`,
+  打包会中止,因为 Vite 会把它们写进产物。打包期间请把开发用的 `frontend/.env.local` 移开。
+  (如果它只设置了 `VITE_API_URL`,也可以在 POSIX shell 中运行 `VITE_API_URL= npm run package`;
+  空的 `VITE_WS_URL` 仍会被拒绝,因为它会导致 WebSocket 失效。)
+- 升级 Node.js 时,修改 `.node-version`,替换 `scripts/node-runtime.sha256` 中的哈希行
+  (文件头部给出了命令),然后运行 `npm run package && npm run smoke:release`。Docker 镜像
+  (`node:24-slim`)不跟随 `.node-version`。
 
 ### 跨平台构建(CI)
 
-[`.github/workflows/release.yml`](.github/workflows/release.yml) 会在
-`ubuntu-latest`、`macos-latest` 和 `windows-latest` 的矩阵上运行 `npm run package`,
-并将每个发行包作为构建产物上传。推送 `v*` 标签时,还会额外将它们发布到 GitHub Release。
+[`.github/workflows/release.yml`](.github/workflows/release.yml) 在 `ubuntu-latest`、`macos-latest`、
+`windows-latest` 上使用 `.node-version` 指定的 Node.js 构建。每个任务先运行 `npm run package`,再对
+**最终归档**运行 `npm run smoke:release`(解压到含空格与非 ASCII 字符的路径、无系统 Node、经启动脚本启动):
+健康检查、前端、登录、PTY 往返、默认仅回环、弱口令拒绝启动,以及终止启动脚本后服务退出并释放端口。推送 `v*` 标签时,只有所有平台
+都通过才会发布 GitHub Release;Release 附带各归档与 `SHA256SUMS.txt`。
 
 ### 前端(开发)
 
@@ -305,7 +355,13 @@ squash 的处理方式是**检测崩溃转储文件**:引擎在崩溃时会把 `
 ## 已知问题
 
 - **macOS `posix_spawnp failed`**:node-pty 的 spawn-helper 二进制文件在 macOS 上可能缺少执行权限。
-  修复方法:`chmod +x node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper`。Linux 不受影响。
+  修复方法:`chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper`(使用 pnpm 的源码检出中为
+  `node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper`)。Linux 不受影响。
+- **macOS:用浏览器下载的发行包可能无法加载原生模块**——Gatekeeper 可能隔离仅 ad-hoc 签名的
+  `pty.node` / `spawn-helper`。对解压后的目录清除该标记:`xattr -dr com.apple.quarantine <squash 目录>`。
+- **停止实例可能被记录为崩溃**:如果服务器在关闭过程中仍有输出,这次停止可能被报告为 `crashed`
+  并且——由于 `autoRestart` 默认开启——被自动重启。待修复。
+- **发行包未做代码签名**:Windows SmartScreen 可能在首次运行 `start.bat` 时给出警告。
 - **针对真实 `rwr_server` 的运行时验证**尚未在实际的游戏服务器二进制文件上进行过。
 
 ## 路线图
