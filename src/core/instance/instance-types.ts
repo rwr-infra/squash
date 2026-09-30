@@ -12,10 +12,12 @@ export type InstanceConfig = {
   readonly autoRestart?: boolean;
   readonly restartDelayMs?: number;
   // Console command(s) that shut the server down gracefully, one per line, each
-  // sent followed by Enter (e.g. `quit` for rwr_server). Blank = none: fall back
-  // to the platform's graceful kill.
+  // sent followed by Enter, a second apart; a blank line after the first
+  // command sends a bare Enter (rwr_server: `quit`, then a blank line). Blank
+  // = none: fall back to the platform's graceful kill.
   readonly stopCommand?: string;
-  // How long a stop waits for the process to exit before force-killing it.
+  // How long a stop waits for the process to exit before force-killing it,
+  // counted from the first stop command line.
   readonly stopTimeoutMs?: number;
 };
 

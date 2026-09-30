@@ -13,9 +13,11 @@
 //     stopped is remembered for the next start()
 //   - sendCommand() reaches the child's stdin one line per command, in order
 //     (the path a stopCommand takes)
-//   - a configured stopCommand is sent line by line instead of a signal, and
-//     a child that exits on it (printing while it shuts down) ends `stopped`
-//     without a force-kill — on Windows too
+//   - a configured stopCommand is sent line by line instead of a signal (a
+//     blank line as a bare Enter), and a child that exits on it (printing
+//     while it shuts down) ends `stopped` without a force-kill — on Windows
+//     too; a child that, like rwr_server, answers `quit` with "Exit requested"
+//     and exits only on the next Enter is stopped by `quit` + an empty line
 //   - a child that ignores the graceful stop is force-killed after
 //     stopTimeoutMs, grandchild included, and the instance log says so
 //   - Stop while `stopping` leaves the graceful stop alone; Stop with `force`
@@ -80,8 +82,11 @@ process.on('exit', () => {
 // `got` marker); `size` prints its terminal size at startup and whenever it
 // changes. `stop-command` and `stubborn` report a SIGHUP instead of shutting
 // down and print each command line they read, blank ones too; `stop-command` shuts down on
-// `quit`, `stubborn` never exits and keeps a grandchild (which ignores SIGHUP
-// too) alive, printing its PID. On the windows-latest runner ConPTY resized
+// `quit`; `exit-requested` answers `quit` like rwr_server does and shuts down
+// on the next line — one that arrives at least 300ms after its prompt: input
+// already waiting when it prompts is ignored, as a server that flushes its
+// input buffer would; `stubborn` never exits and keeps a grandchild (which
+// ignores SIGHUP too) alive, printing its PID. On the windows-latest runner ConPTY resized
 // the console but the node child never emitted stdout 'resize', and the public
 // getWindowSize() only returns the columns/rows cached by that event — so this
 // polls the TTY handle directly (what Node's own _refreshSize() calls; libuv's
@@ -130,11 +135,21 @@ const onLines = (handler) => {
     for (const line of lines) handler(line);
   });
 };
-if (mode === 'stop-command' || mode === 'stubborn') {
+if (mode === 'stop-command' || mode === 'stubborn' || mode === 'exit-requested') {
   process.on('SIGHUP', () => console.log('got SIGHUP'));
+  let exitRequestedAt = 0;
   onLines((line) => {
     console.log('got ' + JSON.stringify(line));
     if (mode === 'stop-command' && line === 'quit') shutdown();
+    if (mode === 'exit-requested') {
+      if (!exitRequestedAt) {
+        if (line === 'quit') { exitRequestedAt = Date.now(); console.log('Exit requested'); }
+      } else if (Date.now() - exitRequestedAt >= 300) {
+        shutdown();
+      } else {
+        console.log('early line ignored');
+      }
+    }
   });
 } else {
   process.on('SIGHUP', shutdown);
@@ -390,13 +405,14 @@ const checkSendCommand = async () => {
   await waitFor(() => isSettled(supervisor), 5000);
 };
 
-// A configured stopCommand replaces the signal: sent line by line (blank lines
-// dropped), the child shuts down on its own — printing while it does, which is
+// A configured stopCommand replaces the signal: sent line by line (leading
+// blank lines dropped, a later blank line sent as a bare Enter), the child
+// shuts down on its own — printing while it does, which is
 // the only way Windows exercises output during `stopping` — and no force-kill
 // follows.
 const checkStopCommand = async () => {
   const { supervisor, statuses, output, instanceLog } = await createHarness('stop-command', {
-    stopCommand: 'save_profiles\n  \nquit',
+    stopCommand: '\n  \nsave_profiles\n  \nquit',
     stopTimeoutMs: 10_000
   });
   await supervisor.start();
@@ -410,7 +426,11 @@ const checkStopCommand = async () => {
 
   const runtime = supervisor.getRuntime();
   const commands = commandsRead(output());
-  check('stopCommand: lines sent in order, blank ones dropped', commands.join('|') === 'save_profiles|quit', JSON.stringify(commands));
+  check(
+    'stopCommand: lines sent in order; leading blanks dropped, a later blank sent as Enter',
+    JSON.stringify(commands) === JSON.stringify(['save_profiles', '', 'quit']),
+    JSON.stringify(commands)
+  );
   // `shutting down 1`, not the last line: whether ConPTY flushes output written
   // right before exit is not what this checks.
   check('stopCommand: child printed while stopping', output().includes('shutting down 1'), JSON.stringify(output().slice(-200)));
@@ -422,6 +442,56 @@ const checkStopCommand = async () => {
     statuses.join(' → ')
   );
   check('stopCommand: no force-kill', !instanceLog().includes('force-killing'), instanceLog());
+};
+
+// rwr_server answers `quit` with "Exit requested" and exits only on the next
+// Enter: `quit` + an empty line must stop it without a force-kill, the Enter
+// arriving after the prompt.
+const checkStopCommandEnter = async () => {
+  const { supervisor, statuses, output, instanceLog } = await createHarness('exit-requested', {
+    stopCommand: 'quit\n',
+    stopTimeoutMs: 10_000
+  });
+  await supervisor.start();
+  const ready = await waitFor(() => output().includes('child ready'), 5000);
+  if (!check('stopCommand + Enter: child started', ready, JSON.stringify(output()))) return;
+
+  statuses.length = 0;
+  supervisor.stop();
+  await waitFor(() => isSettled(supervisor), 8000);
+  const text = output();
+  const runtime = supervisor.getRuntime();
+  check('stopCommand + Enter: sent `quit`, then a bare Enter', JSON.stringify(commandsRead(text)) === JSON.stringify(['quit', '']), JSON.stringify(commandsRead(text)));
+  check(
+    'stopCommand + Enter: the Enter came well after "Exit requested", not buffered with `quit`',
+    text.includes('Exit requested') && !text.includes('early line ignored'),
+    JSON.stringify(text.slice(-300))
+  );
+  check('stopCommand + Enter: ends in stopped', runtime.status === 'stopped', `status=${runtime.status}`);
+  check(
+    'stopCommand + Enter: never reported running/crashed after the request',
+    statuses.every((status) => status === 'stopping' || status === 'stopped'),
+    statuses.join(' → ')
+  );
+  check('stopCommand + Enter: no force-kill', !instanceLog().includes('force-killing'), instanceLog());
+};
+
+// A stopCommand of only blank lines is no stop command: the platform default
+// (SIGHUP; taskkill on Windows) applies.
+const checkBlankStopCommand = async () => {
+  const { supervisor, output, instanceLog } = await createHarness('blank-stop', { stopCommand: '  \n\t\n ', stopTimeoutMs: 10_000 });
+  await supervisor.start();
+  const ready = await waitFor(() => output().includes('child ready'), 5000);
+  if (!check('blank stopCommand: child started', ready, JSON.stringify(output()))) return;
+  supervisor.stop();
+  await waitFor(() => isSettled(supervisor), 8000);
+  const logged = await waitFor(() => instanceLog().includes('[squash] stopping:'), 2000);
+  check(
+    'blank stopCommand: treated as unset',
+    logged && instanceLog().includes(`stopping: ${isWindows ? 'taskkill' : 'SIGHUP'}`) && !instanceLog().includes('sending stop command'),
+    instanceLog()
+  );
+  check('blank stopCommand: ends in stopped', supervisor.getRuntime().status === 'stopped', `status=${supervisor.getRuntime().status}`);
 };
 
 // A child that ignores the graceful stop (SIGHUP, or the stop command) must be
@@ -702,6 +772,8 @@ await run(checkCleanExit);
 await run(checkResize);
 await run(checkSendCommand);
 await run(checkStopCommand);
+await run(checkStopCommandEnter);
+await run(checkBlankStopCommand);
 if (isWindows) {
   // No signals on Windows: without a stopCommand, stop is an immediate taskkill.
   log('skip stop timeout (signal) on Windows');

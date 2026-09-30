@@ -29,6 +29,9 @@ const MAX_STOP_TIMEOUT_MS = 600_000;
 // How much longer than stopTimeoutMs restart() waits for the old process
 // before giving up (a force-kill that never produced an exit).
 const RESTART_EXIT_GRACE_MS = 5000;
+// Stop command lines go out this far apart, so a server can print its prompt
+// ("Exit requested") before the next line — the Enter it waits for — arrives.
+const STOP_COMMAND_LINE_GAP_MS = 1000;
 const MAX_CAPTURE_MS = 10_000;
 // Recent raw output (incl. ANSI) replayed to terminals that connect after the
 // process has already printed — e.g. a startup burst that finished before the
@@ -61,10 +64,16 @@ export const resolveStopTimeoutMs = (value: unknown) =>
   typeof value === 'number' && Number.isInteger(value) && value >= MIN_STOP_TIMEOUT_MS && value <= MAX_STOP_TIMEOUT_MS
     ? value
     : DEFAULT_STOP_TIMEOUT_MS;
-const parseStopCommands = (value: unknown): readonly string[] =>
-  typeof value === 'string'
-    ? value.split(/\r?\n|\r/).map((line) => line.trim()).filter((line) => line.length > 0)
-    : [];
+// One command per line. A blank line (after the first command) sends a bare
+// Enter: rwr_server, for one, answers `quit` with "Exit requested" and exits
+// only on the next Enter. Leading blank lines are dropped; an all-blank value
+// counts as unset.
+const parseStopCommands = (value: unknown): readonly string[] => {
+  if (typeof value !== 'string') return [];
+  const lines = value.split(/\r?\n|\r/).map((line) => line.trim());
+  const first = lines.findIndex((line) => line.length > 0);
+  return first === -1 ? [] : lines.slice(first);
+};
 
 export const createInstanceSupervisor = async (config: InstanceConfig): Promise<InstanceSupervisor> => {
   const parser = createOutputParser();
@@ -103,6 +112,8 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   // instead of racing each other to start().
   let restartInFlight: Promise<InstanceRuntime> | undefined;
   let stopTimer: NodeJS.Timeout | undefined;
+  // The stop command lines still to be sent.
+  let stopLineTimers: NodeJS.Timeout[] = [];
   let restartTimer: NodeJS.Timeout | undefined;
   let resetTimer: NodeJS.Timeout | undefined;
   let watchdogTimer: NodeJS.Timeout | undefined;
@@ -135,6 +146,17 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       clearInterval(watchdogTimer);
       watchdogTimer = undefined;
     }
+  };
+
+  const dropPendingStopLines = () => {
+    stopLineTimers.forEach(clearTimer);
+    stopLineTimers = [];
+  };
+
+  const clearStopTimers = () => {
+    clearTimer(stopTimer);
+    stopTimer = undefined;
+    dropPendingStopLines();
   };
 
   const clearRestartState = () => {
@@ -244,8 +266,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       stopWatchdog();
       clearTimer(resetTimer);
       resetTimer = undefined;
-      clearTimer(stopTimer);
-      stopTimer = undefined;
+      clearStopTimers();
 
       try {
         await logWriter.writeLines(parser.flush());
@@ -255,8 +276,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       }
       await logQueue;
       // Again: a stop()/dispose() during the await may have armed a new one.
-      clearTimer(stopTimer);
-      stopTimer = undefined;
+      clearStopTimers();
 
       const userStopped = runtime.status === 'stopping';
       // A clean exit (code 0, no signal) is a normal completion — e.g. a one-shot
@@ -384,22 +404,40 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     runtime = markRuntime(runtime, { status: 'stopping', restartCount: 0 });
     notifyStatus();
 
-    clearTimer(stopTimer);
+    clearStopTimers();
     stopTimer = setTimeout(() => {
       stopTimer = undefined;
       if (processRef !== ptyProcess) {
         return;
       }
       void log(`stop timed out after ${stopTimeoutMs}ms; force-killing`);
+      // No more console input for a process that is being killed.
+      dropPendingStopLines();
       ptyProcess.kill('force');
     }, stopTimeoutMs);
 
     if (stopCommands.length > 0) {
       void log(`stopping: sending stop command; force-kill after ${stopTimeoutMs}ms`);
+      const [first, ...rest] = stopCommands;
+      if (rest.length * STOP_COMMAND_LINE_GAP_MS >= stopTimeoutMs) {
+        void log(
+          `stop command has ${stopCommands.length} lines sent ${STOP_COMMAND_LINE_GAP_MS}ms apart, but the force-kill comes after ${stopTimeoutMs}ms; raise stopTimeoutMs`
+        );
+      }
       try {
-        for (const command of stopCommands) {
-          ptyProcess.write(`${command}\r`);
-        }
+        ptyProcess.write(`${first}\r`);
+        stopLineTimers = rest.map((command, i) =>
+          setTimeout(() => {
+            if (processRef !== ptyProcess) {
+              return;
+            }
+            try {
+              ptyProcess.write(`${command}\r`);
+            } catch {
+              // On its way out; the stop timer still has the last word.
+            }
+          }, (i + 1) * STOP_COMMAND_LINE_GAP_MS)
+        );
         return;
       } catch (err) {
         void log(`stop command failed (${err instanceof Error ? err.message : String(err)}); killing instead`);
@@ -421,8 +459,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     // and we'd be stuck in 'stopping' forever — unblocking stop()/edit. Flip
     // straight to 'stopped' in that case.
     if (!processRef) {
-      clearTimer(stopTimer);
-      stopTimer = undefined;
+      clearStopTimers();
       runtime = markRuntime(runtime, { status: 'stopped', stoppedAt: now(), restartCount: 0 });
       notifyStatus();
       return;
@@ -430,6 +467,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     if (runtime.status === 'stopping') {
       if (options.force) {
         void log('force stop requested; force-killing');
+        dropPendingStopLines();
         processRef.kill('force');
       }
       return;

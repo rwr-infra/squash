@@ -33,6 +33,15 @@ const ResetFormOnMount = () => {
   return null;
 };
 
+// What a stop will type into the console, parsed the way the supervisor does:
+// in the text box a trailing empty line (an Enter) is invisible.
+const describeStopCommand = (value: string | undefined) => {
+  const lines = (value ?? '').split(/\r?\n|\r/).map((line) => line.trim());
+  const first = lines.findIndex((line) => line.length > 0);
+  if (first === -1) return 'Blank: SIGHUP on Linux/macOS, an immediate kill on Windows.';
+  return `Sends, a second apart: ${lines.slice(first).map((line) => (line ? `${line} ⏎` : '⏎ (Enter)')).join(' → ')}`;
+};
+
 const CREATE_DEFAULTS: Partial<CreateInstanceRequest> = {
   cwd: '.',
   executable: './rwr_server',
@@ -63,6 +72,7 @@ const formatUptime = (startedAt?: string, status?: InstanceStatus): string => {
 const InstanceListPage = () => {
   const navigate = useNavigate();
   const [form] = Form.useForm<CreateInstanceRequest>();
+  const stopCommandValue = Form.useWatch('stopCommand', form);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<InstanceWithRuntime | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
@@ -143,7 +153,9 @@ const InstanceListPage = () => {
         ...values,
         name: values.name?.trim() || values.id,
         args: argsStr ? argsStr.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
-        stopCommand: values.stopCommand?.trim() || undefined,
+        // Kept as typed: a trailing empty line is an Enter (rwr_server needs one
+        // after `quit`). Only an all-blank value means "none".
+        stopCommand: values.stopCommand?.trim() ? values.stopCommand : undefined,
         // A cleared InputNumber reports null, which the schema rejects; omit it
         // so the server-side default applies.
         stopTimeoutMs: values.stopTimeoutMs ?? undefined
@@ -319,10 +331,15 @@ const InstanceListPage = () => {
           <Form.Item name="restartDelayMs" label="Restart Delay (ms)">
             <InputNumber min={0} step={1000} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="stopCommand" label="Stop Command" tooltip="Console command(s) that shut the server down, one per line (quit for rwr_server). Blank: SIGHUP on Linux/macOS, an immediate kill on Windows">
-            <Input.TextArea placeholder="quit" autoSize={{ minRows: 1, maxRows: 4 }} />
+          <Form.Item
+            name="stopCommand"
+            label="Stop Command"
+            tooltip="Console command(s) that shut the server down, one per line, sent about a second apart; an empty line presses Enter. rwr_server: quit, then an empty line (it waits for Enter after 'Exit requested')."
+            extra={describeStopCommand(stopCommandValue)}
+          >
+            <Input.TextArea placeholder={'quit\n(empty line = press Enter)'} autoSize={{ minRows: 1, maxRows: 5 }} />
           </Form.Item>
-          <Form.Item name="stopTimeoutMs" label="Stop Timeout (ms)" tooltip="Force-kill the server if it is still running this long after a stop. Blank: 15000">
+          <Form.Item name="stopTimeoutMs" label="Stop Timeout (ms)" tooltip="Force-kill the server if it is still running this long after the stop began (counted from the first stop command line, so allow a second per extra line). Blank: 15000">
             <InputNumber min={1000} max={600000} step={1000} precision={0} placeholder="15000" style={{ width: '100%' }} />
           </Form.Item>
           <ResetFormOnMount />
