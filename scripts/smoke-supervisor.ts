@@ -8,6 +8,8 @@
 //   - a child that exits non-zero on its own is still `crashed` and restarted
 //   - a child that exits 0 on its own is `stopped` and not restarted
 //   - output keeps updating lastOutputAt
+//   - the PTY size follows resize(), survives restart(), and a resize while
+//     stopped is remembered for the next start()
 //
 // Usage: npm run smoke:supervisor
 
@@ -44,11 +46,17 @@ process.on('exit', () => {
 // Fake rwr_server. On SIGHUP/SIGTERM (node-pty's POSIX kill) it keeps printing
 // for ~200ms and then exits 1 — like a real server logging its shutdown.
 // `crash-once` exits 1 on its first run (flag file in cwd) and stays up after
-// the restart; `clean` exits 0 on its own.
+// the restart; `clean` exits 0 on its own; `size` prints its terminal size at
+// startup and on every resize.
 const CHILD = `
 const fs = require('node:fs');
 const mode = process.argv[1];
 console.log('child ready');
+if (mode === 'size') {
+  const report = () => console.log('size ' + process.stdout.columns + 'x' + process.stdout.rows);
+  report();
+  process.stdout.on('resize', report);
+}
 const shutdown = () => {
   let n = 0;
   const timer = setInterval(() => {
@@ -179,15 +187,55 @@ const checkCleanExit = async () => {
   check('clean exit: no auto-restart', !statuses.includes('crashed') && runtime.restartCount === 0, statuses.join(' → '));
 };
 
+// The PTY size is whatever a viewer last asked for, across restarts and while
+// stopped — not the spawn default once a browser has sent its dimensions.
+const checkResize = async () => {
+  const { supervisor, output } = await createHarness('size');
+  // Only output after `mark` counts, so a size printed by an earlier run can't
+  // satisfy a later check.
+  let mark = 0;
+  const printedSince = (size: string) => waitFor(() => output().slice(mark).includes(`size ${size}`), 5000);
+
+  await supervisor.start();
+  check('resize: spawns at the 120x40 default', await printedSince('120x40'), JSON.stringify(output()));
+
+  mark = output().length;
+  supervisor.resize(100, 30);
+  check('resize: running PTY follows resize()', await printedSince('100x30'), JSON.stringify(output().slice(mark)));
+
+  mark = output().length;
+  await supervisor.restart();
+  check('resize: restart() keeps the last size', await printedSince('100x30'), JSON.stringify(output().slice(mark)));
+
+  supervisor.stop();
+  await waitFor(() => isSettled(supervisor), 5000);
+  let resizeError = '';
+  try {
+    supervisor.resize(90, 20);
+  } catch (err) {
+    resizeError = err instanceof Error ? err.message : String(err);
+  }
+  check('resize: while stopped does not throw', resizeError === '', resizeError);
+
+  mark = output().length;
+  await supervisor.start();
+  check('resize: next start() uses the size set while stopped', await printedSince('90x20'), JSON.stringify(output().slice(mark)));
+
+  supervisor.stop();
+  await waitFor(() => isSettled(supervisor), 5000);
+};
+
+// Windows runners take ~15s for the checks above; leave room for the rest.
 setTimeout(() => {
   console.error('[smoke] timed out');
   process.exit(1);
-}, 30_000).unref();
+}, 60_000).unref();
 
 await checkUserStop('stop');
 await checkUserStop('dispose');
 await checkCrashRestarts();
 await checkCleanExit();
+await checkResize();
 
 if (failures.length > 0) {
   console.error(`[smoke] ${failures.length} check(s) failed: ${failures.join('; ')}`);

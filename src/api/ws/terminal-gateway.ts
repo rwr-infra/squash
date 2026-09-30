@@ -2,11 +2,17 @@ import type { WebSocket } from '@fastify/websocket';
 import type { InstanceRegistry } from '../../core/instance/instance-registry.js';
 import type { TerminalMessage, TerminalPush } from './terminal-types.js';
 
+// The supervisor remembers the size for every later spawn, so a bogus value
+// (0, negative, fractional, huge) must never reach it.
+const MAX_TERMINAL_DIMENSION = 1000;
+const isTerminalDimension = (value: unknown): value is number =>
+  Number.isInteger(value) && (value as number) >= 1 && (value as number) <= MAX_TERMINAL_DIMENSION;
+
 const parseMessage = (raw: Buffer): TerminalMessage | null => {
   try {
     const msg = JSON.parse(raw.toString()) as TerminalMessage;
     if (msg.type === 'input' && typeof msg.data === 'string') return msg;
-    if (msg.type === 'resize' && typeof msg.cols === 'number' && typeof msg.rows === 'number') return msg;
+    if (msg.type === 'resize' && isTerminalDimension(msg.cols) && isTerminalDimension(msg.rows)) return msg;
     if (msg.type === 'ping') return msg;
     return null;
   } catch {
@@ -101,7 +107,7 @@ export const createTerminalGateway = (registry: InstanceRegistry) => {
             break;
         }
       } catch {
-        // Input/resize on a non-running instance throws InstanceStateError — ignore.
+        // Input on a non-running instance throws InstanceStateError — ignore.
       }
     });
 
