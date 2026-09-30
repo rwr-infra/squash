@@ -4,12 +4,15 @@
 //   - stop() while the child keeps printing during its shutdown and then exits
 //     non-zero ends in `stopped` — never back to `running`, never `crashed` —
 //     and is not auto-restarted
-//   - dispose() in the same situation does not auto-restart either
+//   - dispose() in the same situation does not auto-restart either, and its
+//     promise resolves once the process has exited
 //   - a child that exits non-zero on its own is still `crashed` and restarted
 //   - a child that exits 0 on its own is `stopped` and not restarted
 //   - output keeps updating lastOutputAt
 //   - the PTY size follows resize(), survives restart(), and a resize while
 //     stopped is remembered for the next start()
+//   - sendCommand() reaches the child's stdin one line per command, in order
+//     (the path a stopCommand takes)
 //
 // Usage: npm run smoke:supervisor
 
@@ -46,8 +49,10 @@ process.on('exit', () => {
 // Fake rwr_server. On SIGHUP/SIGTERM (node-pty's POSIX kill) it keeps printing
 // for ~200ms and then exits 1 — like a real server logging its shutdown.
 // `crash-once` exits 1 on its first run (flag file in cwd) and stays up after
-// the restart; `clean` exits 0 on its own; `size` prints its terminal size at
-// startup and whenever it changes. On the windows-latest runner ConPTY resized
+// the restart; `clean` exits 0 on its own; `stdin` prints each raw chunk it
+// reads and every `\n`-terminated line (the PTY echoes input too, hence the
+// `got` marker); `size` prints its terminal size at startup and whenever it
+// changes. On the windows-latest runner ConPTY resized
 // the console but the node child never emitted stdout 'resize', and the public
 // getWindowSize() only returns the columns/rows cached by that event — so this
 // polls the TTY handle directly (what Node's own _refreshSize() calls; libuv's
@@ -66,6 +71,18 @@ if (mode === 'size') {
   };
   report();
   setInterval(report, 50);
+}
+if (mode === 'stdin') {
+  let pending = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (data) => {
+    console.log('raw ' + JSON.stringify(data));
+    const lines = (pending + data).split('\\n');
+    pending = lines.pop();
+    for (const line of lines) {
+      console.log('got ' + JSON.stringify(line.replace(/\\r$/, '')));
+    }
+  });
 }
 const shutdown = () => {
   let n = 0;
@@ -145,10 +162,15 @@ const checkUserStop = async (how: 'stop' | 'dispose') => {
   }
 
   statuses.length = 0;
+  // What dispose() had achieved when its promise resolved — resolving before
+  // the process is gone would still look fine once everything has settled.
+  let disposedWith: { readonly status: InstanceStatus; readonly output: string } | undefined;
   if (how === 'stop') {
     supervisor.stop();
   } else {
-    supervisor.dispose();
+    void supervisor.dispose().then(() => {
+      disposedWith = { status: supervisor.getRuntime().status, output: output() };
+    });
   }
   await waitFor(() => isSettled(supervisor), 5000);
   await sleep(RESTART_WINDOW_MS);
@@ -167,6 +189,13 @@ const checkUserStop = async (how: 'stop' | 'dispose') => {
     statuses.join(' → ')
   );
   check(`${how}: no auto-restart`, runtime.restartCount === 0, `restartCount=${runtime.restartCount}`);
+  if (how === 'dispose') {
+    check(
+      'dispose: resolves once the process has exited',
+      disposedWith?.status === 'stopped' && (isWindows || disposedWith.output.includes('shutting down 5')),
+      disposedWith ? `status=${disposedWith.status} at resolve` : 'never resolved'
+    );
+  }
 };
 
 // A real crash (non-zero exit without a stop request) must still be `crashed`
@@ -235,6 +264,26 @@ const checkResize = async () => {
   await waitFor(() => isSettled(supervisor), 5000);
 };
 
+// A stopCommand is written with sendCommand()'s `<line>\r`: each command must
+// reach the child's stdin as its own line, in order — under ConPTY as well.
+const checkSendCommand = async () => {
+  const { supervisor, output } = await createHarness('stdin');
+  await supervisor.start();
+  const ready = await waitFor(() => output().includes('child ready'), 5000);
+  if (!check('sendCommand: child started', ready, JSON.stringify(output()))) return;
+
+  supervisor.sendCommand('first');
+  supervisor.sendCommand('second');
+  await waitFor(() => output().includes('got "second"'), 5000);
+  const text = output();
+  const first = text.indexOf('got "first"');
+  const second = text.indexOf('got "second"');
+  check('sendCommand: each command arrives as its own line, in order', first !== -1 && second > first, JSON.stringify(text));
+
+  supervisor.stop();
+  await waitFor(() => isSettled(supervisor), 5000);
+};
+
 // Windows runners take ~15s for the checks above; leave room for the rest.
 setTimeout(() => {
   console.error('[smoke] timed out');
@@ -246,6 +295,7 @@ await checkUserStop('dispose');
 await checkCrashRestarts();
 await checkCleanExit();
 await checkResize();
+await checkSendCommand();
 
 if (failures.length > 0) {
   console.error(`[smoke] ${failures.length} check(s) failed: ${failures.join('; ')}`);

@@ -59,6 +59,8 @@ export type InstanceConfig = {
   readonly autoStart?: boolean;
   readonly autoRestart?: boolean;
   readonly restartDelayMs?: number;
+  readonly stopCommand?: string;
+  readonly stopTimeoutMs?: number;
 };
 
 export type InstanceRuntime = {
@@ -85,6 +87,8 @@ export type CreateInstanceRequest = {
   autoStart?: boolean;
   autoRestart?: boolean;
   restartDelayMs?: number;
+  stopCommand?: string;
+  stopTimeoutMs?: number;
 };
 
 export type InstanceWithRuntime = { config: InstanceConfig; runtime: InstanceRuntime };

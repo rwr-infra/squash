@@ -12,7 +12,11 @@ export const CreateInstanceSchema = z.object({
   logDir: z.string().min(1).default('logs'),
   autoStart: z.boolean().default(false),
   autoRestart: z.boolean().default(true),
-  restartDelayMs: z.number().int().min(0).default(3000)
+  restartDelayMs: z.number().int().min(0).default(3000),
+  // No schema defaults: an omitted value follows the supervisor's default, so
+  // old and new configs alike pick up a change to it.
+  stopCommand: z.string().optional(),
+  stopTimeoutMs: z.number().int().min(1000).max(120_000).optional()
 }).strict();
 
 export type CreateInstanceRequest = z.infer<typeof CreateInstanceSchema>;

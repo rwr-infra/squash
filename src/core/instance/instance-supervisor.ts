@@ -55,6 +55,9 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
 
   let runtime = createRuntime(config.id, 'stopped');
   let processRef: PtyProcess | undefined;
+  // Settles once processRef's onExit has run (status updated, processRef
+  // cleared). Only meaningful while processRef is set — see waitForExit().
+  let processExit: Promise<void> = Promise.resolve();
   // Last size a viewer asked for. Every spawn uses it, so a restart (manual or
   // automatic, watched or not) keeps the browser's dimensions.
   let ptySize: { readonly cols: number; readonly rows: number } = { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
@@ -117,7 +120,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       if (crashed && processRef && runtime.status === 'running') {
         await log('crash detected (fresh rwr_crashdump.dmp) — instance is hanging behind a dialog; force-killing process tree');
         // Force-kill triggers onExit → crashed → scheduleRestart.
-        processRef.kill();
+        processRef.kill('force');
       }
     }, WATCHDOG_INTERVAL_MS);
   };
@@ -144,13 +147,18 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     }, delay);
   };
 
-  const bindProcessEvents = (ptyProcess: PtyProcess) => {
+  // Returns a promise that settles once this process's onExit has been handled.
+  const bindProcessEvents = (ptyProcess: PtyProcess): Promise<void> => {
     // Guard against a stale process: a manual restart() force-kills the current
     // process and starts a new one synchronously, but `taskkill /T /F` reaps a
     // hung (e.g. WER-stuck) process asynchronously — so the old process's
     // onData/onExit can fire *after* the replacement is already running. Only
     // the process that is still `processRef` may mutate shared runtime state.
     const isCurrent = () => processRef === ptyProcess;
+    let resolveExit = () => {};
+    const exited = new Promise<void>((resolve) => {
+      resolveExit = resolve;
+    });
 
     ptyProcess.onData(async (chunk) => {
       if (!isCurrent()) {
@@ -183,6 +191,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       if (!isCurrent()) {
         // A process we already replaced finally exited — ignore it so it can't
         // clobber the new process's status to `crashed` or null out processRef.
+        resolveExit();
         return;
       }
       stopWatchdog();
@@ -204,12 +213,17 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       });
       processRef = undefined;
       notifyStatus();
+      resolveExit();
 
       if (!userStopped && !cleanExit) {
         scheduleRestart();
       }
     });
+
+    return exited;
   };
+
+  const waitForExit = () => (processRef ? processExit : Promise.resolve());
 
   const start = async () => {
     assertInstanceState(canStart(runtime.status), `Cannot start instance from state ${runtime.status}`);
@@ -250,7 +264,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     }
 
     processRef = ptyProcess;
-    bindProcessEvents(processRef);
+    processExit = bindProcessEvents(processRef);
     runtime = markRuntime(runtime, {
       status: 'running',
       pid: processRef.pid
@@ -284,7 +298,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     // and we'd be stuck in 'stopping' forever — unblocking stop()/edit. Flip
     // straight to 'stopped' in that case.
     if (processRef) {
-      processRef.kill();
+      processRef.kill('graceful');
     } else {
       runtime = markRuntime(runtime, { status: 'stopped', stoppedAt: now() });
       notifyStatus();
@@ -306,7 +320,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
 
       if (canStop(runtime.status)) {
         runtime = markRuntime(runtime, { status: 'stopping' });
-        processRef?.kill();
+        processRef?.kill('graceful');
       }
 
       runtime = markRuntime(runtime, {
@@ -371,14 +385,15 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       statusListeners.add(listener);
       return () => statusListeners.delete(listener);
     },
-    dispose() {
+    async dispose() {
       clearRestartState();
       restartAttempts = 0;
       stopWatchdog();
       if (processRef && (runtime.status === 'running' || runtime.status === 'starting')) {
         runtime = markRuntime(runtime, { status: 'stopping' });
-        processRef.kill();
+        processRef.kill('graceful');
       }
+      await waitForExit();
     }
   };
 };

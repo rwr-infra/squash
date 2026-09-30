@@ -95,7 +95,11 @@ const InstanceListPage = () => {
       const parsed: CreateInstanceRequest = {
         ...values,
         name: values.name?.trim() || values.id,
-        args: argsStr ? argsStr.split(',').map((s: string) => s.trim()).filter(Boolean) : []
+        args: argsStr ? argsStr.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+        stopCommand: values.stopCommand?.trim() || undefined,
+        // A cleared InputNumber reports null, which the schema rejects; omit it
+        // so the server-side default applies.
+        stopTimeoutMs: values.stopTimeoutMs ?? undefined
       };
       if (editing) {
         await updateInstance(editing.config.id, parsed);
@@ -259,6 +263,12 @@ const InstanceListPage = () => {
           </Form.Item>
           <Form.Item name="restartDelayMs" label="Restart Delay (ms)">
             <InputNumber min={0} step={1000} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="stopCommand" label="Stop Command" tooltip="Console command(s) that shut the server down, one per line (quit for rwr_server). Blank: SIGHUP on Linux/macOS, an immediate kill on Windows">
+            <Input.TextArea placeholder="quit" autoSize={{ minRows: 1, maxRows: 4 }} />
+          </Form.Item>
+          <Form.Item name="stopTimeoutMs" label="Stop Timeout (ms)" tooltip="Force-kill the server if it is still running this long after a stop. Blank: 15000">
+            <InputNumber min={1000} max={120000} step={1000} precision={0} placeholder="15000" style={{ width: '100%' }} />
           </Form.Item>
         </Form>
       </Modal>

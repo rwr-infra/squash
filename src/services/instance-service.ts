@@ -34,7 +34,7 @@ export class InstanceService {
 
     // Rebuild the supervisor: it captures config (executable/cwd/args/logDir) at
     // construction, so the only correct way to apply changes is a fresh one.
-    this.registry.getSupervisor(config.id)?.dispose();
+    await this.registry.getSupervisor(config.id)?.dispose();
     const supervisor = await createInstanceSupervisor(config);
     await this.configStore.save(config);
     await this.registry.register(config, supervisor);
@@ -94,7 +94,7 @@ export class InstanceService {
       throw new Error(`Cannot delete running instance ${id}`);
     }
 
-    this.registry.getSupervisor(id)?.dispose();
+    await this.registry.getSupervisor(id)?.dispose();
     const deleted = await this.configStore.delete(id);
     if (deleted) {
       await this.registry.unregister(id);

@@ -11,6 +11,12 @@ export type InstanceConfig = {
   readonly autoStart?: boolean;
   readonly autoRestart?: boolean;
   readonly restartDelayMs?: number;
+  // Console command(s) that shut the server down gracefully, one per line, each
+  // sent followed by Enter (e.g. `quit` for rwr_server). Blank = none: fall back
+  // to the platform's graceful kill.
+  readonly stopCommand?: string;
+  // How long a stop waits for the process to exit before force-killing it.
+  readonly stopTimeoutMs?: number;
 };
 
 export type InstanceRuntime = {
@@ -39,9 +45,10 @@ export type InstanceSupervisor = {
   getRecentOutput: () => string;
   onData: (listener: (chunk: string) => void) => () => void;
   onStatus: (listener: (runtime: InstanceRuntime) => void) => () => void;
-  // Releases all timers/watchers and kills any live process. Call before
-  // discarding a supervisor (delete/edit) so a pending auto-restart can't fire.
-  dispose: () => void;
+  // Releases all timers/watchers and kills any live process; resolves once no
+  // process is left. Call before discarding a supervisor (delete/edit) so a
+  // pending auto-restart can't fire.
+  dispose: () => Promise<void>;
 };
 
 export type CaptureCommandOptions = {
