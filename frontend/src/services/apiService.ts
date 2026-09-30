@@ -126,8 +126,12 @@ export const startInstance = async (id: string): Promise<InstanceRuntime> => {
   return unwrap(res);
 };
 
-export const stopInstance = async (id: string): Promise<InstanceRuntime> => {
-  const res = await fetch(`${API_BASE}/instances/${id}/stop`, { method: 'POST', headers: authHeaders() });
+// `force` only matters while the instance is already stopping: it then kills
+// at once. Without it a repeated Stop leaves a graceful stop alone.
+export const stopInstance = async (id: string, opts: { force?: boolean } = {}): Promise<InstanceRuntime> => {
+  const res = await fetch(`${API_BASE}/instances/${id}/stop`, opts.force
+    ? { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify({ force: true }) }
+    : { method: 'POST', headers: authHeaders() });
   return unwrap(res);
 };
 

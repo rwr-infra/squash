@@ -21,6 +21,14 @@ export const CreateInstanceSchema = z.object({
 
 export type CreateInstanceRequest = z.infer<typeof CreateInstanceSchema>;
 
+// Body of POST /instances/:id/stop (optional). `force` only matters while the
+// instance is already stopping: it then kills at once.
+export const StopInstanceSchema = z.object({
+  force: z.boolean().default(false)
+}).strict();
+
+export type StopInstanceRequest = z.infer<typeof StopInstanceSchema>;
+
 export const InstanceIdParamSchema = z.object({
   id: z.string().min(1)
 });

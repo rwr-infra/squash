@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Table, Tag, Button, Space, Modal, Form, Input, InputNumber, Switch, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
 import { ReloadOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, DeleteOutlined, PlusOutlined, ApartmentOutlined, EditOutlined, HistoryOutlined, LogoutOutlined } from '@ant-design/icons';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query';
 import type { InstanceStatus, CreateInstanceRequest, InstanceWithRuntime, AuditEntry } from '../services/apiService';
 import { fetchInstances, createInstance, updateInstance, startInstance, stopInstance, restartInstance, deleteInstance, fetchAudit, getAuthStatus, logout } from '../services/apiService';
 
@@ -75,7 +75,24 @@ const InstanceListPage = () => {
   };
 
   const startMut = useMutation({ mutationFn: startInstance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }) });
-  const stopMut = useMutation({ mutationFn: stopInstance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }) });
+  const stopMut = useMutation({
+    mutationKey: ['stop'],
+    mutationFn: ({ id, force }: { id: string; force: boolean }) => stopInstance(id, { force }),
+    // Show `stopping` right away: until the refetch lands the row would still
+    // read "Stop", inviting a second click.
+    onSuccess: (runtime, { id }) => {
+      queryClient.setQueryData<InstanceWithRuntime[]>(['instances'], (rows) =>
+        rows?.map((row) => (row.config.id === id ? { ...row, runtime } : row))
+      );
+      queryClient.invalidateQueries({ queryKey: ['instances'] });
+    }
+  });
+  // Rows with a Stop request in flight (stopMut.variables only tracks the
+  // latest call).
+  const pendingStopIds = useMutationState({
+    filters: { mutationKey: ['stop'], status: 'pending' },
+    select: (mutation) => (mutation.state.variables as { id: string } | undefined)?.id
+  });
   const restartMut = useMutation({ mutationFn: restartInstance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }) });
   const deleteMut = useMutation({ mutationFn: deleteInstance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }) });
 
@@ -126,15 +143,22 @@ const InstanceListPage = () => {
   const renderActions = (record: InstanceWithRuntime, size: 'small' | 'middle') => {
     const running = record.runtime.status === 'running' || record.runtime.status === 'starting';
     const stopped = record.runtime.status === 'stopped' || record.runtime.status === 'crashed';
+    // While a graceful stop is pending, Stop becomes an explicit Force stop.
+    const stopping = record.runtime.status === 'stopping';
+    const stopPending = pendingStopIds.includes(record.config.id);
     return (
       <Space wrap>
         <Button size={size} icon={<ApartmentOutlined />} onClick={() => navigate(`/terminal/${record.config.id}`)} title="Open Terminal" />
-        <Button size={size} icon={<PlayCircleOutlined />} disabled={running} onClick={() => startMut.mutate(record.config.id)} title="Start" />
-        <Button size={size} icon={<StopOutlined />} disabled={!running} onClick={() => stopMut.mutate(record.config.id)} title="Stop" />
+        <Button size={size} icon={<PlayCircleOutlined />} disabled={running || stopping} onClick={() => startMut.mutate(record.config.id)} title="Start" />
+        {/* Force stop asks first: a double click on Stop would otherwise land
+            on it once the first request has returned. */}
+        <Popconfirm title="Force stop?" description="Kills the server now instead of waiting for it to shut down. Unsaved progress may be lost." disabled={!stopping} onConfirm={() => stopMut.mutate({ id: record.config.id, force: true })} okText="Force stop" okButtonProps={{ danger: true }}>
+          <Button size={size} icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => stopMut.mutate({ id: record.config.id, force: false })} title={stopping ? 'Force stop' : 'Stop'} />
+        </Popconfirm>
         <Button size={size} icon={<SyncOutlined />} disabled={!running && !stopped} onClick={() => restartMut.mutate(record.config.id)} loading={restartMut.isPending} title="Restart" />
         <Button size={size} icon={<EditOutlined />} disabled={!stopped} onClick={() => openEdit(record)} title={stopped ? 'Edit' : 'Stop the instance before editing'} />
         <Popconfirm title="Delete this instance?" onConfirm={() => deleteMut.mutate(record.config.id)}>
-          <Button size={size} danger icon={<DeleteOutlined />} disabled={running} loading={deleteMut.isPending} title="Delete" />
+          <Button size={size} danger icon={<DeleteOutlined />} disabled={running || stopping} loading={deleteMut.isPending} title="Delete" />
         </Popconfirm>
       </Space>
     );

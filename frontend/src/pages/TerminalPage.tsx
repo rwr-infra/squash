@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Button, Tag, Space, message, Spin, Input, Grid, ConfigProvider, theme } from 'antd';
+import { Button, Tag, Space, message, Spin, Input, Grid, ConfigProvider, Popconfirm, theme } from 'antd';
 import { ArrowLeftOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, ExpandOutlined } from '@ant-design/icons';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -26,6 +26,9 @@ const TerminalPage = () => {
   const connectionRef = useRef<ReturnType<typeof connectTerminal> | null>(null);
 
   const [status, setStatus] = useState<InstanceStatus>('stopped');
+  // A second click while the Stop request is in flight would reach the
+  // server as a Force stop.
+  const [stopPending, setStopPending] = useState(false);
   const [pid, setPid] = useState<number | undefined>();
   const [loading, setLoading] = useState(true);
   const [quickCmd, setQuickCmd] = useState('');
@@ -141,14 +144,19 @@ const TerminalPage = () => {
     }
   };
 
-  const handleStop = async () => {
+  const handleStop = async (force: boolean) => {
+    setStopPending(true);
     try {
-      const runtime = await stopInstance(instanceId);
-      setStatus(runtime.status);
+      const runtime = await stopInstance(instanceId, { force });
+      // The WS may already have pushed `stopped` (a quick exit, a force kill);
+      // this response is older and must not put the page back in `stopping`.
+      setStatus((current) => (current === 'stopped' && runtime.status === 'stopping' ? current : runtime.status));
       setPid(runtime.pid);
-      message.success('Instance stopped');
+      message.success(force ? 'Force-stopping instance' : runtime.status === 'stopped' ? 'Instance stopped' : 'Stopping instance');
     } catch (e) {
       message.error((e as Error).message);
+    } finally {
+      setStopPending(false);
     }
   };
 
@@ -178,6 +186,10 @@ const TerminalPage = () => {
   };
 
   const running = status === 'running' || status === 'starting';
+  // Stop stays enabled while a graceful stop is pending: it then asks for a
+  // force kill. Kept apart from `running`, which also drives the stopped banner
+  // and the command input.
+  const stopping = status === 'stopping';
 
   return (
     <ConfigProvider theme={{ algorithm: theme.darkAlgorithm }}>
@@ -188,8 +200,13 @@ const TerminalPage = () => {
         <Tag color={statusColor[status]} style={{ marginInlineEnd: 0 }}>{status.toUpperCase()}</Tag>
         {pid && <span style={{ color: '#888', fontSize: 12 }}>PID {pid}</span>}
         <Space style={{ marginLeft: 'auto' }} wrap>
-          <Button size="small" icon={<PlayCircleOutlined />} disabled={running} onClick={handleStart} title="Start">{isMobile ? null : 'Start'}</Button>
-          <Button size="small" icon={<StopOutlined />} disabled={!running} onClick={handleStop} title="Stop">{isMobile ? null : 'Stop'}</Button>
+          <Button size="small" icon={<PlayCircleOutlined />} disabled={running || stopping} onClick={handleStart} title="Start">{isMobile ? null : 'Start'}</Button>
+          {/* Force stop asks first: a double click on Stop would otherwise land
+              on it, since Stop turns into Force stop as soon as the request
+              returns. */}
+          <Popconfirm title="Force stop?" description="Kills the server now instead of waiting for it to shut down. Unsaved progress may be lost." disabled={!stopping} onConfirm={() => handleStop(true)} okText="Force stop" okButtonProps={{ danger: true }}>
+            <Button size="small" icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => handleStop(false)} title={stopping ? 'Force stop' : 'Stop'}>{isMobile ? null : stopping ? 'Force stop' : 'Stop'}</Button>
+          </Popconfirm>
           <Button size="small" icon={<SyncOutlined />} onClick={handleRestart} loading={status === 'starting'} title="Restart">{isMobile ? null : 'Restart'}</Button>
           <Button size="small" icon={<ExpandOutlined />} onClick={handleResize} title="Fit">{isMobile ? null : 'Fit'}</Button>
         </Space>
@@ -204,7 +221,7 @@ const TerminalPage = () => {
           {!running && (
             <div style={{ padding: '8px 12px', background: '#3a2d2d', color: '#e0c0c0', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
               <span>Instance is {status}. Showing the last output below.</span>
-              <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={handleStart}>Start</Button>
+              <Button size="small" type="primary" icon={<PlayCircleOutlined />} disabled={stopping} onClick={handleStart}>Start</Button>
             </div>
           )}
           <div ref={containerRef} style={{ flex: 1, padding: 8, minHeight: 0 }} />

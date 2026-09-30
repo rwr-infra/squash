@@ -35,7 +35,11 @@ export type InstanceRuntime = {
 export type InstanceSupervisor = {
   readonly id: string;
   start: () => Promise<InstanceRuntime>;
-  stop: () => void;
+  // Starts a graceful stop (see InstanceConfig.stopCommand/stopTimeoutMs); does
+  // not wait for the exit. While already `stopping`, only `force` does
+  // anything — it kills at once — so a repeated or stale Stop can't cut a
+  // graceful shutdown short.
+  stop: (options?: StopOptions) => void;
   restart: () => Promise<InstanceRuntime>;
   sendCommand: (command: string) => void;
   sendRawInput: (data: string) => void;
@@ -45,10 +49,14 @@ export type InstanceSupervisor = {
   getRecentOutput: () => string;
   onData: (listener: (chunk: string) => void) => () => void;
   onStatus: (listener: (runtime: InstanceRuntime) => void) => () => void;
-  // Releases all timers/watchers and kills any live process; resolves once no
-  // process is left. Call before discarding a supervisor (delete/edit) so a
-  // pending auto-restart can't fire.
+  // Stops any live process the same way as stop() and never spawns again;
+  // resolves once no process is left. Call before discarding a supervisor
+  // (delete/edit/shutdown) so a pending auto-restart can't fire.
   dispose: () => Promise<void>;
+};
+
+export type StopOptions = {
+  readonly force?: boolean;
 };
 
 export type CaptureCommandOptions = {

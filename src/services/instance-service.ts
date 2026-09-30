@@ -1,4 +1,4 @@
-import type { InstanceConfig, InstanceRuntime } from '../core/instance/instance-types.js';
+import type { InstanceConfig, InstanceRuntime, StopOptions } from '../core/instance/instance-types.js';
 import type { InstanceRegistry } from '../core/instance/instance-registry.js';
 import type { InstanceConfigStore } from '../core/config/instance-config-store.js';
 import { createInstanceSupervisor } from '../core/instance/instance-supervisor.js';
@@ -68,13 +68,13 @@ export class InstanceService {
     return supervisor.getRuntime();
   }
 
-  async stopInstance(id: string): Promise<InstanceRuntime | undefined> {
+  async stopInstance(id: string, options?: StopOptions): Promise<InstanceRuntime | undefined> {
     const supervisor = this.registry.getSupervisor(id);
     if (!supervisor) {
       return undefined;
     }
 
-    supervisor.stop();
+    supervisor.stop(options);
     return supervisor.getRuntime();
   }
 
