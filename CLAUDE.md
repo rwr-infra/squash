@@ -18,6 +18,7 @@ npm run build          # tsc → dist/, plus the frontend build
 npm run package        # portable bundle for this OS/arch → release/ (downloads the pinned Node; needs network)
 npm run smoke:release  # extract that archive, run it via its launcher without system Node, check API/PTY/bind gate
 npm run smoke:pty      # interactive PTY smoke harness (scripts/pty-rwr-smoke.ts)
+npm run smoke:supervisor  # supervisor state-machine smoke (fake node child through node-pty)
 ```
 
 Frontend (run from `frontend/`):
@@ -29,7 +30,7 @@ npm run build      # tsc -b && vite build → frontend/dist
 npm run lint       # eslint
 ```
 
-There is **no unit test framework**. The backend is compiled with `tsc` to `dist/`; `npm start`, the Docker image and the portable bundles all run `node dist/index.js` (`tsx` is dev-only). Run `npm run typecheck` after backend changes, and `npm run package && npm run smoke:release` after changes to packaging, launchers, startup, or auth/bind logic.
+There is **no unit test framework**. The backend is compiled with `tsc` to `dist/`; `npm start`, the Docker image and the portable bundles all run `node dist/index.js` (`tsx` is dev-only). Run `npm run typecheck` after backend changes, `npm run smoke:supervisor` after changes to supervisor status/restart logic, and `npm run package && npm run smoke:release` after changes to packaging, launchers, startup, or auth/bind logic.
 
 ## ESM / import conventions
 
@@ -43,7 +44,7 @@ Layers (request flows downward; PTY output flows back up):
 
 - **`src/core/`** — domain primitives, written as factory functions returning closure-based objects (not classes):
   - `pty/pty-process-adapter.ts` wraps `node-pty` behind the `PtyProcess` interface so the rest of the code never touches `node-pty` directly.
-  - `instance/instance-supervisor.ts` is the heart: **one supervisor per instance**, owning a small state machine (`stopped → starting → running → stopping → stopped`, or `→ crashed` on unexpected exit). Transitions are guarded by `assertInstanceState`; `canStart` only from `stopped`/`crashed`, `canStop` only from `starting`/`running`. The supervisor binds PTY `onData`/`onExit`, pushes output through the parser to the log writer, and fans out to registered `dataListeners`.
+  - `instance/instance-supervisor.ts` is the heart: **one supervisor per instance**, owning a small state machine (`stopped → starting → running → stopping → stopped`, or `→ crashed` on unexpected exit). Transitions are guarded by `assertInstanceState`; `canStart` only from `stopped`/`crashed`, `canStop` only from `starting`/`running`. The supervisor binds PTY `onData`/`onExit`, pushes output through the parser to the log writer, and fans out to registered `dataListeners`. Only the lifecycle calls (`start`/`stop`/`restart`/`dispose`), spawn-failure rollback and `onExit` may change `status`; output and watchdog callbacks must not (a stray `running` write in `onData` once turned user stops into crash-restarts).
   - `instance/instance-registry.ts` holds three parallel `Map`s keyed by instance id: `configs`, `runtimes`, `supervisors`. This is the single source of truth shared across services and the WS gateway.
   - `log/output-parser.ts` is a stateful line-buffer (splits on `\r?\n`, retains the trailing partial line until the next chunk); `log/log-writer.ts` appends ISO-timestamped lines to `logs/<id>.log`.
 - **`src/services/`** — thin orchestration classes over the registry. `InstanceService` is the only one that mutates persistent state (creates supervisors, saves/deletes configs); `TerminalService` and `LogService` are stateless lookups.
