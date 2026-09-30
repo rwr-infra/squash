@@ -47,9 +47,11 @@ process.on('exit', () => {
 // for ~200ms and then exits 1 — like a real server logging its shutdown.
 // `crash-once` exits 1 on its first run (flag file in cwd) and stays up after
 // the restart; `clean` exits 0 on its own; `size` prints its terminal size at
-// startup and whenever it changes. It polls getWindowSize() (a live query)
-// instead of waiting for stdout 'resize': on the windows-latest runner ConPTY
-// resized the console but the node child never emitted 'resize'.
+// startup and whenever it changes. On the windows-latest runner ConPTY resized
+// the console but the node child never emitted stdout 'resize', and the public
+// getWindowSize() only returns the columns/rows cached by that event — so this
+// polls the TTY handle directly (what Node's own _refreshSize() calls; libuv's
+// uv_tty_get_winsize, i.e. ioctl / GetConsoleScreenBufferInfo).
 const CHILD = `
 const fs = require('node:fs');
 const mode = process.argv[1];
@@ -57,8 +59,9 @@ console.log('child ready');
 if (mode === 'size') {
   let last = '';
   const report = () => {
-    const [cols, rows] = process.stdout.getWindowSize();
-    const size = cols + 'x' + rows;
+    const winSize = [0, 0];
+    process.stdout._handle.getWindowSize(winSize);
+    const size = winSize[0] + 'x' + winSize[1];
     if (size !== last) { last = size; console.log('size ' + size); }
   };
   report();
