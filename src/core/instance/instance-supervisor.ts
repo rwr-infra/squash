@@ -161,10 +161,10 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
         runtime = markRuntime(runtime, { pid: ptyProcess.pid });
         notifyStatus();
       }
-      runtime = markRuntime(runtime, {
-        status: 'running',
-        lastOutputAt: now()
-      });
+      // Output never changes the status: start() already set `running`, and a
+      // server logging its shutdown must not flip `stopping` back — onExit would
+      // then take a user stop for a crash and auto-restart it.
+      runtime = markRuntime(runtime, { lastOutputAt: now() });
 
       outputBuffer = (outputBuffer + chunk).slice(-OUTPUT_BUFFER_LIMIT);
 
