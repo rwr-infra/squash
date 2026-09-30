@@ -30,7 +30,7 @@ npm run build      # tsc -b && vite build → frontend/dist
 npm run lint       # eslint
 ```
 
-There is **no unit test framework**. The backend is compiled with `tsc` to `dist/`; `npm start`, the Docker image and the portable bundles all run `node dist/index.js` (`tsx` is dev-only). Run `npm run typecheck` after backend changes, `npm run smoke:supervisor` after changes to supervisor status/restart logic, and `npm run package && npm run smoke:release` after changes to packaging, launchers, startup, or auth/bind logic.
+There is **no unit test framework**. The backend is compiled with `tsc` to `dist/`; `npm start`, the Docker image and the portable bundles all run `node dist/index.js` (`tsx` is dev-only). Run `npm run typecheck` after backend changes, `npm run smoke:supervisor` after changes to supervisor status/restart logic, and `npm run package && npm run smoke:release` after changes to packaging, launchers, startup, or auth/bind logic. For an end-to-end UI check without the split dev setup, run `npm --prefix frontend run build` and let `npm run dev` serve `frontend/dist` from the backend port (same-origin WS — the Vite dev server has no WS proxy).
 
 ## ESM / import conventions
 
@@ -53,7 +53,7 @@ Layers (request flows downward; PTY output flows back up):
 
 ### Terminal data path (key flow to understand)
 
-`rwr_server` stdout → `node-pty` → supervisor `onData` → `output-parser` (line buffering) → `log-writer` (timestamped append) **and** every `dataListener` → `terminal-gateway` broadcasts `{type:'output'}` to all WebSocket clients of that instance. Browser keystrokes travel the reverse path: WS `{type:'input'}` → gateway → `supervisor.sendRawInput` → `pty.write`.
+`rwr_server` stdout → `node-pty` → supervisor `onData` → `output-parser` (line buffering) → `log-writer` (timestamped append) **and** every `dataListener` → `terminal-gateway` broadcasts `{type:'output'}` to all WebSocket clients of that instance. Browser keystrokes travel the reverse path: WS `{type:'input'}` → gateway → `supervisor.sendRawInput` → `pty.write`. Terminal size takes the same route: the page sends `{type:'resize'}` on every (re)connect, every `running` push and every xterm resize; the gateway drops values that are not integers in 1–1000, and the supervisor remembers the last size (also while stopped) and spawns every process with it.
 
 ### Auth
 
@@ -63,7 +63,7 @@ Login is on by default (`admin`/`admin`, overridable via `AUTH_USERNAME`/`AUTH_P
 
 ## Platform notes
 
-CI (`release.yml`, every push) runs typecheck, `smoke:supervisor`, package and `smoke:release` on Linux, macOS and Windows; a real `rwr_server` has not been validated. On Windows `kill()` is `taskkill /T /F`, so a stop produces no shutdown output — supervisor behaviour that depends on output while `stopping` is only exercised on POSIX unless a test drives a graceful stop on Windows. On macOS, `node-pty`'s `spawn-helper` may lack the execute bit (`posix_spawnp failed`); the README documents the `chmod +x` fix. The Docker image runs `node dist/index.js` under `tini` as a non-root `squash` user, with `config/` and `logs/` intended as mounted volumes.
+CI (`release.yml`, every push) runs typecheck, `smoke:supervisor`, package and `smoke:release` on Linux, macOS and Windows; a real `rwr_server` has not been validated. On Windows `kill()` is `taskkill /T /F`, so a stop produces no shutdown output — supervisor behaviour that depends on output while `stopping` is only exercised on POSIX unless a test drives a graceful stop on Windows. Under ConPTY a node child never gets stdout `'resize'`, and `process.stdout.getWindowSize()` only returns the size cached by that event — a smoke child that must observe its size reads `process.stdout._handle.getWindowSize()`. On macOS, `node-pty`'s `spawn-helper` may lack the execute bit (`posix_spawnp failed`); the README documents the `chmod +x` fix. The Docker image runs `node dist/index.js` under `tini` as a non-root `squash` user, with `config/` and `logs/` intended as mounted volumes.
 
 ## Release bundles
 

@@ -55,6 +55,9 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
 
   let runtime = createRuntime(config.id, 'stopped');
   let processRef: PtyProcess | undefined;
+  // Last size a viewer asked for. Every spawn uses it, so a restart (manual or
+  // automatic, watched or not) keeps the browser's dimensions.
+  let ptySize: { readonly cols: number; readonly rows: number } = { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
   let outputBuffer = '';
   const dataListeners = new Set<(chunk: string) => void>();
   const statusListeners = new Set<(runtime: InstanceRuntime) => void>();
@@ -227,8 +230,8 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
         args: config.args,
         cwd: config.cwd,
         env: { ...process.env, ...config.env, PATH: process.env.PATH, HOME: process.env.HOME },
-        cols: DEFAULT_COLS,
-        rows: DEFAULT_ROWS,
+        cols: ptySize.cols,
+        rows: ptySize.rows,
         name: DEFAULT_TERM_NAME
       });
     } catch (err) {
@@ -347,8 +350,12 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       });
     },
     resize(cols, rows) {
-      assertInstanceState(runtime.status === 'running', 'Cannot resize unless instance is running');
-      processRef?.resize(cols, rows);
+      // Not a state transition: when nothing is running, just remember the size
+      // for the next start().
+      ptySize = { cols, rows };
+      if (runtime.status === 'running') {
+        processRef?.resize(cols, rows);
+      }
     },
     getRuntime() {
       return runtime;

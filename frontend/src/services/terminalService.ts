@@ -10,6 +10,8 @@ export type TerminalPush =
   | { type: 'runtime'; status: string; pid?: number };
 
 export type TerminalHandlers = {
+  // Fires on every (re)connect — send() drops messages until the socket is open.
+  onOpen: () => void;
   onOutput: (data: string) => void;
   onRuntime: (runtime: { status: string; pid?: number }) => void;
   onError: (message: string) => void;
@@ -45,6 +47,7 @@ export const connectTerminal = (
 
     ws.onopen = () => {
       retries = 0;
+      handlers.onOpen();
     };
 
     ws.onmessage = (event) => {
