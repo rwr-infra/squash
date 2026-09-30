@@ -68,11 +68,23 @@ const TerminalPage = () => {
       fitAddon.fit();
     }
 
+    // The PTY must match what xterm shows, or the server's redraws land in the
+    // wrong columns. fit() only fires onResize when the size changes, so the
+    // current size is also sent explicitly whenever the other side may not have it.
+    const sendSize = () => {
+      fitAddon.fit();
+      connection.send({ type: 'resize', cols: terminal.cols, rows: terminal.rows });
+    };
+
     const connection = connectTerminal(instanceId, {
+      onOpen: sendSize,
       onOutput: (data) => terminal.write(data),
       onRuntime: ({ status: s, pid: p }) => {
         setStatus(s as InstanceStatus);
         setPid(p);
+        // Sent on every `running` push, not only on a change: a restart from
+        // running reports running → running, with nothing in between.
+        if (s === 'running') sendSize();
       },
       onError: (msg) => message.error({ content: msg, duration: 5 }),
       onClose: () => message.warning('Terminal connection closed')
@@ -80,12 +92,21 @@ const TerminalPage = () => {
     connectionRef.current = connection;
 
     terminal.onData((data) => connection.send({ type: 'input', data }));
+    terminal.onResize(({ cols, rows }) => connection.send({ type: 'resize', cols, rows }));
 
-    const handleResize = () => fitAddon.fit();
-    window.addEventListener('resize', handleResize);
+    // Observe the container rather than the window: it also changes size when the
+    // "instance is stopped" banner appears or goes away. fit() runs in the next
+    // frame so its own layout change can't re-enter the observer in a loop.
+    let fitFrame = 0;
+    const resizeObserver = new ResizeObserver(() => {
+      cancelAnimationFrame(fitFrame);
+      fitFrame = requestAnimationFrame(() => fitAddon.fit());
+    });
+    if (containerRef.current) resizeObserver.observe(containerRef.current);
 
     return () => {
-      window.removeEventListener('resize', handleResize);
+      resizeObserver.disconnect();
+      cancelAnimationFrame(fitFrame);
       connection.disconnect();
       terminal.dispose();
       connectionRef.current = null;
