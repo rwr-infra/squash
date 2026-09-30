@@ -323,7 +323,7 @@ const InstanceListPage = () => {
             <Input.TextArea placeholder="quit" autoSize={{ minRows: 1, maxRows: 4 }} />
           </Form.Item>
           <Form.Item name="stopTimeoutMs" label="Stop Timeout (ms)" tooltip="Force-kill the server if it is still running this long after a stop. Blank: 15000">
-            <InputNumber min={1000} max={120000} step={1000} precision={0} placeholder="15000" style={{ width: '100%' }} />
+            <InputNumber min={1000} max={600000} step={1000} precision={0} placeholder="15000" style={{ width: '100%' }} />
           </Form.Item>
           <ResetFormOnMount />
         </Form>

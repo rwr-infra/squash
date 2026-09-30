@@ -25,7 +25,7 @@ const RESET_AFTER_MS = 60_000;
 const WATCHDOG_INTERVAL_MS = 5000;
 const DEFAULT_STOP_TIMEOUT_MS = 15_000;
 const MIN_STOP_TIMEOUT_MS = 1000;
-const MAX_STOP_TIMEOUT_MS = 120_000;
+const MAX_STOP_TIMEOUT_MS = 600_000;
 // How much longer than stopTimeoutMs restart() waits for the old process
 // before giving up (a force-kill that never produced an exit).
 const RESTART_EXIT_GRACE_MS = 5000;
