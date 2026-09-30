@@ -47,15 +47,22 @@ process.on('exit', () => {
 // for ~200ms and then exits 1 — like a real server logging its shutdown.
 // `crash-once` exits 1 on its first run (flag file in cwd) and stays up after
 // the restart; `clean` exits 0 on its own; `size` prints its terminal size at
-// startup and on every resize.
+// startup and whenever it changes. It polls getWindowSize() (a live query)
+// instead of waiting for stdout 'resize': on the windows-latest runner ConPTY
+// resized the console but the node child never emitted 'resize'.
 const CHILD = `
 const fs = require('node:fs');
 const mode = process.argv[1];
 console.log('child ready');
 if (mode === 'size') {
-  const report = () => console.log('size ' + process.stdout.columns + 'x' + process.stdout.rows);
+  let last = '';
+  const report = () => {
+    const [cols, rows] = process.stdout.getWindowSize();
+    const size = cols + 'x' + rows;
+    if (size !== last) { last = size; console.log('size ' + size); }
+  };
   report();
-  process.stdout.on('resize', report);
+  setInterval(report, 50);
 }
 const shutdown = () => {
   let n = 0;
