@@ -38,7 +38,8 @@ Stop 之后实例一定会在有限时间内落到 `stopped`：先发该实例�
 - Linux 上真实 rwr_server 未验证；systemd 路径未验证（README 写了 `KillMode=mixed`、`TimeoutStopSec`）；`docker stop` 未实测（README 写了 `--stop-timeout 20` / `stop_grace_period: 20s`）。
 - 各行按固定时间表发送，不等服务器处理完上一行：`save_profiles` 很慢时，后面的回车可能被提前消耗（README 已说明）。`quit` 是否自动保存 profiles 仍未确认。
 - 经反向代理时，Restart 请求要挂到旧进程退出（最长 `stopTimeoutMs + 5s`，上限提高后可达约 10 分钟），代理读超时不够会让页面误报失败（README 已说明）；长期可改为立即返回、结果经 WS 推送。
-- 已接受的 low：终端页 Restart 响应可能覆盖 WS 推来的更新状态；Restart 被取消或 spawn 失败时审计无记录；`stopping` 时网页终端的键盘输入被丢弃（既有）。
+- 已接受的 low：Restart 被取消或 spawn 失败时审计无记录；`stopping` 时网页终端的键盘输入被丢弃（既有）。
+- PR #5 review（CodeRabbit）后补修：终端页 Start / Stop / Restart 的 HTTP 响应改为只在其间没有 WS 状态推送时才生效（`runtimeRev`）—— 服务器总是先推 WS 再回 HTTP，晚到的 Stop 响应曾把已经 `running` 的页面改回 `stopping` 和旧 PID（无头 Chrome + CDP 扣住响应复现，修复后通过）；Stop 请求进行中时 Start / Restart 也禁用。同一 review 的另一条（`dispose()` 加超时 reject）不成立：编辑 / 删除只对 stopped / crashed 实例调用（此时必无存活进程），关停另有预算；照改反而会留下永远无法启动的已释放 supervisor。
 - `nohup ./start.sh` 不再能让 squash 在 SSH 断开后继续运行（README 已说明，建议 tmux / 服务管理器）。
 
 ## 指针

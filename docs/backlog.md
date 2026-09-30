@@ -14,7 +14,6 @@
 - **实例表单保存没有进行中保护**（低，`main` 上已有）：`onOk={() => form.submit()}` 没有 `confirmLoading`，请求进行中仍可 Cancel；`handleSubmit` 在 await 之后无条件关闭 Modal。慢网络下「编辑 A → Save → Cancel → 编辑 B」时，A 的响应会关掉 B 的 Modal；新建时双击 Create 会发两个 POST。
 - **清空 Restart Delay 后提交返回 400**（低）：antd `InputNumber` 清空后给的是 `null`，而 `restartDelayMs: z.number().int().min(0).default(3000)` 只对 `undefined` 补默认值。可以像 `stopTimeoutMs` 那样在 `handleSubmit` 里 `?? undefined`。
 - **Restart 请求会挂到旧进程退出**（低）：最长 `stopTimeoutMs + 5s`，最长约 10 分钟。经反向代理或 Firefox（响应超时 300s）时，页面可能误报失败，但重启仍会完成（README 已说明）。长期可以改为立即返回，结果经 WebSocket 推送。
-- **终端页 Restart 的响应无条件 `setStatus`**（低）：如果新进程在 HTTP 响应到达前就崩溃，WS 已推送的 `crashed` 会被改回 `running`。Stop 已有同类保护（`TerminalPage.tsx` 的 `handleStop`）。
 - **Restart 被取消或 spawn 失败时审计里没有记录**（低）：审计只在成功后记录。
 - **`stopping` 期间网页终端的键盘输入被丢弃**（低，既有）：`sendRawInput` 要求状态是 `running`，所以停服卡住时无法在网页上手动按回车，只能用 Force stop。
 - **编辑实例后终端尺寸回到 120×40**（低）：编辑会 `dispose()` 旧 supervisor 并新建一个，新的没有记住尺寸；已打开的终端页仍连着旧对象，要重新进入页面。

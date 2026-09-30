@@ -7,7 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { connectTerminal } from '../services/terminalService';
 import { fetchInstance, startInstance, stopInstance, restartInstance, sendCommand } from '../services/apiService';
-import type { InstanceStatus } from '../services/apiService';
+import type { InstanceRuntime, InstanceStatus } from '../services/apiService';
 
 const statusColor: Record<InstanceStatus, string> = {
   stopped: 'default',
@@ -27,12 +27,24 @@ const TerminalPage = () => {
 
   const [status, setStatus] = useState<InstanceStatus>('stopped');
   // A second click while the Stop request is in flight would reach the
-  // server as a Force stop.
+  // server as a Force stop; Start and Restart wait for it too.
   const [stopPending, setStopPending] = useState(false);
   // Restart waits for the old process to exit (up to its stop timeout) before
   // it responds; the status meanwhile reads `stopping`, not `starting`.
   const [restartPending, setRestartPending] = useState(false);
   const [pid, setPid] = useState<number | undefined>();
+  // Bumped by every runtime push over the WebSocket. The server pushes each
+  // state change before it answers the HTTP request that caused it, so the WS
+  // is the source of truth: an action's response only updates the page if no
+  // push arrived while it was in flight (e.g. the WS is down). Otherwise a
+  // late Stop response could put a page that has since seen `running` back to
+  // `stopping` with the old PID.
+  const runtimeRev = useRef(0);
+  const applyResponse = (revAtRequest: number, runtime: InstanceRuntime) => {
+    if (runtimeRev.current !== revAtRequest) return;
+    setStatus(runtime.status);
+    setPid(runtime.pid);
+  };
   const [loading, setLoading] = useState(true);
   const [quickCmd, setQuickCmd] = useState('');
 
@@ -86,6 +98,7 @@ const TerminalPage = () => {
       onOpen: sendSize,
       onOutput: (data) => terminal.write(data),
       onRuntime: ({ status: s, pid: p }) => {
+        runtimeRev.current += 1;
         setStatus(s as InstanceStatus);
         setPid(p);
         // Sent on every `running` push, not only on a change: on Windows a
@@ -137,10 +150,10 @@ const TerminalPage = () => {
   const handleResize = () => fitAddonRef.current?.fit();
 
   const handleStart = async () => {
+    const rev = runtimeRev.current;
     try {
       const runtime = await startInstance(instanceId);
-      setStatus(runtime.status);
-      setPid(runtime.pid);
+      applyResponse(rev, runtime);
       message.success('Instance started');
     } catch (e) {
       message.error((e as Error).message);
@@ -149,12 +162,10 @@ const TerminalPage = () => {
 
   const handleStop = async (force: boolean) => {
     setStopPending(true);
+    const rev = runtimeRev.current;
     try {
       const runtime = await stopInstance(instanceId, { force });
-      // The WS may already have pushed `stopped` (a quick exit, a force kill);
-      // this response is older and must not put the page back in `stopping`.
-      setStatus((current) => (current === 'stopped' && runtime.status === 'stopping' ? current : runtime.status));
-      setPid(runtime.pid);
+      applyResponse(rev, runtime);
       message.success(force ? 'Force-stopping instance' : runtime.status === 'stopped' ? 'Instance stopped' : 'Stopping instance');
     } catch (e) {
       message.error((e as Error).message);
@@ -165,10 +176,10 @@ const TerminalPage = () => {
 
   const handleRestart = async () => {
     setRestartPending(true);
+    const rev = runtimeRev.current;
     try {
       const runtime = await restartInstance(instanceId);
-      setStatus(runtime.status);
-      setPid(runtime.pid);
+      applyResponse(rev, runtime);
       message.success('Instance restarted');
     } catch (e) {
       message.error((e as Error).message);
@@ -206,14 +217,14 @@ const TerminalPage = () => {
         <Tag color={statusColor[status]} style={{ marginInlineEnd: 0 }}>{status.toUpperCase()}</Tag>
         {pid && <span style={{ color: '#888', fontSize: 12 }}>PID {pid}</span>}
         <Space style={{ marginLeft: 'auto' }} wrap>
-          <Button size="small" icon={<PlayCircleOutlined />} disabled={running || stopping} onClick={handleStart} title="Start">{isMobile ? null : 'Start'}</Button>
+          <Button size="small" icon={<PlayCircleOutlined />} disabled={running || stopping || stopPending} onClick={handleStart} title="Start">{isMobile ? null : 'Start'}</Button>
           {/* Force stop asks first: a double click on Stop would otherwise land
               on it, since Stop turns into Force stop as soon as the request
               returns. */}
           <Popconfirm title="Force stop?" description="Kills the server now instead of waiting for it to shut down. Unsaved progress may be lost." disabled={!stopping} onConfirm={() => handleStop(true)} okText="Force stop" okButtonProps={{ danger: true }}>
             <Button size="small" icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => handleStop(false)} title={stopping ? 'Force stop' : 'Stop'}>{isMobile ? null : stopping ? 'Force stop' : 'Stop'}</Button>
           </Popconfirm>
-          <Button size="small" icon={<SyncOutlined />} disabled={stopping && !restartPending} onClick={handleRestart} loading={restartPending} title="Restart">{isMobile ? null : 'Restart'}</Button>
+          <Button size="small" icon={<SyncOutlined />} disabled={(stopping && !restartPending) || stopPending} onClick={handleRestart} loading={restartPending} title="Restart">{isMobile ? null : 'Restart'}</Button>
           <Button size="small" icon={<ExpandOutlined />} onClick={handleResize} title="Fit">{isMobile ? null : 'Fit'}</Button>
         </Space>
       </div>
@@ -227,7 +238,7 @@ const TerminalPage = () => {
           {!running && (
             <div style={{ padding: '8px 12px', background: '#3a2d2d', color: '#e0c0c0', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
               <span>Instance is {status}. Showing the last output below.</span>
-              <Button size="small" type="primary" icon={<PlayCircleOutlined />} disabled={stopping} onClick={handleStart}>Start</Button>
+              <Button size="small" type="primary" icon={<PlayCircleOutlined />} disabled={stopping || stopPending} onClick={handleStart}>Start</Button>
             </div>
           )}
           <div ref={containerRef} style={{ flex: 1, padding: 8, minHeight: 0 }} />
