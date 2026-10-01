@@ -21,6 +21,7 @@
     "smoke:pty-exit-window": "node scripts/smoke-pty-exit-window.mjs",
     "smoke:pty-lifecycle": "node scripts/smoke-pty-lifecycle.mjs",
     "smoke:pty-cleanup": "node scripts/smoke-pty-cleanup.mjs",
+    "smoke:pty-handles": "node scripts/smoke-pty-handles.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

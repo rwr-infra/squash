@@ -455,6 +455,16 @@ Windows 上可用 `npm run smoke:pty-exit-window` 检查子进程消失到 ConPT
 退出码 2 表示输入队列在有界观察内未排空，这些场景不能算安全通过；退出码 1 表示异常、
 覆盖前提不成立或清理失败。此探测尚未接入 CI。
 
+Windows 上可用 `npm run smoke:pty-handles [-- --mode M]`（Node >=24；`--mode supervisor`
+需先构建服务端）按对象类型归因每次退出后的 OS 句柄增长。它对比纯 node-pty 轮次
+（`dependency`）、附加适配层 conin 销毁的轮次（`conin-destroy`）与真实编译 supervisor
+驱动的轮次（`supervisor`），在轮间用独立的 NtQuerySystemInformation 辅助进程普查
+worker 的句柄。node-pty 1.2.0-beta.12 上三条路径每次自然退出都增长约 13-15 个句柄
+（File、Thread、Process、IoCompletion、Semaphore、Event）。supervisor 路径的分类型增量与
+conin 销毁路径完全一致；纯依赖路径额外多保留 conin 输入 File（每轮 +1，即 microsoft/
+node-pty#947，适配层的销毁已将其释放）。残留属于上游（从不 dispose 的 conout worker
+线程与只在 kill 时才执行的原生清理），不是 squash 代码。退出码 2 表示保留句柄的诊断结果，不作为 CI 门禁。
+
 ## 已知问题
 
 - **macOS `posix_spawnp failed`**:node-pty 的 spawn-helper 二进制文件在 macOS 上可能缺少执行权限。

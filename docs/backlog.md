@@ -6,7 +6,7 @@
 
 - **Linux 上真实 `rwr_server`**：只在 Windows Server 上人工验证过，包括 stopCommand `quit` + 空行。systemd（README 写了 `KillMode=mixed`、`TimeoutStopSec`）和 `docker stop`（README 写了 `--stop-timeout 20`）也都没有实测。
 - **`quit` 是否自动保存 profiles**：未确认。如果不会，rwr 的 stopCommand 应改为 `save_profiles`、`quit`、空行。注意各行按固定时间表发送，保存很慢时后面的回车可能被提前消耗。
-- **Windows PTY 其他句柄保留 / 故障边界**（中，待继续定位）：输入 Socket 在真实退出后释放的候选修复，已令原生命周期对照/压力各 8 轮最终 active inputs=0、queued bytes=0；但 OS 总句柄仍随轮次增长，未确认来源，不能宣称全部资源泄漏已消除。需继续区分 native/helper/其他管道，并验证长时、并发及真实 RWR bad allocation 根因。活动期间输入 pipe 错误仍按原行为失败退出，尚无实例级恢复契约。入口 `npm run smoke:pty-lifecycle`、`npm run smoke:pty-cleanup`、`npm run smoke:pty-exit-window`。见 [输入资源修复](tasks/2026-10-01-pty-cleanup/TASK.md) 和 [此前调查](archive/2026-10-01-pty-lifecycle.md)。
+- **Windows PTY 其他句柄保留 / 故障边界**（中，已归因待修复）：输入 Socket 修复后，自然退出每次仍保留约 13-15 个 OS 句柄（与 lifecycle 探针 194→311 独立观测吻合）；`npm run smoke:pty-handles` 的分类型普查显示 supervisor 路径与 conin 销毁路径 File 增量相同（纯依赖路径额外多 1 个/轮的 conin File，即 #947，适配层已释放），已归因到依赖层：从不 dispose 的 conout worker 线程（Thread+IoCompletion+管道 File）、自然退出路径从不执行的原生清理（子进程 Process 句柄、ConPTY 管道端/信号量/事件），squash 层零额外增长。修复候选是依赖层补丁（退出后 dispose conout worker + 原生 kill 清理），需另立契约并验证输出冲刷不被打断；长时/并发/真实 RWR bad allocation 根因仍未验证。活动期间输入 pipe 错误仍按原行为失败退出。入口 `npm run smoke:pty-handles`、`smoke:pty-lifecycle`、`smoke:pty-cleanup`、`smoke:pty-exit-window`。见 [归档](archive/2026-10-01-pty-handle-attribution.md)、[输入资源修复](tasks/2026-10-01-pty-cleanup/TASK.md) 和 [此前调查](archive/2026-10-01-pty-lifecycle.md)。
 
 ## 界面 / API
 

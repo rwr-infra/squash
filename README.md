@@ -518,6 +518,19 @@ Exit code 2 means the input queue did not drain in the bounded observation;
 those cases are inconclusive and are not counted as safe passes. Exit 1 indicates
 an exception, invalid coverage, or cleanup failure. This probe is not in CI.
 
+On Windows, `npm run smoke:pty-handles [-- --mode M]` (Node >=24; build the
+server first for `--mode supervisor`) attributes per-exit OS handle growth by
+object type. It compares pure node-pty rounds (`dependency`), the same rounds
+with the adapter's conin destroy (`conin-destroy`), and rounds driven by the
+compiled supervisor (`supervisor`), censusing the worker's handles between
+rounds with an independent NtQuerySystemInformation helper. On node-pty
+1.2.0-beta.12 all three modes grow ~13-15 handles per natural exit — File, Thread,
+Process, IoCompletion, Semaphore, Event. The supervisor path's per-type growth is
+identical to the conin-destroy path; the pure dependency path additionally
+retains the conin input File (+1 per round, microsoft/node-pty#947, which the
+adapter's destroy releases). The residue is upstream (the never-disposed conout
+worker thread and native cleanup that only runs on kill), not squash code.
+
 ## Known Issues
 
 - **macOS `posix_spawnp failed`**: node-pty spawn-helper binary may lack execute bit on macOS. Fix: `chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper` (in a source checkout using pnpm: `node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper`). Linux is unaffected.
