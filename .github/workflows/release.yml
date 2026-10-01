@@ -73,6 +73,13 @@ jobs:
         run: npm run package
         timeout-minutes: 20
 
+      # Requires the compiled server and frontend produced by Package. Exercises
+      # real HTTP/WS + PTY restart policies in isolated fixtures, including the
+      # full 60-second stable-run reset. Failure blocks artifact upload/release.
+      - name: Smoke-test restart policies end to end
+        run: npm run smoke:restart-policy
+        timeout-minutes: 10
+
       # Extracts release/<archive> for this OS into a temp dir, strips node from
       # PATH and drives it through start.sh / start.bat: health, frontend, login,
       # PTY round-trip, loopback-only default, weak-password refusal, clean exit.

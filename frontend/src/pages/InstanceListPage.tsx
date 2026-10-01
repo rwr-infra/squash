@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Table, Tag, Button, Space, Modal, Form, Input, InputNumber, Switch, Select, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
 import { RestartInfo } from '../components/RestartInfo';
@@ -76,6 +76,9 @@ const InstanceListPage = () => {
   const stopCommandValue = Form.useWatch('stopCommand', form);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<InstanceWithRuntime | null>(null);
+  const [saving, setSaving] = useState(false);
+  // State updates render later; the ref also blocks submissions in one turn.
+  const savingRef = useRef(false);
   const [auditOpen, setAuditOpen] = useState(false);
   const queryClient = useQueryClient();
 
@@ -138,20 +141,29 @@ const InstanceListPage = () => {
   const deleteMut = useMutation({ mutationFn: deleteInstance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }) });
 
   const openCreate = () => {
+    if (savingRef.current) return;
     setEditing(null);
     setModalOpen(true);
   };
 
   const openEdit = (record: InstanceWithRuntime) => {
+    if (savingRef.current) return;
     setEditing(record);
     setModalOpen(true);
   };
 
   const handleSubmit = async (values: CreateInstanceRequest) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
     try {
       const argsStr = values.args as unknown as string;
       const parsed: CreateInstanceRequest = {
         ...values,
+        // These settings have no form fields, so onFinish omits them. Editing
+        // replaces the full config: carry them explicitly rather than reset
+        // them to the API defaults. New instances use server defaults.
+        ...(editing ? { env: { ...editing.config.env }, logDir: editing.config.logDir } : {}),
         name: values.name?.trim() || values.id,
         args: argsStr ? argsStr.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
         // Kept as typed: a trailing empty line is an Enter (rwr_server needs one
@@ -175,6 +187,9 @@ const InstanceListPage = () => {
       queryClient.invalidateQueries({ queryKey: ['instances'] });
     } catch (e) {
       message.error((e as Error).message);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
@@ -203,7 +218,7 @@ const InstanceListPage = () => {
           <Button size={size} icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping && !canCancel) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => stopMut.mutate({ id: record.config.id, force: false })} title={stopping ? 'Force stop' : 'Stop / cancel auto-restart'} />
         </Popconfirm>
         <Button size={size} icon={<SyncOutlined />} disabled={(!running && !stopped) || restartPending} onClick={() => restartMut.mutate(record.config.id)} loading={restartPending} title="Restart" />
-        <Button size={size} icon={<EditOutlined />} disabled={!stopped} onClick={() => openEdit(record)} title={stopped ? 'Edit' : 'Stop the instance before editing'} />
+        <Button size={size} icon={<EditOutlined />} disabled={!stopped || saving} onClick={() => openEdit(record)} title={stopped ? 'Edit' : 'Stop the instance before editing'} />
         <Popconfirm title="Delete this instance?" onConfirm={() => deleteMut.mutate(record.config.id)}>
           <Button size={size} danger icon={<DeleteOutlined />} disabled={running || stopping} loading={deleteMut.isPending} title="Delete" />
         </Popconfirm>
@@ -284,7 +299,7 @@ const InstanceListPage = () => {
         <Space wrap>
           <Button icon={<HistoryOutlined />} onClick={() => setAuditOpen(true)}>{isMobile ? '' : 'Audit log'}</Button>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()}>{isMobile ? '' : 'Refresh'}</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>{isMobile ? 'Create' : 'Create Instance'}</Button>
+          <Button type="primary" icon={<PlusOutlined />} disabled={saving} onClick={openCreate}>{isMobile ? 'Create' : 'Create Instance'}</Button>
           {authStatus?.loginEnabled && (
             <Button icon={<LogoutOutlined />} onClick={handleLogout} title="Log out">{isMobile ? '' : 'Log out'}</Button>
           )}
@@ -303,17 +318,23 @@ const InstanceListPage = () => {
         key={editing ? `edit-${editing.config.id}` : 'create'}
         title={editing ? `Edit Instance — ${editing.config.id}` : 'Create Instance'}
         open={modalOpen}
-        onCancel={() => { setModalOpen(false); setEditing(null); }}
-        onOk={() => form.submit()}
+        onCancel={() => { if (!savingRef.current) { setModalOpen(false); setEditing(null); } }}
+        onOk={() => { if (!savingRef.current) form.submit(); }}
+        confirmLoading={saving}
+        okButtonProps={{ disabled: saving }}
+        cancelButtonProps={{ disabled: saving }}
+        closable={!saving}
+        keyboard={!saving}
+        mask={{ closable: !saving }}
         okText={editing ? 'Save' : 'Create'}
         width={isMobile ? '95vw' : 520}
         style={isMobile ? { top: 12 } : undefined}
         destroyOnHidden
         styles={{ body: { maxHeight: isMobile ? '75vh' : '70vh', overflowY: 'auto', overflowX: 'hidden' } }}
       >
-        <Form form={form} layout="vertical" onFinish={handleSubmit} initialValues={initialValues} style={{ marginTop: 16 }}>
+        <Form form={form} layout="vertical" disabled={saving} onFinish={handleSubmit} initialValues={initialValues} style={{ marginTop: 16 }}>
           <Form.Item name="id" label="Instance ID" rules={[{ required: true, pattern: /^[a-zA-Z0-9_-]+$/, message: 'Alphanumeric, dash, underscore only' }]} tooltip={editing ? 'The ID cannot be changed' : undefined}>
-            <Input placeholder="my-server-1" disabled={!!editing} />
+            <Input placeholder="my-server-1" disabled={!!editing || saving} />
           </Form.Item>
           <Form.Item name="name" label="Name" tooltip="Defaults to the Instance ID if left blank">
             <Input placeholder="Defaults to the Instance ID" />

@@ -421,9 +421,23 @@ npm --prefix frontend run build
 npm run smoke:restart-policy
 ```
 
+CI 在三平台打包后、上传产物前运行此检查。
+
 重启策略检查使用模拟子进程和 `.cache/` 下的临时配置，包含真实运行满 60 秒的计数重置。
 Windows 检查模拟 crashdump 恢复，并通过 IPC 调用管理器真实关闭处理器；
 不等同于复现 RWR 引擎崩溃，也不验证操作系统信号投递或实际浏览器交互。
+
+实例表单的浏览器回归使用无头 Chromium 和隔离 API fixture，不启动游戏服务器，
+不修改用户配置：
+
+```sh
+npm run smoke:instance-form
+```
+
+先构建服务端与前端；前端环境文件不要设置 `VITE_API_URL`，或在构建时将其覆盖为空，
+确保页面使用测试服务的同源 API。未自动找到 Chromium 时，设置 `SQUASH_BROWSER_PATH`。
+此浏览器检查是本地命令，尚未接入 CI。
+fixture 禁止浏览器连接其他来源；构建中带外部 API 地址时会失败，不会向该服务发送请求。
 
 Windows 适配层将 node-pty 精确锁定到 1.2.0-beta.12 并核对版本及 Windows 实现指纹，在创建 PTY 前拒绝不兼容版本/布局，
 仅在真实 PTY exit 后关闭输入，保留输出冲刷。升级依赖前需重新验证这段兼容。

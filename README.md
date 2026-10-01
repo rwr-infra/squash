@@ -473,10 +473,26 @@ npm --prefix frontend run build
 npm run smoke:restart-policy
 ```
 
+CI runs this after packaging on all three platforms, before artifact upload.
+
 The restart-policy smoke uses fake children and temporary config under `.cache/`,
 including 60 seconds of real stable uptime. On Windows it tests simulated
 crashdump recovery and invokes the real manager shutdown handler through IPC;
 it does not reproduce an RWR engine crash or test OS signal delivery/browser interaction.
+
+The instance form browser regression uses a headless Chromium browser and an
+isolated API fixture (no game server or user configuration):
+
+```sh
+npm run smoke:instance-form
+```
+
+Build the server and frontend first, with `VITE_API_URL` unset in frontend env
+files or overridden to an empty value at build time so the UI uses the fixture's
+same-origin API. Set `SQUASH_BROWSER_PATH` if Chromium is not detected automatically.
+This browser check is a local command and is not part of CI.
+The fixture blocks browser connections to other origins, so a build with an
+external API address fails without sending requests to that service.
 
 The Windows adapter pins node-pty to 1.2.0-beta.12 and checks its version and
 exact Windows implementation fingerprints before creating a PTY. It closes the input only after the real PTY exit, preserving
