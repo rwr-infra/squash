@@ -74,8 +74,11 @@ const fixturePids = () => {
   if (process.platform === 'win32') {
     const needle = childFile.replaceAll("'", "''");
     const command = `[Console]::OutputEncoding = [Text.Encoding]::UTF8; $taskProcesses = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${needle}') }); ConvertTo-Json -InputObject @($taskProcesses | ForEach-Object { [int]$_.ProcessId }) -Compress`;
-    const result = spawnSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
-    assert.equal(result.status, 0, `Fixture process inventory failed: ${result.stderr}`);
+    // A cold WMI/CIM namespace on a CI runner can exceed 10s; a timeout kill
+    // leaves stderr empty, so report status/signal too. 30s stays well under
+    // any restart window this inventory is snapshotted around.
+    const result = spawnSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    assert.equal(result.status, 0, `Fixture process inventory failed: status=${result.status} signal=${result.signal ?? '-'} ${result.stderr}`);
     return JSON.parse(result.stdout.trim());
   }
   const result = spawnSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8', timeout: 10000 });
