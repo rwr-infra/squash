@@ -451,6 +451,13 @@ exponential backoff (`restartDelayMs * 2^n`, capped at 60s), up to 5 consecutive
 attempts; the instance then stays `crashed`. Once an instance runs cleanly for
 60s, the attempt counter resets. Manual stop/restart always clears the counter.
 
+The Windows adapter pins node-pty to 1.2.0-beta.12 and checks its version and
+exact Windows implementation fingerprints before creating a PTY. It closes the input only after the real PTY exit, preserving
+output flushing. Revalidate this compatibility code before updating node-pty.
+`npm run smoke:pty-cleanup` (Windows, Node >=24, build server first) checks real
+normal/failed/forced exits, repeated operations and injected error boundaries.
+It uses isolated fixtures; an active-session input error still fails the host.
+
 ## Known Issues
 
 - **macOS `posix_spawnp failed`**: node-pty spawn-helper binary may lack execute bit on macOS. Fix: `chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper` (in a source checkout using pnpm: `node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper`). Linux is unaffected.

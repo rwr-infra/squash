@@ -7,7 +7,7 @@
 - **编辑实例可能丢 `env` / `logDir`**（中，HYPOTHESIS）：实例表单没有 `env`、`logDir` 的 `Form.Item`。`2ebd80a` 修好了跨实例串值，但提交时未注册的字段是否仍被丢弃、从而被 `CreateInstanceSchema` 的默认值 `{}` / `'logs'` 覆盖，还没有验证。复现方法：建一个带 `env` 的实例，在 UI 里编辑后保存，再用 API 读回。可以沿用 `docs/archive/2026-09-30-stop-escalation.md` 里的无头 Chrome 手法。入口：`frontend/src/pages/InstanceListPage.tsx` 的 `handleSubmit`。
 - **Linux 上真实 `rwr_server`**：只在 Windows Server 上人工验证过，包括 stopCommand `quit` + 空行。systemd（README 写了 `KillMode=mixed`、`TimeoutStopSec`）和 `docker stop`（README 写了 `--stop-timeout 20`）也都没有实测。
 - **`quit` 是否自动保存 profiles**：未确认。如果不会，rwr 的 stopCommand 应改为 `save_profiles`、`quit`、空行。注意各行按固定时间表发送，保存很慢时后面的回车可能被提前消耗。
-- **Windows 上进程退出后到 node-pty 发出 exit 之间约 1s**：这期间写入 conin（stopCommand、`sendCommand`、键盘输入），node-pty 的 `_inSocket` 没有 `'error'` 监听，理论上可能抛出未捕获异常。未证实。
+- **Windows PTY 其他句柄保留 / 故障边界**（中，待继续定位）：输入 Socket 在真实退出后释放的候选修复，已令原生命周期对照/压力各 8 轮最终 active inputs=0、queued bytes=0；但 OS 总句柄仍随轮次增长，未确认来源，不能宣称全部资源泄漏已消除。需继续区分 native/helper/其他管道，并验证长时、并发及真实 RWR bad allocation 根因。活动期间输入 pipe 错误仍按原行为失败退出，尚无实例级恢复契约。入口 `npm run smoke:pty-cleanup`。见 [输入资源修复](tasks/2026-10-01-pty-cleanup/TASK.md)。
 
 ## 界面 / API
 

@@ -400,6 +400,11 @@ squash 的处理方式是**检测崩溃转储文件**:引擎在崩溃时会把 `
 (`restartDelayMs * 2^n`,上限 60 秒)重启它,最多连续尝试 5 次;之后实例保持 `crashed`。
 一旦实例干净运行满 60 秒,尝试计数器就会重置。手动停止/重启总是会清零计数器。
 
+Windows 适配层将 node-pty 精确锁定到 1.2.0-beta.12 并核对版本及 Windows 实现指纹，在创建 PTY 前拒绝不兼容版本/布局，
+仅在真实 PTY exit 后关闭输入，保留输出冲刷。升级依赖前需重新验证这段兼容。
+`npm run smoke:pty-cleanup`（Windows、Node >=24，先构建服务端）使用隔离假服务器检查
+正常/异常/强杀退出、重复操作及错误注入边界；活动期间输入错误仍使宿主失败退出。
+
 ## 已知问题
 
 - **macOS `posix_spawnp failed`**:node-pty 的 spawn-helper 二进制文件在 macOS 上可能缺少执行权限。
