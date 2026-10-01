@@ -501,6 +501,23 @@ output flushing. Revalidate this compatibility code before updating node-pty.
 normal/failed/forced exits, repeated operations and injected error boundaries.
 It uses isolated fixtures; an active-session input error still fails the host.
 
+On Windows, `npm run smoke:pty-lifecycle` (Node >=24, build server first) runs
+eight sequential lifecycles per control/pressure worker with weak references, GC,
+input queue snapshots and independent Windows handle counts. It uses isolated
+fixtures and leaves real instances/config untouched. Exit 0 means no active input
+sockets or queued bytes at the final bounded observation; 2 reports retained
+resources; 1 reports a check or cleanup failure. This is a local investigation,
+not a CI gate or proof that RWR's bad allocation cause has been resolved.
+
+On Windows, investigate writes between child disappearance and ConPTY's delayed
+exit notification with `npm run smoke:pty-exit-window` (Node >=24, build server
+first). It runs isolated fake children through the compiled supervisor, requires
+actual socket writes in the observed window, and leaves production code/config
+unchanged. A passing bounded probe does not rule out every pipe/engine failure.
+Exit code 2 means the input queue did not drain in the bounded observation;
+those cases are inconclusive and are not counted as safe passes. Exit 1 indicates
+an exception, invalid coverage, or cleanup failure. This probe is not in CI.
+
 ## Known Issues
 
 - **macOS `posix_spawnp failed`**: node-pty spawn-helper binary may lack execute bit on macOS. Fix: `chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper` (in a source checkout using pnpm: `node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper`). Linux is unaffected.

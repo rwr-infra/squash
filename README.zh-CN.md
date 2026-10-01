@@ -444,6 +444,17 @@ Windows 适配层将 node-pty 精确锁定到 1.2.0-beta.12 并核对版本及 W
 `npm run smoke:pty-cleanup`（Windows、Node >=24，先构建服务端）使用隔离假服务器检查
 正常/异常/强杀退出、重复操作及错误注入边界；活动期间输入错误仍使宿主失败退出。
 
+Windows 上可用 `npm run smoke:pty-lifecycle`（Node >=24，先构建服务端）检查连续重启的资源生命周期。
+对照/压力两组各运行 8 轮，结合弱引用、GC、输入队列快照和独立 Windows 句柄计数；使用隔离假服务器，
+不写真实实例配置。退出码 0 表示最后的有界观察没有活动输入 Socket 或待写数据，2 表示资源残留，
+1 表示检查或清理失败。这是本地调查命令，不作为 CI 门禁，也不代表已解决 RWR 的 bad allocation 根因。
+
+Windows 上可用 `npm run smoke:pty-exit-window` 检查子进程消失到 ConPTY 延迟通知退出之间的写入
+（Node >=24，先构建服务端）。它使用隔离假子进程和实际编译 supervisor，要求窗口内确实调用
+底层 socket 写入，不改生产代码或用户配置。有界探测通过不代表排除了全部 pipe/引擎故障。
+退出码 2 表示输入队列在有界观察内未排空，这些场景不能算安全通过；退出码 1 表示异常、
+覆盖前提不成立或清理失败。此探测尚未接入 CI。
+
 ## 已知问题
 
 - **macOS `posix_spawnp failed`**:node-pty 的 spawn-helper 二进制文件在 macOS 上可能缺少执行权限。
