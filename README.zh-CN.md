@@ -439,8 +439,10 @@ npm run smoke:instance-form
 此浏览器检查是本地命令，尚未接入 CI。
 fixture 禁止浏览器连接其他来源；构建中带外部 API 地址时会失败，不会向该服务发送请求。
 
-Windows 适配层将 node-pty 精确锁定到 1.2.0-beta.12 并核对版本及 Windows 实现指纹，在创建 PTY 前拒绝不兼容版本/布局，
-仅在真实 PTY exit 后关闭输入，保留输出冲刷。升级依赖前需重新验证这段兼容。
+Windows 适配层将 node-pty 精确锁定到 1.2.0-beta.12 并核对版本及 Windows 实现指纹，在创建 PTY 前拒绝不兼容版本/布局。
+真实 PTY exit 后关闭输入 Socket（保留输出冲刷），并终止 node-pty 自然退出路径从不释放的 conout worker 线程。
+剩余每次退出约 5 个句柄（conhost 进程句柄与未关闭伪控制台内的管道句柄）在 JS 侧无法释放：node-pty 的退出监视线程
+在任何 JS 退出回调之前就移除了内部 pty 记录，退出后调用原生 kill 是空操作。升级依赖前需重新验证这段兼容。
 `npm run smoke:pty-cleanup`（Windows、Node >=24，先构建服务端）使用隔离假服务器检查
 正常/异常/强杀退出、重复操作及错误注入边界；活动期间输入错误仍使宿主失败退出。
 
@@ -459,11 +461,10 @@ Windows 上可用 `npm run smoke:pty-handles [-- --mode M]`（Node >=24；`--mod
 需先构建服务端）按对象类型归因每次退出后的 OS 句柄增长。它对比纯 node-pty 轮次
 （`dependency`）、附加适配层 conin 销毁的轮次（`conin-destroy`）与真实编译 supervisor
 驱动的轮次（`supervisor`），在轮间用独立的 NtQuerySystemInformation 辅助进程普查
-worker 的句柄。node-pty 1.2.0-beta.12 上三条路径每次自然退出都增长约 13-15 个句柄
-（File、Thread、Process、IoCompletion、Semaphore、Event）。supervisor 路径的分类型增量与
-conin 销毁路径完全一致；纯依赖路径额外多保留 conin 输入 File（每轮 +1，即 microsoft/
-node-pty#947，适配层的销毁已将其释放）。残留属于上游（从不 dispose 的 conout worker
-线程与只在 kill 时才执行的原生清理），不是 squash 代码。退出码 2 表示保留句柄的诊断结果，不作为 CI 门禁。
+worker 的句柄。node-pty 1.2.0-beta.12 上纯依赖路径（`dependency`、`conin-destroy`）每次自然退出
+保留约 13-15 个句柄（不经过适配层，行为不变）；supervisor 路径（适配层销毁 conin 并终止 conout worker）每轮约 5 个
+（conhost 进程句柄与未关闭伪控制台内的管道句柄，只能由上游修改 node-pty 退出监视线程释放），
+且 Thread、Event、Semaphore、IO 完成端口的每轮增长已消失。退出码 2 表示保留句柄的诊断结果，不作为 CI 门禁。
 
 ## 已知问题
 

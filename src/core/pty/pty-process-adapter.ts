@@ -19,6 +19,17 @@ const windowsCompatibilityArtifacts = {
 };
 
 /**
+ * Private layout of WindowsPtyAgent in node-pty 1.2.0-beta.12, pinned by the
+ * artifact fingerprints above: the conin socket (destroyed after the real
+ * exit, microsoft/node-pty#947) and the conout connection worker (terminated
+ * after the real exit — its only other cleanup path is the public kill()).
+ */
+type WindowsPtyAgentCompat = {
+  readonly inSocket: Socket;
+  readonly _conoutSocketWorker: { dispose(): void };
+};
+
+/**
  * Resolve the command into a form node-pty can actually spawn on this platform.
  *
  * node-pty on Windows ultimately calls `CreateProcessW`, which does NOT resolve a
@@ -107,14 +118,18 @@ export const createPtyProcess = (options: SpawnPtyOptions): PtyProcess => {
 
   let exited = false;
   let inputSocket: Socket | undefined;
+  let agentCompat: WindowsPtyAgentCompat | undefined;
   const exitListeners = new Set<(event: PtyExitInfo) => void>();
   if (isWindows) {
-    // Version-bound workaround for microsoft/node-pty#947. The public IPty
-    // API cannot close conin; keep the private access at this adapter boundary.
-    // The exact verified constructor creates a net.Socket at this field. Do
-    // not reject a private shape after spawning: public kill can defer forever
-    // for a quiet child, leaving failed-spawn resources unmanaged.
-    inputSocket = (ptyProcess as pty.IPty & { _agent: { inSocket: Socket } })._agent.inSocket;
+    // Version-bound workaround for microsoft/node-pty#947 plus the follow-up
+    // exit cleanup: the public IPty API cannot close conin and never disposes
+    // the conout socket worker on a natural exit. Keep the private access at
+    // this adapter boundary; the exact verified constructor shape is pinned by
+    // the artifact fingerprints above. Do not reject a private shape after
+    // spawning: public kill can defer forever for a quiet child, leaving
+    // failed-spawn resources unmanaged.
+    agentCompat = (ptyProcess as pty.IPty & { _agent: WindowsPtyAgentCompat })._agent;
+    inputSocket = agentCompat.inSocket;
     inputSocket.on('error', (error: NodeJS.ErrnoException) => {
       // Destroying pending writes after exit can report a closed pipe. Keep
       // active-session and unexpected errors fail-fast rather than hiding them.
@@ -129,6 +144,20 @@ export const createPtyProcess = (options: SpawnPtyOptions): PtyProcess => {
     // input now discards writes to a dead process without interrupting output.
     inputSocket?.destroy();
     inputSocket = undefined;
+    // Terminate the conout worker thread: node-pty only disposes it in its
+    // kill() path, so a natural exit leaked one worker (thread handle, its
+    // libuv loop's IOCP and two pipe handles) per PTY. dispose() drains for
+    // the flush interval first and is idempotent.
+    //
+    // The remaining per-exit residue (a conhost process handle and ~2 pipe
+    // handles inside the unclosed HPCON) is NOT fixable at this boundary: the
+    // native exit watcher removes the pty baton — including the HPCON —
+    // BEFORE the JS exit callback runs, so a post-exit native kill() finds no
+    // baton and does nothing (verified A/B against conpty.cc 1.2.0-beta.12:
+    // dispose-only and dispose+kill are identical). Closing the HPCON needs
+    // an upstream change in that watcher thread.
+    agentCompat?._conoutSocketWorker.dispose();
+    agentCompat = undefined;
     for (const listener of exitListeners) listener({ exitCode, signal });
     exitListeners.clear();
   });

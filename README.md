@@ -495,8 +495,14 @@ The fixture blocks browser connections to other origins, so a build with an
 external API address fails without sending requests to that service.
 
 The Windows adapter pins node-pty to 1.2.0-beta.12 and checks its version and
-exact Windows implementation fingerprints before creating a PTY. It closes the input only after the real PTY exit, preserving
-output flushing. Revalidate this compatibility code before updating node-pty.
+exact Windows implementation fingerprints before creating a PTY. After the real
+PTY exit it closes the input socket (preserving output flushing) and terminates
+node-pty's conout worker thread, which its natural-exit path never disposes.
+The remaining per-exit residue — a conhost process handle and ~2 pipe handles
+inside the unclosed pseudoconsole — cannot be released from JS: node-pty's
+exit watcher removes its internal pty record before any JS exit callback runs,
+so a post-exit native kill is a no-op. Revalidate this compatibility code
+before updating node-pty.
 `npm run smoke:pty-cleanup` (Windows, Node >=24, build server first) checks real
 normal/failed/forced exits, repeated operations and injected error boundaries.
 It uses isolated fixtures; an active-session input error still fails the host.
@@ -524,12 +530,14 @@ object type. It compares pure node-pty rounds (`dependency`), the same rounds
 with the adapter's conin destroy (`conin-destroy`), and rounds driven by the
 compiled supervisor (`supervisor`), censusing the worker's handles between
 rounds with an independent NtQuerySystemInformation helper. On node-pty
-1.2.0-beta.12 all three modes grow ~13-15 handles per natural exit — File, Thread,
-Process, IoCompletion, Semaphore, Event. The supervisor path's per-type growth is
-identical to the conin-destroy path; the pure dependency path additionally
-retains the conin input File (+1 per round, microsoft/node-pty#947, which the
-adapter's destroy releases). The residue is upstream (the never-disposed conout
-worker thread and native cleanup that only runs on kill), not squash code.
+1.2.0-beta.12 the raw dependency paths (`dependency`, `conin-destroy`) retain
+~13-15 handles per natural exit (unchanged: they bypass the adapter); the
+supervisor path — whose adapter destroys
+conin AND terminates the conout worker — retains ~5 per round (a conhost
+process handle and pipe handles inside the unclosed pseudoconsole, which only
+an upstream change to node-pty's exit watcher can release). Thread, Event,
+Semaphore and IO-completion growth is gone on the supervisor path. Exit 2
+reports the retained handles as a diagnostic; it is not a CI gate.
 
 ## Known Issues
 
