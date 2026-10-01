@@ -17,7 +17,7 @@
 
 ## 部署 / 构建 / CI
 
-- **重启策略 E2E 的云端验收**（中）：已加入三平台 package job，Windows 本机回归通过；尚未推送验证 Linux/macOS/Windows runner，也未执行远端变异验证。见 [归档](archive/2026-10-01-instance-form-and-ci.md)。
+- **重启策略 E2E 的远端变异验收**（低）：已加入三平台 package job；2026-10-01 分支 `feat/restart-policy-and-pty-hardening` 的云端运行（run 36840827236）三平台全绿（typecheck/supervisor/package/restart-policy/release 上传全过）。剩余：远端变异验证（故意让 e2e 失败确认云端真的阻断上传）与 PR 合入 main。见 [归档](archive/2026-10-01-instance-form-and-ci.md)。
 - **日志体验**（低）：`src/api/http/auth.ts` 的 `pino({ name: 'auth' })` 没有设 ISO 时间戳，和 `src/index.ts` 的格式不一致；便携包控制台输出的是原始 JSON，对双击运行的用户不友好。注意三点：
   - `pino-pretty` 是 devDependency，而打包用的是 `npm ci --omit=dev`；
   - `scripts/smoke-release.mjs` 按 JSON 解析启动日志；
