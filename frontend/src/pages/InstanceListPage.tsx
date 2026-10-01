@@ -1,6 +1,7 @@
-import { useLayoutEffect, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Table, Tag, Button, Space, Modal, Form, Input, InputNumber, Switch, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
+import { Table, Tag, Button, Space, Modal, Form, Input, InputNumber, Switch, Select, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
+import { RestartInfo } from '../components/RestartInfo';
 import { ReloadOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, DeleteOutlined, PlusOutlined, ApartmentOutlined, EditOutlined, HistoryOutlined, LogoutOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query';
 import type { InstanceStatus, CreateInstanceRequest, InstanceWithRuntime, AuditEntry } from '../services/apiService';
@@ -46,7 +47,7 @@ const CREATE_DEFAULTS: Partial<CreateInstanceRequest> = {
   cwd: '.',
   executable: './rwr_server',
   autoStart: false,
-  autoRestart: true,
+  restartPolicy: 'always',
   restartDelayMs: 3000
 };
 
@@ -75,6 +76,9 @@ const InstanceListPage = () => {
   const stopCommandValue = Form.useWatch('stopCommand', form);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<InstanceWithRuntime | null>(null);
+  const [saving, setSaving] = useState(false);
+  // State updates render later; the ref also blocks submissions in one turn.
+  const savingRef = useRef(false);
   const [auditOpen, setAuditOpen] = useState(false);
   const queryClient = useQueryClient();
 
@@ -137,20 +141,29 @@ const InstanceListPage = () => {
   const deleteMut = useMutation({ mutationFn: deleteInstance, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }) });
 
   const openCreate = () => {
+    if (savingRef.current) return;
     setEditing(null);
     setModalOpen(true);
   };
 
   const openEdit = (record: InstanceWithRuntime) => {
+    if (savingRef.current) return;
     setEditing(record);
     setModalOpen(true);
   };
 
   const handleSubmit = async (values: CreateInstanceRequest) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
     try {
       const argsStr = values.args as unknown as string;
       const parsed: CreateInstanceRequest = {
         ...values,
+        // These settings have no form fields, so onFinish omits them. Editing
+        // replaces the full config: carry them explicitly rather than reset
+        // them to the API defaults. New instances use server defaults.
+        ...(editing ? { env: { ...editing.config.env }, logDir: editing.config.logDir } : {}),
         name: values.name?.trim() || values.id,
         args: argsStr ? argsStr.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
         // Kept as typed: a trailing empty line is an Enter (rwr_server needs one
@@ -158,7 +171,9 @@ const InstanceListPage = () => {
         stopCommand: values.stopCommand?.trim() ? values.stopCommand : undefined,
         // A cleared InputNumber reports null, which the schema rejects; omit it
         // so the server-side default applies.
-        stopTimeoutMs: values.stopTimeoutMs ?? undefined
+        stopTimeoutMs: values.stopTimeoutMs ?? undefined,
+        restartDelayMs: values.restartDelayMs ?? undefined,
+        autoRestart: values.restartPolicy !== 'never'
       };
       if (editing) {
         await updateInstance(editing.config.id, parsed);
@@ -172,12 +187,15 @@ const InstanceListPage = () => {
       queryClient.invalidateQueries({ queryKey: ['instances'] });
     } catch (e) {
       message.error((e as Error).message);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
   // Form values when (re)opening the modal: existing config for edit, defaults for create.
   const initialValues: Partial<CreateInstanceRequest> = editing
-    ? { ...editing.config, args: editing.config.args.join(', ') as unknown as string[] }
+    ? { ...editing.config, restartPolicy: editing.config.restartPolicy ?? (editing.config.autoRestart ? 'on-failure' : 'never'), args: editing.config.args.join(', ') as unknown as string[] }
     : CREATE_DEFAULTS;
 
   // Action buttons shared by the desktop table and the mobile card list. Larger
@@ -187,6 +205,7 @@ const InstanceListPage = () => {
     const stopped = record.runtime.status === 'stopped' || record.runtime.status === 'crashed';
     // While a graceful stop is pending, Stop becomes an explicit Force stop.
     const stopping = record.runtime.status === 'stopping';
+    const canCancel = !!record.runtime.restartAt || record.runtime.desiredState === 'running';
     const stopPending = pendingStopIds.includes(record.config.id);
     const restartPending = pendingRestartIds.includes(record.config.id);
     return (
@@ -196,10 +215,10 @@ const InstanceListPage = () => {
         {/* Force stop asks first: a double click on Stop would otherwise land
             on it once the first request has returned. */}
         <Popconfirm title="Force stop?" description="Kills the server now instead of waiting for it to shut down. Unsaved progress may be lost." disabled={!stopping} onConfirm={() => stopMut.mutate({ id: record.config.id, force: true })} okText="Force stop" okButtonProps={{ danger: true }}>
-          <Button size={size} icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => stopMut.mutate({ id: record.config.id, force: false })} title={stopping ? 'Force stop' : 'Stop'} />
+          <Button size={size} icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping && !canCancel) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => stopMut.mutate({ id: record.config.id, force: false })} title={stopping ? 'Force stop' : 'Stop / cancel auto-restart'} />
         </Popconfirm>
         <Button size={size} icon={<SyncOutlined />} disabled={(!running && !stopped) || restartPending} onClick={() => restartMut.mutate(record.config.id)} loading={restartPending} title="Restart" />
-        <Button size={size} icon={<EditOutlined />} disabled={!stopped} onClick={() => openEdit(record)} title={stopped ? 'Edit' : 'Stop the instance before editing'} />
+        <Button size={size} icon={<EditOutlined />} disabled={!stopped || saving} onClick={() => openEdit(record)} title={stopped ? 'Edit' : 'Stop the instance before editing'} />
         <Popconfirm title="Delete this instance?" onConfirm={() => deleteMut.mutate(record.config.id)}>
           <Button size={size} danger icon={<DeleteOutlined />} disabled={running || stopping} loading={deleteMut.isPending} title="Delete" />
         </Popconfirm>
@@ -214,7 +233,7 @@ const InstanceListPage = () => {
       title: 'Status',
       dataIndex: ['runtime', 'status'],
       key: 'status',
-      render: (status: InstanceStatus) => <Tag color={statusColor[status]}>{status.toUpperCase()}</Tag>
+      render: (status: InstanceStatus, record: InstanceWithRuntime) => <div><Tag color={statusColor[status]}>{status.toUpperCase()}</Tag><div style={{ fontSize: 12 }}><RestartInfo runtime={record.runtime} /></div></div>
     },
     {
       title: 'PID',
@@ -265,6 +284,7 @@ const InstanceListPage = () => {
                 PID {runtime.pid ?? '-'} · Uptime {formatUptime(runtime.startedAt, runtime.status)} · Restarts {runtime.restartCount ?? 0}
               </div>
               {renderActions(record, 'middle')}
+              <div style={{ fontSize: 12, marginTop: 6 }}><RestartInfo runtime={runtime} /></div>
             </Card>
           </List.Item>
         );
@@ -279,7 +299,7 @@ const InstanceListPage = () => {
         <Space wrap>
           <Button icon={<HistoryOutlined />} onClick={() => setAuditOpen(true)}>{isMobile ? '' : 'Audit log'}</Button>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()}>{isMobile ? '' : 'Refresh'}</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>{isMobile ? 'Create' : 'Create Instance'}</Button>
+          <Button type="primary" icon={<PlusOutlined />} disabled={saving} onClick={openCreate}>{isMobile ? 'Create' : 'Create Instance'}</Button>
           {authStatus?.loginEnabled && (
             <Button icon={<LogoutOutlined />} onClick={handleLogout} title="Log out">{isMobile ? '' : 'Log out'}</Button>
           )}
@@ -298,17 +318,23 @@ const InstanceListPage = () => {
         key={editing ? `edit-${editing.config.id}` : 'create'}
         title={editing ? `Edit Instance — ${editing.config.id}` : 'Create Instance'}
         open={modalOpen}
-        onCancel={() => { setModalOpen(false); setEditing(null); }}
-        onOk={() => form.submit()}
+        onCancel={() => { if (!savingRef.current) { setModalOpen(false); setEditing(null); } }}
+        onOk={() => { if (!savingRef.current) form.submit(); }}
+        confirmLoading={saving}
+        okButtonProps={{ disabled: saving }}
+        cancelButtonProps={{ disabled: saving }}
+        closable={!saving}
+        keyboard={!saving}
+        mask={{ closable: !saving }}
         okText={editing ? 'Save' : 'Create'}
         width={isMobile ? '95vw' : 520}
         style={isMobile ? { top: 12 } : undefined}
         destroyOnHidden
         styles={{ body: { maxHeight: isMobile ? '75vh' : '70vh', overflowY: 'auto', overflowX: 'hidden' } }}
       >
-        <Form form={form} layout="vertical" onFinish={handleSubmit} initialValues={initialValues} style={{ marginTop: 16 }}>
+        <Form form={form} layout="vertical" disabled={saving} onFinish={handleSubmit} initialValues={initialValues} style={{ marginTop: 16 }}>
           <Form.Item name="id" label="Instance ID" rules={[{ required: true, pattern: /^[a-zA-Z0-9_-]+$/, message: 'Alphanumeric, dash, underscore only' }]} tooltip={editing ? 'The ID cannot be changed' : undefined}>
-            <Input placeholder="my-server-1" disabled={!!editing} />
+            <Input placeholder="my-server-1" disabled={!!editing || saving} />
           </Form.Item>
           <Form.Item name="name" label="Name" tooltip="Defaults to the Instance ID if left blank">
             <Input placeholder="Defaults to the Instance ID" />
@@ -325,8 +351,12 @@ const InstanceListPage = () => {
           <Form.Item name="autoStart" label="Auto Start" valuePropName="checked" tooltip="Start this instance automatically when squash launches">
             <Switch />
           </Form.Item>
-          <Form.Item name="autoRestart" label="Auto Restart" valuePropName="checked" tooltip="Restart automatically if the server crashes">
-            <Switch />
+          <Form.Item name="restartPolicy" label="Restart Policy" rules={[{ required: true }]} extra="Keep running also restarts after exit code 0. Stop always cancels recovery. Retries back off and pause after 5 consecutive attempts.">
+            <Select options={[
+              { value: 'never', label: 'Disabled' },
+              { value: 'on-failure', label: 'On failure (non-zero exit or signal)' },
+              { value: 'always', label: 'Keep running (recommended for RWR)' }
+            ]} />
           </Form.Item>
           <Form.Item name="restartDelayMs" label="Restart Delay (ms)">
             <InputNumber min={0} step={1000} style={{ width: '100%' }} />

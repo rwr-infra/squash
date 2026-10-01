@@ -395,10 +395,75 @@ squash 的处理方式是**检测崩溃转储文件**:引擎在崩溃时会把 `
 
 ## 自动重启
 
-创建实例时设置 `autoRestart: true`(可选地附带 `restartDelayMs`,默认 `3000`)。
-当实例发生非预期退出(进入 `crashed`)时,squash 会以指数退避
-(`restartDelayMs * 2^n`,上限 60 秒)重启它,最多连续尝试 5 次;之后实例保持 `crashed`。
-一旦实例干净运行满 60 秒,尝试计数器就会重置。手动停止/重启总是会清零计数器。
+每个实例可选择 `restartPolicy`：
+
+- `never`：禁用自动重启。
+- `on-failure`：仅在非零退出码或信号终止时重启。
+- `always`：维持运行，进程自主退出时无论退出码是否为 0 都重启，推荐 RWR 使用。
+  RWR 的错误处理可能以退出码 0 结束。
+
+界面新建实例默认 `always`。旧配置和未指定策略的 API 请求保留原行为：
+`autoRestart: true` 对应 `on-failure`，false/未设置对应 `never`（API 默认 true）。
+显式 `restartPolicy` 优先于 `autoRestart`；编辑旧实例时不会自动切换策略。
+
+重试沿用指数退避（`restartDelayMs * 2^n`，基础延迟默认 3000ms，上限 60 秒），
+最多连续尝试 5 次，随后暂停恢复。连续运行满 60 秒后重置计数。
+列表和终端会显示下一次重启时间、退出码/信号或暂停原因。
+手动 Stop 可取消等待中的恢复；编辑、删除、管理器关闭也取消恢复。
+手动 Start/Restart 清除旧定时器并重置计数。启动配置错误需要人工修正后重试。
+Windows 崩溃弹窗看门狗在两种启用重启的策略下都生效。
+
+使用 Node >=24 运行隔离的 HTTP/WebSocket/PTY 回归：
+
+```sh
+npm run build:server
+npm --prefix frontend run build
+npm run smoke:restart-policy
+```
+
+CI 在三平台打包后、上传产物前运行此检查。
+
+重启策略检查使用模拟子进程和 `.cache/` 下的临时配置，包含真实运行满 60 秒的计数重置。
+Windows 检查模拟 crashdump 恢复，并通过 IPC 调用管理器真实关闭处理器；
+不等同于复现 RWR 引擎崩溃，也不验证操作系统信号投递或实际浏览器交互。
+
+实例表单的浏览器回归使用无头 Chromium 和隔离 API fixture，不启动游戏服务器，
+不修改用户配置：
+
+```sh
+npm run smoke:instance-form
+```
+
+先构建服务端与前端；前端环境文件不要设置 `VITE_API_URL`，或在构建时将其覆盖为空，
+确保页面使用测试服务的同源 API。未自动找到 Chromium 时，设置 `SQUASH_BROWSER_PATH`。
+此浏览器检查是本地命令，尚未接入 CI。
+fixture 禁止浏览器连接其他来源；构建中带外部 API 地址时会失败，不会向该服务发送请求。
+
+Windows 适配层将 node-pty 精确锁定到 1.2.0-beta.12 并核对版本及 Windows 实现指纹，在创建 PTY 前拒绝不兼容版本/布局，
+仅在真实 PTY exit 后关闭输入，保留输出冲刷。升级依赖前需重新验证这段兼容。
+`npm run smoke:pty-cleanup`（Windows、Node >=24，先构建服务端）使用隔离假服务器检查
+正常/异常/强杀退出、重复操作及错误注入边界；活动期间输入错误仍使宿主失败退出。
+
+Windows 上可用 `npm run smoke:pty-lifecycle`（Node >=24，先构建服务端）检查连续重启的资源生命周期。
+对照/压力两组各运行 8 轮，结合弱引用、GC、输入队列快照和独立 Windows 句柄计数；使用隔离假服务器，
+不写真实实例配置。退出码 0 表示最后的有界观察没有活动输入 Socket 或待写数据，2 表示资源残留，
+1 表示检查或清理失败。这是本地调查命令，不作为 CI 门禁，也不代表已解决 RWR 的 bad allocation 根因。
+
+Windows 上可用 `npm run smoke:pty-exit-window` 检查子进程消失到 ConPTY 延迟通知退出之间的写入
+（Node >=24，先构建服务端）。它使用隔离假子进程和实际编译 supervisor，要求窗口内确实调用
+底层 socket 写入，不改生产代码或用户配置。有界探测通过不代表排除了全部 pipe/引擎故障。
+退出码 2 表示输入队列在有界观察内未排空，这些场景不能算安全通过；退出码 1 表示异常、
+覆盖前提不成立或清理失败。此探测尚未接入 CI。
+
+Windows 上可用 `npm run smoke:pty-handles [-- --mode M]`（Node >=24；`--mode supervisor`
+需先构建服务端）按对象类型归因每次退出后的 OS 句柄增长。它对比纯 node-pty 轮次
+（`dependency`）、附加适配层 conin 销毁的轮次（`conin-destroy`）与真实编译 supervisor
+驱动的轮次（`supervisor`），在轮间用独立的 NtQuerySystemInformation 辅助进程普查
+worker 的句柄。node-pty 1.2.0-beta.12 上三条路径每次自然退出都增长约 13-15 个句柄
+（File、Thread、Process、IoCompletion、Semaphore、Event）。supervisor 路径的分类型增量与
+conin 销毁路径完全一致；纯依赖路径额外多保留 conin 输入 File（每轮 +1，即 microsoft/
+node-pty#947，适配层的销毁已将其释放）。残留属于上游（从不 dispose 的 conout worker
+线程与只在 kill 时才执行的原生清理），不是 squash 代码。退出码 2 表示保留句柄的诊断结果，不作为 CI 门禁。
 
 ## 已知问题
 

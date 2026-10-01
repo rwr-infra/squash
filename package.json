@@ -16,6 +16,12 @@
     "smoke:pty": "tsx scripts/pty-rwr-smoke.ts",
     "smoke:release": "node scripts/smoke-release.mjs",
     "smoke:supervisor": "tsx scripts/smoke-supervisor.ts",
+    "smoke:restart-policy": "node scripts/smoke-restart-policy.mjs",
+    "smoke:instance-form": "node scripts/smoke-instance-form.mjs",
+    "smoke:pty-exit-window": "node scripts/smoke-pty-exit-window.mjs",
+    "smoke:pty-lifecycle": "node scripts/smoke-pty-lifecycle.mjs",
+    "smoke:pty-cleanup": "node scripts/smoke-pty-cleanup.mjs",
+    "smoke:pty-handles": "node scripts/smoke-pty-handles.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -23,7 +29,7 @@
     "@fastify/static": "^9.1.0",
     "@fastify/websocket": "^11.2.0",
     "fastify": "^5.8.4",
-    "node-pty": "^1.2.0-beta.12",
+    "node-pty": "1.2.0-beta.12",
     "pino": "10.3.1",
     "zod": "^4.3.6"
   },

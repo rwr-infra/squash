@@ -1,4 +1,6 @@
 export type InstanceStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'crashed';
+export type RestartPolicy = 'never' | 'on-failure' | 'always';
+export type RestartReason = 'unexpected-exit' | 'disabled' | 'clean-exit' | 'manual-stop' | 'retry-limit' | 'spawn-failed';
 
 export type InstanceConfig = {
   readonly id: string;
@@ -10,6 +12,7 @@ export type InstanceConfig = {
   readonly logDir: string;
   readonly autoStart?: boolean;
   readonly autoRestart?: boolean;
+  readonly restartPolicy?: RestartPolicy;
   readonly restartDelayMs?: number;
   // Console command(s) that shut the server down gracefully, one per line, each
   // sent followed by Enter, a second apart; a blank line after the first
@@ -32,6 +35,9 @@ export type InstanceRuntime = {
   readonly exitSignal?: number;
   readonly viewers: number;
   readonly restartCount?: number;
+  readonly desiredState?: 'running' | 'stopped';
+  readonly restartAt?: string;
+  readonly restartReason?: RestartReason;
 };
 
 export type InstanceSupervisor = {

@@ -8,6 +8,7 @@ import '@xterm/xterm/css/xterm.css';
 import { connectTerminal } from '../services/terminalService';
 import { fetchInstance, startInstance, stopInstance, restartInstance, sendCommand } from '../services/apiService';
 import type { InstanceRuntime, InstanceStatus } from '../services/apiService';
+import { RestartInfo } from '../components/RestartInfo';
 
 const statusColor: Record<InstanceStatus, string> = {
   stopped: 'default',
@@ -33,6 +34,7 @@ const TerminalPage = () => {
   // it responds; the status meanwhile reads `stopping`, not `starting`.
   const [restartPending, setRestartPending] = useState(false);
   const [pid, setPid] = useState<number | undefined>();
+  const [runtimeInfo, setRuntimeInfo] = useState<InstanceRuntime>({ id: instanceId, status: 'stopped', viewers: 0 });
   // Bumped by every runtime push over the WebSocket. The server pushes each
   // state change before it answers the HTTP request that caused it, so the WS
   // is the source of truth: an action's response only updates the page if no
@@ -44,6 +46,7 @@ const TerminalPage = () => {
     if (runtimeRev.current !== revAtRequest) return;
     setStatus(runtime.status);
     setPid(runtime.pid);
+    setRuntimeInfo(runtime);
   };
   const [loading, setLoading] = useState(true);
   const [quickCmd, setQuickCmd] = useState('');
@@ -57,6 +60,7 @@ const TerminalPage = () => {
       .then(({ runtime }) => {
         setStatus(runtime.status);
         setPid(runtime.pid);
+        setRuntimeInfo(runtime);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -97,10 +101,12 @@ const TerminalPage = () => {
     const connection = connectTerminal(instanceId, {
       onOpen: sendSize,
       onOutput: (data) => terminal.write(data),
-      onRuntime: ({ status: s, pid: p }) => {
+      onRuntime: (runtime) => {
+        const { status: s, pid: p } = runtime;
         runtimeRev.current += 1;
         setStatus(s as InstanceStatus);
         setPid(p);
+        setRuntimeInfo(runtime);
         // Sent on every `running` push, not only on a change: on Windows a
         // start reports running twice (the PID arrives with the first output).
         if (s === 'running') sendSize();
@@ -207,6 +213,7 @@ const TerminalPage = () => {
   // force kill. Kept apart from `running`, which also drives the stopped banner
   // and the command input.
   const stopping = status === 'stopping';
+  const canCancel = !!runtimeInfo.restartAt || runtimeInfo.desiredState === 'running';
 
   return (
     <ConfigProvider theme={{ algorithm: theme.darkAlgorithm }}>
@@ -222,7 +229,7 @@ const TerminalPage = () => {
               on it, since Stop turns into Force stop as soon as the request
               returns. */}
           <Popconfirm title="Force stop?" description="Kills the server now instead of waiting for it to shut down. Unsaved progress may be lost." disabled={!stopping} onConfirm={() => handleStop(true)} okText="Force stop" okButtonProps={{ danger: true }}>
-            <Button size="small" icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => handleStop(false)} title={stopping ? 'Force stop' : 'Stop'}>{isMobile ? null : stopping ? 'Force stop' : 'Stop'}</Button>
+            <Button size="small" icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping && !canCancel) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => handleStop(false)} title={stopping ? 'Force stop' : 'Stop / cancel auto-restart'}>{isMobile ? null : stopping ? 'Force stop' : 'Stop'}</Button>
           </Popconfirm>
           <Button size="small" icon={<SyncOutlined />} disabled={(stopping && !restartPending) || stopPending} onClick={handleRestart} loading={restartPending} title="Restart">{isMobile ? null : 'Restart'}</Button>
           <Button size="small" icon={<ExpandOutlined />} onClick={handleResize} title="Fit">{isMobile ? null : 'Fit'}</Button>
@@ -237,7 +244,7 @@ const TerminalPage = () => {
         <>
           {!running && (
             <div style={{ padding: '8px 12px', background: '#3a2d2d', color: '#e0c0c0', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span>Instance is {status}. Showing the last output below.</span>
+              <span>Instance is {status}. Showing the last output below. <RestartInfo runtime={runtimeInfo} /></span>
               <Button size="small" type="primary" icon={<PlayCircleOutlined />} disabled={stopping || stopPending} onClick={handleStart}>Start</Button>
             </div>
           )}

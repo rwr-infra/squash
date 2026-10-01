@@ -1,10 +1,22 @@
 import * as pty from 'node-pty';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import type { Socket } from 'node:net';
+import { createHash } from 'node:crypto';
 import type { PtyProcess, PtyExitInfo, SpawnPtyOptions } from './pty-types.js';
 
 const isWindows = process.platform === 'win32';
+const nodePtyRequire = createRequire(import.meta.url);
+const nodePtyVersion: string = nodePtyRequire('node-pty/package.json').version;
+const windowsCompatibilityVersion = '1.2.0-beta.12';
+// Validate the implementation that creates/exposes conin BEFORE allocating a
+// PTY. A version string alone also accepts locally patched private layouts.
+const windowsCompatibilityArtifacts = {
+  'windowsPtyAgent.js': '1583dc8d41632d0a571d6b3ac27a7d58d445e359ad7799af042de6b5d50d68d0',
+  'windowsTerminal.js': 'd6bc0912ecfaf2857651965f887a37bfeb04c745c075e8d10b31cbf661d3aef3'
+};
 
 /**
  * Resolve the command into a form node-pty can actually spawn on this platform.
@@ -75,19 +87,50 @@ const bindData = (ptyProcess: pty.IPty) => (listener: (chunk: string) => void) =
   ptyProcess.onData(listener);
 };
 
-const bindExit = (ptyProcess: pty.IPty) => (listener: (event: PtyExitInfo) => void) => {
-  ptyProcess.onExit(({ exitCode, signal }) => {
-    listener({ exitCode, signal });
-  });
-};
-
 export const createPtyProcess = (options: SpawnPtyOptions): PtyProcess => {
+  if (isWindows && nodePtyVersion !== windowsCompatibilityVersion) {
+    throw new Error(`Windows PTY input cleanup requires node-pty ${windowsCompatibilityVersion}; found ${nodePtyVersion}`);
+  }
+  if (isWindows) {
+    for (const [file, expected] of Object.entries(windowsCompatibilityArtifacts)) {
+      const actual = createHash('sha256').update(readFileSync(nodePtyRequire.resolve(`node-pty/lib/${file}`))).digest('hex');
+      if (actual !== expected) throw new Error(`Unsupported Windows PTY compatibility artifact: ${file}`);
+    }
+  }
   const ptyProcess = pty.spawn(resolveCommand(options.command, options.cwd), [...options.args], {
     name: options.name,
     cols: options.cols,
     rows: options.rows,
     cwd: options.cwd,
     env: { ...options.env }
+  });
+
+  let exited = false;
+  let inputSocket: Socket | undefined;
+  const exitListeners = new Set<(event: PtyExitInfo) => void>();
+  if (isWindows) {
+    // Version-bound workaround for microsoft/node-pty#947. The public IPty
+    // API cannot close conin; keep the private access at this adapter boundary.
+    // The exact verified constructor creates a net.Socket at this field. Do
+    // not reject a private shape after spawning: public kill can defer forever
+    // for a quiet child, leaving failed-spawn resources unmanaged.
+    inputSocket = (ptyProcess as pty.IPty & { _agent: { inSocket: Socket } })._agent.inSocket;
+    inputSocket.on('error', (error: NodeJS.ErrnoException) => {
+      // Destroying pending writes after exit can report a closed pipe. Keep
+      // active-session and unexpected errors fail-fast rather than hiding them.
+      if (exited && ['ERR_STREAM_DESTROYED', 'ERR_SOCKET_CLOSED', 'EPIPE', 'EBADF'].includes(error.code ?? '')) return;
+      throw error;
+    });
+  }
+  ptyProcess.onExit(({ exitCode, signal }) => {
+    if (exited) return;
+    exited = true;
+    // Output has already flushed before node-pty emits exit. Closing only the
+    // input now discards writes to a dead process without interrupting output.
+    inputSocket?.destroy();
+    inputSocket = undefined;
+    for (const listener of exitListeners) listener({ exitCode, signal });
+    exitListeners.clear();
   });
 
   return {
@@ -100,12 +143,15 @@ export const createPtyProcess = (options: SpawnPtyOptions): PtyProcess => {
       return ptyProcess.pid;
     },
     write: (data) => {
+      if (exited) return;
       ptyProcess.write(data);
     },
     resize: (cols, rows) => {
+      if (exited) return;
       ptyProcess.resize(cols, rows);
     },
     kill: (mode) => {
+      if (exited) return;
       if (isWindows) {
         // Until ConPTY is ready the PID is the placeholder 0 (see `pid` above)
         // and `taskkill /PID 0` does nothing; node-pty queues its own kill
@@ -125,6 +171,6 @@ export const createPtyProcess = (options: SpawnPtyOptions): PtyProcess => {
       ptyProcess.kill();
     },
     onData: bindData(ptyProcess),
-    onExit: bindExit(ptyProcess)
+    onExit: (listener) => { if (!exited) exitListeners.add(listener); }
   };
 };

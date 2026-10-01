@@ -10,6 +10,7 @@ import type {
   InstanceRuntime,
   InstanceStatus,
   InstanceSupervisor,
+  RestartPolicy,
   StopOptions
 } from './instance-types.js';
 
@@ -46,6 +47,7 @@ const createRuntime = (id: string, status: InstanceStatus): InstanceRuntime => (
   id,
   status,
   viewers: 0,
+  desiredState: 'stopped',
   restartCount: 0
 });
 
@@ -64,6 +66,12 @@ export const resolveStopTimeoutMs = (value: unknown) =>
   typeof value === 'number' && Number.isInteger(value) && value >= MIN_STOP_TIMEOUT_MS && value <= MAX_STOP_TIMEOUT_MS
     ? value
     : DEFAULT_STOP_TIMEOUT_MS;
+
+// Explicit policies win; legacy configs keep their original restart behavior.
+export const resolveRestartPolicy = (config: InstanceConfig): RestartPolicy =>
+  config.restartPolicy === 'never' || config.restartPolicy === 'on-failure' || config.restartPolicy === 'always'
+    ? config.restartPolicy
+    : config.autoRestart ? 'on-failure' : 'never';
 // One command per line. A blank line (after the first command) sends a bare
 // Enter: rwr_server, for one, answers `quit` with "Exit requested" and exits
 // only on the next Enter. Leading blank lines are dropped; an all-blank value
@@ -78,8 +86,11 @@ const parseStopCommands = (value: unknown): readonly string[] => {
 export const createInstanceSupervisor = async (config: InstanceConfig): Promise<InstanceSupervisor> => {
   const parser = createOutputParser();
   const logWriter = await createInstanceLogWriter(toInstanceLogFile(config.logDir, config.id));
-  const restartDelayMs = config.restartDelayMs ?? DEFAULT_RESTART_DELAY_MS;
-  const watchdogEnabled = isWindows && config.autoRestart === true;
+  const restartDelayMs = typeof config.restartDelayMs === 'number' && Number.isInteger(config.restartDelayMs) && config.restartDelayMs >= 0
+    ? config.restartDelayMs
+    : DEFAULT_RESTART_DELAY_MS;
+  const restartPolicy = resolveRestartPolicy(config);
+  const watchdogEnabled = isWindows && restartPolicy !== 'never';
   const stopTimeoutMs = resolveStopTimeoutMs(config.stopTimeoutMs);
   const stopCommands = parseStopCommands(config.stopCommand);
 
@@ -105,6 +116,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   // Set by dispose(): this supervisor is being discarded (edit/delete/squash
   // shutdown) and must never spawn again.
   let disposed = false;
+  let desiredRunning = false;
   // Bumped by every stop()/dispose(): a restart() waiting for the old process
   // to exit must not start a new one if someone asked to stop meanwhile.
   let stopRequests = 0;
@@ -164,6 +176,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     clearTimer(resetTimer);
     restartTimer = undefined;
     resetTimer = undefined;
+    runtime = markRuntime(runtime, { restartAt: undefined });
   };
 
   // When rwr_server crashes on Windows its engine writes <cwd>/rwr_crashdump.dmp
@@ -180,36 +193,46 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       if (processRef === undefined || runtime.status !== 'running') {
         return;
       }
+      const watchedProcess = processRef;
+      const watchedStart = currentRunStartedAtMs;
       const dumpMtime = await readCrashDumpMtime(config.cwd);
-      const crashed = dumpMtime !== undefined && dumpMtime > currentRunStartedAtMs;
-      if (crashed && processRef && runtime.status === 'running') {
+      const crashed = dumpMtime !== undefined && dumpMtime > watchedStart;
+      if (crashed && processRef === watchedProcess && runtime.status === 'running' && desiredRunning) {
         await log('crash detected (fresh rwr_crashdump.dmp) — instance is hanging behind a dialog; force-killing process tree');
         // Force-kill triggers onExit → crashed → scheduleRestart.
-        processRef.kill('force');
+        if (processRef === watchedProcess && runtime.status === 'running' && desiredRunning) watchedProcess.kill('force');
       }
     }, WATCHDOG_INTERVAL_MS);
   };
 
   const scheduleRestart = () => {
     clearTimer(restartTimer);
-    if (!config.autoRestart || disposed) {
+    if (restartPolicy === 'never' || disposed || !desiredRunning || processRef || !canStart(runtime.status)) {
       return;
     }
     if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
-      void log(`reached max restart attempts (${MAX_RESTART_ATTEMPTS}); leaving instance crashed`);
+      runtime = markRuntime(runtime, { restartAt: undefined, restartReason: 'retry-limit' });
+      notifyStatus();
+      void log(`reached max restart attempts (${MAX_RESTART_ATTEMPTS}); auto-restart paused`);
       return;
     }
 
     const delay = Math.min(restartDelayMs * 2 ** restartAttempts, MAX_RESTART_DELAY_MS);
     restartAttempts += 1;
-    runtime = markRuntime(runtime, { restartCount: restartAttempts });
+    runtime = markRuntime(runtime, {
+      restartCount: restartAttempts,
+      restartAt: new Date(Date.now() + delay).toISOString(),
+      restartReason: 'unexpected-exit'
+    });
     void log(`scheduling auto-restart #${restartAttempts} in ${delay}ms`);
     restartTimer = setTimeout(() => {
       restartTimer = undefined;
+      if (disposed || !desiredRunning || processRef || !canStart(runtime.status)) return;
       start().catch((err: unknown) => {
         void log(`auto-restart failed: ${err instanceof Error ? err.message : String(err)}`);
       });
     }, delay);
+    notifyStatus();
   };
 
   // Returns a promise that settles once this process's onExit has been handled.
@@ -278,21 +301,25 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       // Again: a stop()/dispose() during the await may have armed a new one.
       clearStopTimers();
 
-      const userStopped = runtime.status === 'stopping';
-      // A clean exit (code 0, no signal) is a normal completion — e.g. a one-shot
-      // command like steamcmd that finishes — not a crash, so don't auto-restart.
+      const userStopped = !desiredRunning || runtime.status === 'stopping';
+      // Exit classification remains independent of recovery: always also
+      // recovers clean completion, while on-failure preserves one-shot jobs.
       const cleanExit = exitCode === 0 && !signal;
       runtime = markRuntime(runtime, {
         status: userStopped || cleanExit ? 'stopped' : 'crashed',
         stoppedAt: now(),
         exitCode,
-        exitSignal: signal
+        exitSignal: signal,
+        pid: undefined,
+        restartAt: undefined,
+        restartReason: userStopped ? 'manual-stop' : restartPolicy === 'never' ? 'disabled' : cleanExit && restartPolicy === 'on-failure' ? 'clean-exit' : 'unexpected-exit'
       });
       processRef = undefined;
       notifyStatus();
       resolveExit();
 
-      if (!userStopped && !cleanExit) {
+      void log(`process exited: code=${exitCode} signal=${signal ?? 0} uptimeMs=${Date.now() - currentRunStartedAtMs} policy=${restartPolicy} desiredState=${desiredRunning ? 'running' : 'stopped'} reason=${runtime.restartReason}`);
+      if (!userStopped && (restartPolicy === 'always' || !cleanExit)) {
         scheduleRestart();
       }
     });
@@ -338,6 +365,9 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   const start = async () => {
     assertInstanceState(!disposed, 'Instance has been disposed');
     assertInstanceState(canStart(runtime.status), `Cannot start instance from state ${runtime.status}`);
+    clearTimer(restartTimer);
+    restartTimer = undefined;
+    desiredRunning = true;
     outputBuffer = '';
     currentRunStartedAtMs = Date.now();
     runtime = markRuntime(runtime, {
@@ -345,7 +375,10 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       startedAt: now(),
       stoppedAt: undefined,
       exitCode: undefined,
-      exitSignal: undefined
+      exitSignal: undefined,
+      desiredState: 'running',
+      restartAt: undefined,
+      restartReason: undefined
     });
 
     let ptyProcess: PtyProcess;
@@ -368,7 +401,9 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       // times for nothing; the user should fix the config and retry.
       runtime = markRuntime(runtime, {
         status: 'crashed',
-        stoppedAt: now()
+        stoppedAt: now(),
+        pid: undefined,
+        restartReason: 'spawn-failed'
       });
       notifyStatus();
       throw err;
@@ -391,6 +426,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       if (restartAttempts > 0) {
         restartAttempts = 0;
         runtime = markRuntime(runtime, { restartCount: 0 });
+        notifyStatus();
       }
     }, RESET_AFTER_MS);
 
@@ -449,7 +485,9 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   };
 
   const stopProcess = (options: StopOptions = {}) => {
-    assertInstanceState(canStop(runtime.status), `Cannot stop instance from state ${runtime.status}`);
+    assertInstanceState(canStop(runtime.status) || desiredRunning || !!restartTimer, `Cannot stop instance from state ${runtime.status}`);
+    desiredRunning = false;
+    runtime = markRuntime(runtime, { desiredState: 'stopped', restartReason: 'manual-stop' });
     stopRequests += 1;
     clearRestartState();
     restartAttempts = 0;
@@ -478,6 +516,10 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   return {
     id: config.id,
     async start() {
+      assertInstanceState(canStart(runtime.status), `Cannot start instance from state ${runtime.status}`);
+      clearRestartState();
+      restartAttempts = 0;
+      runtime = markRuntime(runtime, { restartCount: 0 });
       return start();
     },
     stop(options) {
@@ -545,6 +587,8 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     },
     async dispose() {
       disposed = true;
+      desiredRunning = false;
+      runtime = markRuntime(runtime, { desiredState: 'stopped', restartAt: undefined, restartReason: 'manual-stop', restartCount: 0 });
       stopRequests += 1;
       clearRestartState();
       restartAttempts = 0;
@@ -552,8 +596,11 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       // A stop already under way keeps its own timer.
       if (processRef && runtime.status !== 'stopping') {
         beginStop(processRef);
+      } else {
+        notifyStatus();
       }
       await waitForExit();
+      await logQueue;
     }
   };
 };

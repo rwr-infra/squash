@@ -1,3 +1,5 @@
+import type { InstanceRuntime } from './apiService';
+
 export type TerminalMessage =
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
@@ -7,13 +9,13 @@ export type TerminalPush =
   | { type: 'output'; data: string }
   | { type: 'pong' }
   | { type: 'error'; message: string }
-  | { type: 'runtime'; status: string; pid?: number };
+  | ({ type: 'runtime' } & InstanceRuntime);
 
 export type TerminalHandlers = {
   // Fires on every (re)connect — send() drops messages until the socket is open.
   onOpen: () => void;
   onOutput: (data: string) => void;
-  onRuntime: (runtime: { status: string; pid?: number }) => void;
+  onRuntime: (runtime: InstanceRuntime) => void;
   onError: (message: string) => void;
   onClose: () => void;
 };
@@ -58,7 +60,7 @@ export const connectTerminal = (
             handlers.onOutput(push.data);
             break;
           case 'runtime':
-            handlers.onRuntime({ status: push.status, pid: push.pid });
+            handlers.onRuntime(push);
             break;
           case 'error':
             handlers.onError(push.message);

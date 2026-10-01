@@ -59,7 +59,7 @@ export const createTerminalGateway = (registry: InstanceRegistry) => {
     const clients = getConnections(instanceId);
     clients.add(socket);
 
-    socket.send(serializePush({ type: 'runtime', status: runtime.status, pid: runtime.pid }));
+    socket.send(serializePush({ type: 'runtime', ...runtime }));
 
     // Replay recent output so a terminal that attached after a startup burst
     // (e.g. the process printed an error and then crashed) still shows it.
@@ -80,7 +80,7 @@ export const createTerminalGateway = (registry: InstanceRegistry) => {
     // without a manual refresh.
     const removeStatus = supervisor.onStatus((rt) => {
       if (socket.readyState === 1) {
-        socket.send(serializePush({ type: 'runtime', status: rt.status, pid: rt.pid }));
+        socket.send(serializePush({ type: 'runtime', ...rt }));
       }
     });
 

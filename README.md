@@ -445,11 +445,91 @@ field what will be sent, including the Enter of a trailing empty line.
 
 ## Auto-restart
 
-Set `autoRestart: true` (and optionally `restartDelayMs`, default `3000`) when
-creating an instance. On an unexpected exit (`crashed`), squash restarts it with
-exponential backoff (`restartDelayMs * 2^n`, capped at 60s), up to 5 consecutive
-attempts; the instance then stays `crashed`. Once an instance runs cleanly for
-60s, the attempt counter resets. Manual stop/restart always clears the counter.
+Choose a per-instance `restartPolicy`:
+
+- `never`: leave the instance stopped after any exit.
+- `on-failure`: restart after a non-zero exit code or signal.
+- `always`: keep running after any unsolicited exit, including exit code 0.
+  Recommended for RWR, whose error handler may exit with code 0.
+
+New instances created in the UI default to `always`. Existing configurations
+and API clients that omit the policy retain the legacy behavior: `autoRestart:
+true` means `on-failure`, false/unset means `never` (the API defaults it to true).
+An explicit policy takes precedence over `autoRestart`.
+
+Retries use exponential backoff (`restartDelayMs * 2^n`, default base 3000ms,
+capped at 60s), up to 5 consecutive attempts, then pause. Running for 60s resets
+the counter. The list and terminal show the next restart time, exit code/signal,
+or why recovery is paused. Stop cancels recovery, even while waiting; edit,
+delete and manager shutdown cancel it too. Manual Start/Restart resets the
+counter and cancels the old timer. A spawn/configuration error requires a manual
+retry. Windows crash-dialog recovery is enabled for both restart-enabled policies.
+
+To run the isolated HTTP/WebSocket/PTY regression with Node >=24:
+
+```sh
+npm run build:server
+npm --prefix frontend run build
+npm run smoke:restart-policy
+```
+
+CI runs this after packaging on all three platforms, before artifact upload.
+
+The restart-policy smoke uses fake children and temporary config under `.cache/`,
+including 60 seconds of real stable uptime. On Windows it tests simulated
+crashdump recovery and invokes the real manager shutdown handler through IPC;
+it does not reproduce an RWR engine crash or test OS signal delivery/browser interaction.
+
+The instance form browser regression uses a headless Chromium browser and an
+isolated API fixture (no game server or user configuration):
+
+```sh
+npm run smoke:instance-form
+```
+
+Build the server and frontend first, with `VITE_API_URL` unset in frontend env
+files or overridden to an empty value at build time so the UI uses the fixture's
+same-origin API. Set `SQUASH_BROWSER_PATH` if Chromium is not detected automatically.
+This browser check is a local command and is not part of CI.
+The fixture blocks browser connections to other origins, so a build with an
+external API address fails without sending requests to that service.
+
+The Windows adapter pins node-pty to 1.2.0-beta.12 and checks its version and
+exact Windows implementation fingerprints before creating a PTY. It closes the input only after the real PTY exit, preserving
+output flushing. Revalidate this compatibility code before updating node-pty.
+`npm run smoke:pty-cleanup` (Windows, Node >=24, build server first) checks real
+normal/failed/forced exits, repeated operations and injected error boundaries.
+It uses isolated fixtures; an active-session input error still fails the host.
+
+On Windows, `npm run smoke:pty-lifecycle` (Node >=24, build server first) runs
+eight sequential lifecycles per control/pressure worker with weak references, GC,
+input queue snapshots and independent Windows handle counts. It uses isolated
+fixtures and leaves real instances/config untouched. Exit 0 means no active input
+sockets or queued bytes at the final bounded observation; 2 reports retained
+resources; 1 reports a check or cleanup failure. This is a local investigation,
+not a CI gate or proof that RWR's bad allocation cause has been resolved.
+
+On Windows, investigate writes between child disappearance and ConPTY's delayed
+exit notification with `npm run smoke:pty-exit-window` (Node >=24, build server
+first). It runs isolated fake children through the compiled supervisor, requires
+actual socket writes in the observed window, and leaves production code/config
+unchanged. A passing bounded probe does not rule out every pipe/engine failure.
+Exit code 2 means the input queue did not drain in the bounded observation;
+those cases are inconclusive and are not counted as safe passes. Exit 1 indicates
+an exception, invalid coverage, or cleanup failure. This probe is not in CI.
+
+On Windows, `npm run smoke:pty-handles [-- --mode M]` (Node >=24; build the
+server first for `--mode supervisor`) attributes per-exit OS handle growth by
+object type. It compares pure node-pty rounds (`dependency`), the same rounds
+with the adapter's conin destroy (`conin-destroy`), and rounds driven by the
+compiled supervisor (`supervisor`), censusing the worker's handles between
+rounds with an independent NtQuerySystemInformation helper. On node-pty
+1.2.0-beta.12 all three modes grow ~13-15 handles per natural exit — File, Thread,
+Process, IoCompletion, Semaphore, Event. The supervisor path's per-type growth is
+identical to the conin-destroy path; the pure dependency path additionally
+retains the conin input File (+1 per round, microsoft/node-pty#947, which the
+adapter's destroy releases). The residue is upstream (the never-disposed conout
+worker thread and native cleanup that only runs on kill), not squash code.
 
 ## Known Issues
 
