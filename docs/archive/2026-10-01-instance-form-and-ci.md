@@ -31,6 +31,11 @@
 - 浏览器回归覆盖桌面实例表单，不代表全部终端页面或移动端。
 - 云端 CI 待推送后验证；未提交、推送、发布、部署或启动真实实例。TASK 保留，本次无需更新项目规则。
 
+## 补充：云端验收关闭（2026-10-01）
+- 分支 `feat/restart-policy-and-pty-hardening` 云端三平台全绿（run 36840827236 等），PR #6 合入。
+- 远端变异验证：临时分支 `chore/e2e-gate-mutation`（单行 `process.exit(1)` 注入 e2e）run 36855658962 三平台 job 恰在 `Smoke-test restart policies end to end` 失败，`Smoke-test the release archive` 与 `Upload artifact` 全部 skipped——云端门禁真实阻断上传；变异分支验证后即删。
+- 后续 PR #7 的 e2e 云端继续全绿（含一次 runner WMI 抖动重跑与清单超时加固）。backlog 条目据此关闭。
+
 ## 指针
 - `frontend/src/pages/InstanceListPage.tsx`
 - `scripts/smoke-instance-form.mjs` / `package.json`
