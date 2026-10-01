@@ -445,11 +445,38 @@ field what will be sent, including the Enter of a trailing empty line.
 
 ## Auto-restart
 
-Set `autoRestart: true` (and optionally `restartDelayMs`, default `3000`) when
-creating an instance. On an unexpected exit (`crashed`), squash restarts it with
-exponential backoff (`restartDelayMs * 2^n`, capped at 60s), up to 5 consecutive
-attempts; the instance then stays `crashed`. Once an instance runs cleanly for
-60s, the attempt counter resets. Manual stop/restart always clears the counter.
+Choose a per-instance `restartPolicy`:
+
+- `never`: leave the instance stopped after any exit.
+- `on-failure`: restart after a non-zero exit code or signal.
+- `always`: keep running after any unsolicited exit, including exit code 0.
+  Recommended for RWR, whose error handler may exit with code 0.
+
+New instances created in the UI default to `always`. Existing configurations
+and API clients that omit the policy retain the legacy behavior: `autoRestart:
+true` means `on-failure`, false/unset means `never` (the API defaults it to true).
+An explicit policy takes precedence over `autoRestart`.
+
+Retries use exponential backoff (`restartDelayMs * 2^n`, default base 3000ms,
+capped at 60s), up to 5 consecutive attempts, then pause. Running for 60s resets
+the counter. The list and terminal show the next restart time, exit code/signal,
+or why recovery is paused. Stop cancels recovery, even while waiting; edit,
+delete and manager shutdown cancel it too. Manual Start/Restart resets the
+counter and cancels the old timer. A spawn/configuration error requires a manual
+retry. Windows crash-dialog recovery is enabled for both restart-enabled policies.
+
+To run the isolated HTTP/WebSocket/PTY regression with Node >=24:
+
+```sh
+npm run build:server
+npm --prefix frontend run build
+npm run smoke:restart-policy
+```
+
+The restart-policy smoke uses fake children and temporary config under `.cache/`,
+including 60 seconds of real stable uptime. On Windows it tests simulated
+crashdump recovery and invokes the real manager shutdown handler through IPC;
+it does not reproduce an RWR engine crash or test OS signal delivery/browser interaction.
 
 The Windows adapter pins node-pty to 1.2.0-beta.12 and checks its version and
 exact Windows implementation fingerprints before creating a PTY. It closes the input only after the real PTY exit, preserving

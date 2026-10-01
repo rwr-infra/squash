@@ -16,8 +16,9 @@
     "smoke:pty": "tsx scripts/pty-rwr-smoke.ts",
     "smoke:release": "node scripts/smoke-release.mjs",
     "smoke:supervisor": "tsx scripts/smoke-supervisor.ts",
-    "typecheck": "tsc --noEmit",
-    "smoke:pty-cleanup": "node scripts/smoke-pty-cleanup.mjs"
+    "smoke:restart-policy": "node scripts/smoke-restart-policy.mjs",
+    "smoke:pty-cleanup": "node scripts/smoke-pty-cleanup.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

@@ -33,7 +33,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createInstanceSupervisor } from '../src/core/instance/instance-supervisor.js';
+import { createInstanceSupervisor, resolveRestartPolicy } from '../src/core/instance/instance-supervisor.js';
+import { CreateInstanceSchema } from '../src/api/http/schemas/instance-schemas.js';
 import type { InstanceConfig, InstanceStatus, InstanceSupervisor } from '../src/core/instance/instance-types.js';
 import { toInstanceLogFile } from '../src/core/log/log-writer.js';
 
@@ -167,6 +168,10 @@ if (mode === 'crash-once' && !fs.existsSync('crashed.flag')) {
 if (mode === 'clean') {
   setTimeout(() => process.exit(0), 200);
 }
+if (mode === 'clean-once' && !fs.existsSync('crashed.flag')) {
+  fs.writeFileSync('crashed.flag', '');
+  setTimeout(() => process.exit(0), 200);
+}
 setInterval(() => {}, 1000);
 `;
 
@@ -262,7 +267,7 @@ const isSettled = (supervisor: InstanceSupervisor) => {
 // A user stop (or dispose) must end in `stopped` even though the child prints
 // while it shuts down and exits non-zero.
 const checkUserStop = async (how: 'stop' | 'dispose') => {
-  const { supervisor, statuses, output } = await createHarness(`${how}-graceful`);
+  const { supervisor, statuses, output } = await createHarness(`${how}-graceful`, { restartPolicy: 'always' });
   await supervisor.start();
   const ready = await waitFor(() => output().includes('child ready'), 5000);
   if (!check(`${how}: child started`, ready, JSON.stringify(output()))) return;
@@ -345,6 +350,87 @@ const checkCleanExit = async () => {
   const runtime = supervisor.getRuntime();
   check('clean exit: ends in stopped', runtime.status === 'stopped', `status=${runtime.status} exitCode=${runtime.exitCode}`);
   check('clean exit: no auto-restart', !statuses.includes('crashed') && runtime.restartCount === 0, statuses.join(' → '));
+};
+
+const checkRestartPolicies = async () => {
+  const legacy = { autoRestart: true } as InstanceConfig;
+  check('policy: legacy enabled maps to on-failure', resolveRestartPolicy(legacy) === 'on-failure');
+  check('policy: legacy disabled maps to never', resolveRestartPolicy({ ...legacy, autoRestart: false }) === 'never');
+  check('policy: explicit always overrides legacy disabled', resolveRestartPolicy({ ...legacy, autoRestart: false, restartPolicy: 'always' }) === 'always');
+  const body = { id: 'schema', name: 'schema', cwd: '.', executable: process.execPath };
+  check('policy API: rejects an unknown policy', !CreateInstanceSchema.safeParse({ ...body, restartPolicy: 'sometimes' }).success);
+  const parsed = CreateInstanceSchema.parse(body);
+  check('policy API: omitted policy retains legacy default', parsed.restartPolicy === undefined && parsed.autoRestart === true);
+  for (const restartPolicy of ['never', 'on-failure', 'always'] as const) {
+    check(`policy API: accepts ${restartPolicy}`, CreateInstanceSchema.safeParse({ ...body, restartPolicy }).success);
+    for (const mode of ['clean-once', 'crash-once']) {
+      const { supervisor, output } = await createHarness(mode, { restartPolicy, autoRestart: false });
+      try {
+        await supervisor.start();
+        const shouldRestart = restartPolicy === 'always' || (restartPolicy === 'on-failure' && mode === 'crash-once');
+        if (shouldRestart) {
+          const restarted = await waitFor(() => childReadyCount(output()) === 2 && supervisor.getRuntime().status === 'running', 5000);
+          check(`${restartPolicy}/${mode}: restarts once`, restarted && supervisor.getRuntime().restartCount === 1, JSON.stringify(supervisor.getRuntime()));
+        } else {
+          await waitFor(() => isSettled(supervisor), 5000);
+          await sleep(RESTART_WINDOW_MS);
+          check(`${restartPolicy}/${mode}: no restart`, childReadyCount(output()) === 1 && !supervisor.getRuntime().restartAt, JSON.stringify(supervisor.getRuntime()));
+          check(`${restartPolicy}/${mode}: explains why`, supervisor.getRuntime().restartReason === (restartPolicy === 'never' ? 'disabled' : 'clean-exit'));
+        }
+      } finally {
+        await supervisor.dispose();
+      }
+    }
+  }
+};
+
+const checkPendingRecovery = async (action: 'stop' | 'dispose' | 'start' | 'restart') => {
+  const { supervisor, output } = await createHarness('clean-once', { restartPolicy: 'always', restartDelayMs: 1200 });
+  try {
+    await supervisor.start();
+    const pending = await waitFor(() => !!supervisor.getRuntime().restartAt, 5000);
+    if (!check(`pending recovery/${action}: clean exit is scheduled`, pending && supervisor.getRuntime().exitCode === 0)) return;
+    if (action === 'stop') supervisor.stop();
+    else if (action === 'dispose') await supervisor.dispose();
+    else if (action === 'start') await supervisor.start();
+    else await supervisor.restart();
+    if (action === 'start' || action === 'restart') {
+      check(`pending recovery/${action}: replacement child is ready`, await waitFor(() => childReadyCount(output()) === 2, 5000));
+    }
+    await sleep(1600);
+    const runtime = supervisor.getRuntime();
+    const manualStart = action === 'start' || action === 'restart';
+    check(`pending recovery/${action}: no stale timer or duplicate spawn`, childReadyCount(output()) === (manualStart ? 2 : 1) && !runtime.restartAt && runtime.restartCount === 0, JSON.stringify(runtime));
+    check(`pending recovery/${action}: expected state`, runtime.status === (manualStart ? 'running' : 'stopped') && runtime.desiredState === (manualStart ? 'running' : 'stopped'));
+  } finally {
+    await supervisor.dispose();
+  }
+};
+
+const checkRecoveryLimit = async () => {
+  const { supervisor, output } = await createHarness('clean', { restartPolicy: 'always', restartDelayMs: 40 });
+  const delays: number[] = [];
+  let lastAttempt = 0;
+  supervisor.onStatus((runtime) => {
+    if (runtime.restartAt && (runtime.restartCount ?? 0) > lastAttempt) {
+      lastAttempt = runtime.restartCount!;
+      delays.push(new Date(runtime.restartAt).getTime() - Date.now());
+    }
+  });
+  try {
+    await supervisor.start();
+    const paused = await waitFor(() => supervisor.getRuntime().restartReason === 'retry-limit', 30000);
+    if (!check('recovery limit: pauses after 5 retries on exit 0', paused && childReadyCount(output()) === 6 && supervisor.getRuntime().restartCount === 5 && !supervisor.getRuntime().restartAt, JSON.stringify(supervisor.getRuntime()))) return;
+    check('recovery limit: exponential backoff', delays.length === 5 && delays.every((delay, i) => Math.abs(delay - 40 * 2 ** i) < 30), JSON.stringify(delays));
+    await sleep(RESTART_WINDOW_MS);
+    check('recovery limit: remains paused', childReadyCount(output()) === 6);
+    supervisor.stop();
+    check('recovery limit: Stop clears desired running state', supervisor.getRuntime().desiredState === 'stopped');
+    await supervisor.start();
+    check('recovery limit: manual Start clears the breaker', supervisor.getRuntime().restartCount === 0 && !supervisor.getRuntime().restartReason);
+  } finally {
+    await supervisor.dispose();
+  }
 };
 
 // The PTY size is whatever a viewer last asked for, across restarts and while
@@ -715,7 +801,7 @@ const checkRestartWhileStopping = async () => {
 // process means "stop": the restart must fail and start nothing.
 const checkRestartCancelled = async (by: 'stop' | 'force' | 'dispose') => {
   const label = `restart cancelled by ${by}`;
-  const { supervisor, output } = await createHarness('stubborn', { stopCommand: 'quit', stopTimeoutMs: STOP_TIMEOUT_MS });
+  const { supervisor, output } = await createHarness('stubborn', { restartPolicy: 'always', stopCommand: 'quit', stopTimeoutMs: STOP_TIMEOUT_MS });
   await supervisor.start();
   const ready = await waitFor(() => /grandchild \d+/.test(output()) && (supervisor.getRuntime().pid ?? 0) > 0, 5000);
   if (!check(`${label}: child started`, ready, JSON.stringify(output()))) return;
@@ -749,12 +835,12 @@ const checkRestartCancelled = async (by: 'stop' | 'force' | 'dispose') => {
   check(`${label}: no new process was started`, childReadyCount(output()) === 1, JSON.stringify(output()));
 };
 
-// All checks take ~20s on macOS and somewhat more on the Windows runner;
+// The expanded policy matrix launches many real ConPTY children on Windows;
 // a failing check waits out its timeouts, so leave room for the rest to run.
 setTimeout(() => {
   console.error('[smoke] timed out');
   process.exit(1);
-}, 90_000).unref();
+}, 240_000).unref();
 
 // Forget PIDs that are gone right after each check, while a recycled PID is
 // least likely.
@@ -769,6 +855,12 @@ await run(() => checkUserStop('stop'));
 await run(() => checkUserStop('dispose'));
 await run(checkCrashRestarts);
 await run(checkCleanExit);
+await run(checkRestartPolicies);
+await run(() => checkPendingRecovery('stop'));
+await run(() => checkPendingRecovery('dispose'));
+await run(() => checkPendingRecovery('start'));
+await run(() => checkPendingRecovery('restart'));
+await run(checkRecoveryLimit);
 await run(checkResize);
 await run(checkSendCommand);
 await run(checkStopCommand);

@@ -395,10 +395,35 @@ squash 的处理方式是**检测崩溃转储文件**:引擎在崩溃时会把 `
 
 ## 自动重启
 
-创建实例时设置 `autoRestart: true`(可选地附带 `restartDelayMs`,默认 `3000`)。
-当实例发生非预期退出(进入 `crashed`)时,squash 会以指数退避
-(`restartDelayMs * 2^n`,上限 60 秒)重启它,最多连续尝试 5 次;之后实例保持 `crashed`。
-一旦实例干净运行满 60 秒,尝试计数器就会重置。手动停止/重启总是会清零计数器。
+每个实例可选择 `restartPolicy`：
+
+- `never`：禁用自动重启。
+- `on-failure`：仅在非零退出码或信号终止时重启。
+- `always`：维持运行，进程自主退出时无论退出码是否为 0 都重启，推荐 RWR 使用。
+  RWR 的错误处理可能以退出码 0 结束。
+
+界面新建实例默认 `always`。旧配置和未指定策略的 API 请求保留原行为：
+`autoRestart: true` 对应 `on-failure`，false/未设置对应 `never`（API 默认 true）。
+显式 `restartPolicy` 优先于 `autoRestart`；编辑旧实例时不会自动切换策略。
+
+重试沿用指数退避（`restartDelayMs * 2^n`，基础延迟默认 3000ms，上限 60 秒），
+最多连续尝试 5 次，随后暂停恢复。连续运行满 60 秒后重置计数。
+列表和终端会显示下一次重启时间、退出码/信号或暂停原因。
+手动 Stop 可取消等待中的恢复；编辑、删除、管理器关闭也取消恢复。
+手动 Start/Restart 清除旧定时器并重置计数。启动配置错误需要人工修正后重试。
+Windows 崩溃弹窗看门狗在两种启用重启的策略下都生效。
+
+使用 Node >=24 运行隔离的 HTTP/WebSocket/PTY 回归：
+
+```sh
+npm run build:server
+npm --prefix frontend run build
+npm run smoke:restart-policy
+```
+
+重启策略检查使用模拟子进程和 `.cache/` 下的临时配置，包含真实运行满 60 秒的计数重置。
+Windows 检查模拟 crashdump 恢复，并通过 IPC 调用管理器真实关闭处理器；
+不等同于复现 RWR 引擎崩溃，也不验证操作系统信号投递或实际浏览器交互。
 
 Windows 适配层将 node-pty 精确锁定到 1.2.0-beta.12 并核对版本及 Windows 实现指纹，在创建 PTY 前拒绝不兼容版本/布局，
 仅在真实 PTY exit 后关闭输入，保留输出冲刷。升级依赖前需重新验证这段兼容。

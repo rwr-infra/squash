@@ -47,6 +47,8 @@ const unwrap = async <T>(res: Response): Promise<T> => {
 };
 
 export type InstanceStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'crashed';
+export type RestartPolicy = 'never' | 'on-failure' | 'always';
+export type RestartReason = 'unexpected-exit' | 'disabled' | 'clean-exit' | 'manual-stop' | 'retry-limit' | 'spawn-failed';
 
 export type InstanceConfig = {
   readonly id: string;
@@ -58,6 +60,7 @@ export type InstanceConfig = {
   readonly logDir: string;
   readonly autoStart?: boolean;
   readonly autoRestart?: boolean;
+  readonly restartPolicy?: RestartPolicy;
   readonly restartDelayMs?: number;
   readonly stopCommand?: string;
   readonly stopTimeoutMs?: number;
@@ -74,6 +77,9 @@ export type InstanceRuntime = {
   readonly exitSignal?: number;
   readonly viewers: number;
   readonly restartCount?: number;
+  readonly desiredState?: 'running' | 'stopped';
+  readonly restartAt?: string;
+  readonly restartReason?: RestartReason;
 };
 
 export type CreateInstanceRequest = {
@@ -86,6 +92,7 @@ export type CreateInstanceRequest = {
   logDir?: string;
   autoStart?: boolean;
   autoRestart?: boolean;
+  restartPolicy?: RestartPolicy;
   restartDelayMs?: number;
   stopCommand?: string;
   stopTimeoutMs?: number;

@@ -12,6 +12,7 @@ export const CreateInstanceSchema = z.object({
   logDir: z.string().min(1).default('logs'),
   autoStart: z.boolean().default(false),
   autoRestart: z.boolean().default(true),
+  restartPolicy: z.enum(['never', 'on-failure', 'always']).optional(),
   restartDelayMs: z.number().int().min(0).default(3000),
   // No schema defaults: an omitted value follows the supervisor's default, so
   // old and new configs alike pick up a change to it.

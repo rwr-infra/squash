@@ -1,6 +1,7 @@
 import { useLayoutEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Table, Tag, Button, Space, Modal, Form, Input, InputNumber, Switch, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
+import { Table, Tag, Button, Space, Modal, Form, Input, InputNumber, Switch, Select, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
+import { RestartInfo } from '../components/RestartInfo';
 import { ReloadOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, DeleteOutlined, PlusOutlined, ApartmentOutlined, EditOutlined, HistoryOutlined, LogoutOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query';
 import type { InstanceStatus, CreateInstanceRequest, InstanceWithRuntime, AuditEntry } from '../services/apiService';
@@ -46,7 +47,7 @@ const CREATE_DEFAULTS: Partial<CreateInstanceRequest> = {
   cwd: '.',
   executable: './rwr_server',
   autoStart: false,
-  autoRestart: true,
+  restartPolicy: 'always',
   restartDelayMs: 3000
 };
 
@@ -158,7 +159,9 @@ const InstanceListPage = () => {
         stopCommand: values.stopCommand?.trim() ? values.stopCommand : undefined,
         // A cleared InputNumber reports null, which the schema rejects; omit it
         // so the server-side default applies.
-        stopTimeoutMs: values.stopTimeoutMs ?? undefined
+        stopTimeoutMs: values.stopTimeoutMs ?? undefined,
+        restartDelayMs: values.restartDelayMs ?? undefined,
+        autoRestart: values.restartPolicy !== 'never'
       };
       if (editing) {
         await updateInstance(editing.config.id, parsed);
@@ -177,7 +180,7 @@ const InstanceListPage = () => {
 
   // Form values when (re)opening the modal: existing config for edit, defaults for create.
   const initialValues: Partial<CreateInstanceRequest> = editing
-    ? { ...editing.config, args: editing.config.args.join(', ') as unknown as string[] }
+    ? { ...editing.config, restartPolicy: editing.config.restartPolicy ?? (editing.config.autoRestart ? 'on-failure' : 'never'), args: editing.config.args.join(', ') as unknown as string[] }
     : CREATE_DEFAULTS;
 
   // Action buttons shared by the desktop table and the mobile card list. Larger
@@ -187,6 +190,7 @@ const InstanceListPage = () => {
     const stopped = record.runtime.status === 'stopped' || record.runtime.status === 'crashed';
     // While a graceful stop is pending, Stop becomes an explicit Force stop.
     const stopping = record.runtime.status === 'stopping';
+    const canCancel = !!record.runtime.restartAt || record.runtime.desiredState === 'running';
     const stopPending = pendingStopIds.includes(record.config.id);
     const restartPending = pendingRestartIds.includes(record.config.id);
     return (
@@ -196,7 +200,7 @@ const InstanceListPage = () => {
         {/* Force stop asks first: a double click on Stop would otherwise land
             on it once the first request has returned. */}
         <Popconfirm title="Force stop?" description="Kills the server now instead of waiting for it to shut down. Unsaved progress may be lost." disabled={!stopping} onConfirm={() => stopMut.mutate({ id: record.config.id, force: true })} okText="Force stop" okButtonProps={{ danger: true }}>
-          <Button size={size} icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => stopMut.mutate({ id: record.config.id, force: false })} title={stopping ? 'Force stop' : 'Stop'} />
+          <Button size={size} icon={<StopOutlined />} danger={stopping} disabled={(!running && !stopping && !canCancel) || stopPending} loading={stopPending} onClick={stopping ? undefined : () => stopMut.mutate({ id: record.config.id, force: false })} title={stopping ? 'Force stop' : 'Stop / cancel auto-restart'} />
         </Popconfirm>
         <Button size={size} icon={<SyncOutlined />} disabled={(!running && !stopped) || restartPending} onClick={() => restartMut.mutate(record.config.id)} loading={restartPending} title="Restart" />
         <Button size={size} icon={<EditOutlined />} disabled={!stopped} onClick={() => openEdit(record)} title={stopped ? 'Edit' : 'Stop the instance before editing'} />
@@ -214,7 +218,7 @@ const InstanceListPage = () => {
       title: 'Status',
       dataIndex: ['runtime', 'status'],
       key: 'status',
-      render: (status: InstanceStatus) => <Tag color={statusColor[status]}>{status.toUpperCase()}</Tag>
+      render: (status: InstanceStatus, record: InstanceWithRuntime) => <div><Tag color={statusColor[status]}>{status.toUpperCase()}</Tag><div style={{ fontSize: 12 }}><RestartInfo runtime={record.runtime} /></div></div>
     },
     {
       title: 'PID',
@@ -265,6 +269,7 @@ const InstanceListPage = () => {
                 PID {runtime.pid ?? '-'} · Uptime {formatUptime(runtime.startedAt, runtime.status)} · Restarts {runtime.restartCount ?? 0}
               </div>
               {renderActions(record, 'middle')}
+              <div style={{ fontSize: 12, marginTop: 6 }}><RestartInfo runtime={runtime} /></div>
             </Card>
           </List.Item>
         );
@@ -325,8 +330,12 @@ const InstanceListPage = () => {
           <Form.Item name="autoStart" label="Auto Start" valuePropName="checked" tooltip="Start this instance automatically when squash launches">
             <Switch />
           </Form.Item>
-          <Form.Item name="autoRestart" label="Auto Restart" valuePropName="checked" tooltip="Restart automatically if the server crashes">
-            <Switch />
+          <Form.Item name="restartPolicy" label="Restart Policy" rules={[{ required: true }]} extra="Keep running also restarts after exit code 0. Stop always cancels recovery. Retries back off and pause after 5 consecutive attempts.">
+            <Select options={[
+              { value: 'never', label: 'Disabled' },
+              { value: 'on-failure', label: 'On failure (non-zero exit or signal)' },
+              { value: 'always', label: 'Keep running (recommended for RWR)' }
+            ]} />
           </Form.Item>
           <Form.Item name="restartDelayMs" label="Restart Delay (ms)">
             <InputNumber min={0} step={1000} style={{ width: '100%' }} />
