@@ -58,7 +58,8 @@ const deps = {
   logService: stub('logService'),
   terminalService: stub('terminalService'),
   terminalGateway: stub('terminalGateway'),
-  auditService: stub('auditService')
+  auditService: stub('auditService'),
+  templateService: stub('templateService')
 } as unknown as ApiDeps;
 const server = await createHttpServer(deps);
 
@@ -77,7 +78,11 @@ const PROTECTED_ROUTES: ReadonlyArray<readonly [string, string, unknown?]> = [
   ['GET', '/api/instances/:id/logs/tail'],
   ['GET', '/api/audit'],
   ['GET', '/api/auth/me'],
-  ['POST', '/api/auth/logout']
+  ['POST', '/api/auth/logout'],
+  ['GET', '/api/templates'],
+  ['POST', '/api/templates', { name: 'x' }],
+  ['PUT', '/api/templates/:id', { name: 'x' }],
+  ['DELETE', '/api/templates/:id']
 ];
 const PUBLIC_ROUTES = ['GET /api/health', 'HEAD /api/health', 'GET /api/auth/status', 'HEAD /api/auth/status', 'POST /api/auth/login', 'GET /api/terminal/:instanceId'];
 const PROTECTED: ReadonlyArray<readonly [string, string, string, unknown?]> = PROTECTED_ROUTES.flatMap(([method, route, body]) => {
