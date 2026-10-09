@@ -58,6 +58,15 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Every protected /api route refuses requests without a valid token,
+      # however the path is spelled (escapes, absolute-form request lines,
+      # WebSocket upgrades), and a new /api route must be registered as
+      # protected or explicitly public. Seconds; blocks the build and, on a
+      # tag, the release.
+      - name: Smoke-test API authentication
+        run: npm run smoke:auth
+        timeout-minutes: 3
+
       # Drives the real supervisor + node-pty against a fake child: a user stop
       # ends in `stopped` with no auto-restart, a crash is still `crashed` and
       # restarted. Runs before Package so a status regression fails in seconds,
