@@ -19,6 +19,7 @@ All **Running With Rifles** related content, assets, and trademarks—including 
 - **Multi-instance management** — run multiple game server instances with separate working directories
 - **Real-time terminal streaming** — WebSocket-based terminal with xterm.js
 - **Instance lifecycle management** — start, stop, restart, delete instances
+- **Instance templates** — save common settings (executable, stop command, restart policy, …) as templates and prefill the create form from one; an RWR template is included (see [Instance templates](#instance-templates))
 - **Bounded, graceful stops** — a per-instance console stop command (e.g. `quit`), a force-kill after a stop timeout, restarts that wait for the old process, and squash stopping every instance before it exits (see [Stopping](#stopping))
 - **Crash auto-restart** — opt-in per instance, with exponential backoff, a max-attempt cap, and a cooldown that resets the counter after stable uptime
 - **Windows crash-dialog recovery** — detects the engine's `rwr_crashdump.dmp` and force-kills a process hung behind the "unhandled exception" dialog, so auto-restart still fires
@@ -41,7 +42,7 @@ squash/
 │   └── api/               # HTTP + WebSocket endpoints
 ├── frontend/              # Frontend (React + Vite)
 ├── scripts/               # Dev scripts (PTY smoke test)
-├── config/                # Instance configs (instances.json)
+├── config/                # Instance configs and templates (instances.json, templates.json)
 ├── Dockerfile             # Container image
 └── LICENSE
 ```
@@ -180,6 +181,26 @@ Recorded actions: `login`, `create`, `start`, `stop`, `restart`, `delete`, and `
 has `time`, `user`, `action`, and optional `instanceId` / `detail`. The web UI shows them
 in the **Audit log** drawer on the instance list page.
 
+### Instance templates
+
+A template holds any of the instance form's settings except the Instance ID — all
+optional. In **Create Instance**, pick one under *Prefill from a template*: the fields it
+sets are filled in, every other field goes back to its default, and the Instance ID you
+typed stays. **Save as template** in the create or edit dialog saves the dialog's current
+settings as a new template (a Name that is just the Instance ID is left out), and the
+**Templates** drawer on the instance list creates, edits and deletes templates, or opens
+Create Instance from one. Clearing the choice in *Prefill from a template* resets those
+fields to the defaults.
+
+Applying a template copies its values: changing or deleting a template later leaves the
+instances created from it alone. Template names are unique, ignoring case.
+
+Templates live in `config/templates.json`. On first launch (no such file yet) squash
+writes one, **RWR dedicated server** (`./rwr_server`, stop command `quit` plus an empty
+line, keep running); delete it like any other template and it does not come back. squash
+refuses to start if the file is not valid (bad JSON, not a list of `{ id, name, values }`,
+a repeated id) and leaves it untouched — fix or delete it.
+
 ### Portable distribution (no Node.js required)
 
 Each [GitHub Release](https://github.com/rwr-infra/squash/releases) carries one archive
@@ -222,7 +243,7 @@ says what to do — a port already in use (or reserved by Windows), a folder tha
 writable, a missing `runtime/` folder. `build-info.json` records the source commit and
 the bundled Node.js and node-pty versions for support requests.
 
-**Upgrading:** your data lives in `config/` (instance definitions), `logs/` (instance
+**Upgrading:** your data lives in `config/` (instance definitions and templates), `logs/` (instance
 and audit logs) and `.env` inside the squash folder. Keep game server files **outside**
 the squash folder and give instances absolute `cwd` paths, so they don't depend on it.
 Stop the running instances and squash, extract the new version into a **new** folder,
@@ -334,6 +355,10 @@ All backend endpoints are served under the `/api` prefix; every other path is th
 | POST | `/api/instances/:id/command` | yes | Send a command to the instance's stdin |
 | GET | `/api/instances/:id/logs/tail` | yes | Tail instance logs |
 | GET | `/api/audit` | yes | Recent audit-log entries (`?limit=`) |
+| GET | `/api/templates` | yes | List instance templates |
+| POST | `/api/templates` | yes | Create a template: `{ name, values }` (409 if the name is taken, ignoring case) |
+| PUT | `/api/templates/:id` | yes | Replace a template: `{ name, values }` (409 if renamed to a taken name, 404 if unknown) |
+| DELETE | `/api/templates/:id` | yes | Delete a template (404 if unknown) |
 
 "Auth: yes" endpoints require `Authorization: Bearer <token>` when login (or `AUTH_TOKEN`) is configured.
 

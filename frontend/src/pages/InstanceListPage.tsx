@@ -1,11 +1,16 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Table, Tag, Button, Space, Modal, Form, Input, InputNumber, Switch, Select, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
+import { Table, Tag, Button, Space, Modal, Form, Input, Select, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
 import { RestartInfo } from '../components/RestartInfo';
-import { ReloadOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, DeleteOutlined, PlusOutlined, ApartmentOutlined, EditOutlined, HistoryOutlined, LogoutOutlined } from '@ant-design/icons';
+import { InstanceFormFields, ResetFormOnMount } from '../components/InstanceFormFields';
+import { TemplateModal, type TemplateTarget } from '../components/TemplateModal';
+import { TemplatesDrawer } from '../components/TemplatesDrawer';
+import { ReloadOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, DeleteOutlined, PlusOutlined, ApartmentOutlined, EditOutlined, HistoryOutlined, LogoutOutlined, SaveOutlined, SnippetsOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query';
-import type { InstanceStatus, CreateInstanceRequest, InstanceWithRuntime, AuditEntry } from '../services/apiService';
-import { fetchInstances, createInstance, updateInstance, startInstance, stopInstance, restartInstance, deleteInstance, fetchAudit, getAuthStatus, logout } from '../services/apiService';
+import type { InstanceStatus, CreateInstanceRequest, InstanceWithRuntime, AuditEntry, InstanceTemplate } from '../services/apiService';
+import { fetchInstances, createInstance, updateInstance, startInstance, stopInstance, restartInstance, deleteInstance, fetchAudit, fetchTemplates, getAuthStatus, logout } from '../services/apiService';
+import { CREATE_DEFAULTS, TEMPLATE_FIELD_NAMES, createFormValues, formToTemplateValues, splitArgs } from '../services/instanceForm';
+import type { InstanceFormValues } from '../services/instanceForm';
 
 const auditActionColor: Record<AuditEntry['action'], string> = {
   login: 'blue',
@@ -16,39 +21,6 @@ const auditActionColor: Record<AuditEntry['action'], string> = {
   restart: 'gold',
   delete: 'red',
   command: 'purple'
-};
-
-// The form instance outlives the modal's content, and a remounted <Form> lets
-// the values left in its store win over new initialValues — editing B right
-// after A would show, and save, A's values. Rendered inside the <Form> — as
-// its LAST child: only fields mounted before it hear the reset — this resets
-// it to the current initialValues once it has mounted, before the browser
-// paints. (Not clearOnDestroy: StrictMode's simulated unmount would
-// empty the store behind inputs that still show values. Not an effect in the
-// page: the modal's content mounts in a later commit than the page's.)
-const ResetFormOnMount = () => {
-  const form = Form.useFormInstance();
-  useLayoutEffect(() => {
-    form.resetFields();
-  }, [form]);
-  return null;
-};
-
-// What a stop will type into the console, parsed the way the supervisor does:
-// in the text box a trailing empty line (an Enter) is invisible.
-const describeStopCommand = (value: string | undefined) => {
-  const lines = (value ?? '').split(/\r?\n|\r/).map((line) => line.trim());
-  const first = lines.findIndex((line) => line.length > 0);
-  if (first === -1) return 'Blank: SIGHUP on Linux/macOS, an immediate kill on Windows.';
-  return `Sends, a second apart: ${lines.slice(first).map((line) => (line ? `${line} ⏎` : '⏎ (Enter)')).join(' → ')}`;
-};
-
-const CREATE_DEFAULTS: Partial<CreateInstanceRequest> = {
-  cwd: '.',
-  executable: './rwr_server',
-  autoStart: false,
-  restartPolicy: 'always',
-  restartDelayMs: 3000
 };
 
 const statusColor: Record<InstanceStatus, string> = {
@@ -72,10 +44,16 @@ const formatUptime = (startedAt?: string, status?: InstanceStatus): string => {
 
 const InstanceListPage = () => {
   const navigate = useNavigate();
-  const [form] = Form.useForm<CreateInstanceRequest>();
-  const stopCommandValue = Form.useWatch('stopCommand', form);
+  const [form] = Form.useForm<InstanceFormValues>();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<InstanceWithRuntime | null>(null);
+  // The template the create form was last filled from, and the values it
+  // opens with (a template picked in the templates drawer).
+  const [templateId, setTemplateId] = useState<string | undefined>();
+  const [createInitial, setCreateInitial] = useState<Partial<InstanceFormValues>>(CREATE_DEFAULTS);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [templateTarget, setTemplateTarget] = useState<TemplateTarget | null>(null);
+  const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   // State updates render later; the ref also blocks submissions in one turn.
   const savingRef = useRef(false);
@@ -92,6 +70,12 @@ const InstanceListPage = () => {
   });
 
   const { data: authStatus } = useQuery({ queryKey: ['auth-status'], queryFn: getAuthStatus, staleTime: Infinity });
+
+  const { data: templates = [], isError: templatesFailed } = useQuery({
+    queryKey: ['templates'],
+    queryFn: fetchTemplates,
+    enabled: modalOpen && !editing
+  });
 
   const { data: auditEntries = [], isFetching: auditLoading } = useQuery({
     queryKey: ['audit'],
@@ -143,7 +127,40 @@ const InstanceListPage = () => {
   const openCreate = () => {
     if (savingRef.current) return;
     setEditing(null);
+    setTemplateId(undefined);
+    setCreateInitial(CREATE_DEFAULTS);
     setModalOpen(true);
+  };
+
+  const openCreateFromTemplate = (template: InstanceTemplate) => {
+    if (savingRef.current) return;
+    setEditing(null);
+    setTemplateId(template.id);
+    setCreateInitial(createFormValues(template.values));
+    setTemplatesOpen(false);
+    setModalOpen(true);
+  };
+
+  // Refills every template field (defaults where the template sets nothing);
+  // the Instance ID typed so far stays.
+  const applyTemplate = (id: string | undefined) => {
+    setTemplateId(id);
+    form.setFieldsValue(createFormValues(templates.find((template) => template.id === id)?.values));
+    form.setFields(TEMPLATE_FIELD_NAMES.map((name) => ({ name, errors: [] })));
+  };
+
+  const openTemplateModal = (target: TemplateTarget) => {
+    setTemplateTarget(target);
+    setTemplateModalOpen(true);
+  };
+
+  // The dialog's settings as a new template. A Name equal to the Instance ID
+  // is what a blank Name became, not a name to give every instance made from
+  // the template.
+  const saveAsTemplate = () => {
+    const values = form.getFieldsValue();
+    const { name, ...rest } = formToTemplateValues(values);
+    openTemplateModal({ kind: 'new', values: name !== undefined && name !== values.id ? { name, ...rest } : rest });
   };
 
   const openEdit = (record: InstanceWithRuntime) => {
@@ -152,12 +169,11 @@ const InstanceListPage = () => {
     setModalOpen(true);
   };
 
-  const handleSubmit = async (values: CreateInstanceRequest) => {
+  const handleSubmit = async (values: InstanceFormValues) => {
     if (savingRef.current) return;
     savingRef.current = true;
     setSaving(true);
     try {
-      const argsStr = values.args as unknown as string;
       const parsed: CreateInstanceRequest = {
         ...values,
         // These settings have no form fields, so onFinish omits them. Editing
@@ -165,7 +181,7 @@ const InstanceListPage = () => {
         // them to the API defaults. New instances use server defaults.
         ...(editing ? { env: { ...editing.config.env }, logDir: editing.config.logDir } : {}),
         name: values.name?.trim() || values.id,
-        args: argsStr ? argsStr.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+        args: splitArgs(values.args),
         // Kept as typed: a trailing empty line is an Enter (rwr_server needs one
         // after `quit`). Only an all-blank value means "none".
         stopCommand: values.stopCommand?.trim() ? values.stopCommand : undefined,
@@ -194,9 +210,9 @@ const InstanceListPage = () => {
   };
 
   // Form values when (re)opening the modal: existing config for edit, defaults for create.
-  const initialValues: Partial<CreateInstanceRequest> = editing
-    ? { ...editing.config, restartPolicy: editing.config.restartPolicy ?? (editing.config.autoRestart ? 'on-failure' : 'never'), args: editing.config.args.join(', ') as unknown as string[] }
-    : CREATE_DEFAULTS;
+  const initialValues: Partial<InstanceFormValues> = editing
+    ? { ...editing.config, restartPolicy: editing.config.restartPolicy ?? (editing.config.autoRestart ? 'on-failure' : 'never'), args: editing.config.args.join(', ') }
+    : createInitial;
 
   // Action buttons shared by the desktop table and the mobile card list. Larger
   // touch targets (middle) on mobile, compact (small) in the table.
@@ -298,6 +314,7 @@ const InstanceListPage = () => {
         <h2>Instances</h2>
         <Space wrap>
           <Button icon={<HistoryOutlined />} onClick={() => setAuditOpen(true)}>{isMobile ? '' : 'Audit log'}</Button>
+          <Button icon={<SnippetsOutlined />} onClick={() => setTemplatesOpen(true)} title="Instance templates">{isMobile ? '' : 'Templates'}</Button>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()}>{isMobile ? '' : 'Refresh'}</Button>
           <Button type="primary" icon={<PlusOutlined />} disabled={saving} onClick={openCreate}>{isMobile ? 'Create' : 'Create Instance'}</Button>
           {authStatus?.loginEnabled && (
@@ -327,54 +344,61 @@ const InstanceListPage = () => {
         keyboard={!saving}
         mask={{ closable: !saving }}
         okText={editing ? 'Save' : 'Create'}
+        footer={(buttons) => (
+          <>
+            <Button
+              icon={<SaveOutlined />}
+              disabled={saving}
+              onClick={saveAsTemplate}
+              style={{ float: 'left' }}
+              title="Save these settings (without the Instance ID) as a new template"
+            >
+              {isMobile ? 'Template' : 'Save as template'}
+            </Button>
+            {buttons}
+          </>
+        )}
         width={isMobile ? '95vw' : 520}
         style={isMobile ? { top: 12 } : undefined}
         destroyOnHidden
         styles={{ body: { maxHeight: isMobile ? '75vh' : '70vh', overflowY: 'auto', overflowX: 'hidden' } }}
       >
+        {!editing && templatesFailed && (
+          <div style={{ marginTop: 16, color: '#888', fontSize: 12 }}>Templates could not be loaded.</div>
+        )}
+        {!editing && templates.length > 0 && (
+          // Outside the <Form>: picking a template is not a setting to submit.
+          <Select
+            className="template-picker"
+            aria-label="Prefill from a template"
+            allowClear
+            placeholder="Prefill from a template (optional)"
+            value={templateId}
+            onChange={applyTemplate}
+            options={templates.map((template) => ({ value: template.id, label: template.name }))}
+            disabled={saving}
+            style={{ width: '100%', marginTop: 16 }}
+          />
+        )}
         <Form form={form} layout="vertical" disabled={saving} onFinish={handleSubmit} initialValues={initialValues} style={{ marginTop: 16 }}>
           <Form.Item name="id" label="Instance ID" rules={[{ required: true, pattern: /^[a-zA-Z0-9_-]+$/, message: 'Alphanumeric, dash, underscore only' }]} tooltip={editing ? 'The ID cannot be changed' : undefined}>
             <Input placeholder="my-server-1" disabled={!!editing || saving} />
           </Form.Item>
-          <Form.Item name="name" label="Name" tooltip="Defaults to the Instance ID if left blank">
-            <Input placeholder="Defaults to the Instance ID" />
-          </Form.Item>
-          <Form.Item name="cwd" label="Working Directory" rules={[{ required: true }]}>
-            <Input placeholder="/path/to/server" />
-          </Form.Item>
-          <Form.Item name="executable" label="Executable" rules={[{ required: true }]}>
-            <Input placeholder="./rwr_server" />
-          </Form.Item>
-          <Form.Item name="args" label="Arguments (comma-separated)">
-            <Input placeholder="--config server.cfg, --port 27015" />
-          </Form.Item>
-          <Form.Item name="autoStart" label="Auto Start" valuePropName="checked" tooltip="Start this instance automatically when squash launches">
-            <Switch />
-          </Form.Item>
-          <Form.Item name="restartPolicy" label="Restart Policy" rules={[{ required: true }]} extra="Keep running also restarts after exit code 0. Stop always cancels recovery. Retries back off and pause after 5 consecutive attempts.">
-            <Select options={[
-              { value: 'never', label: 'Disabled' },
-              { value: 'on-failure', label: 'On failure (non-zero exit or signal)' },
-              { value: 'always', label: 'Keep running (recommended for RWR)' }
-            ]} />
-          </Form.Item>
-          <Form.Item name="restartDelayMs" label="Restart Delay (ms)">
-            <InputNumber min={0} step={1000} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item
-            name="stopCommand"
-            label="Stop Command"
-            tooltip="Console command(s) that shut the server down, one per line, sent about a second apart; an empty line presses Enter. rwr_server: quit, then an empty line (it waits for Enter after 'Exit requested')."
-            extra={describeStopCommand(stopCommandValue)}
-          >
-            <Input.TextArea placeholder={'quit\n(empty line = press Enter)'} autoSize={{ minRows: 1, maxRows: 5 }} />
-          </Form.Item>
-          <Form.Item name="stopTimeoutMs" label="Stop Timeout (ms)" tooltip="Force-kill the server if it is still running this long after the stop began (counted from the first stop command line, so allow a second per extra line). Blank: 15000">
-            <InputNumber min={1000} max={600000} step={1000} precision={0} placeholder="15000" style={{ width: '100%' }} />
-          </Form.Item>
+          <InstanceFormFields />
           <ResetFormOnMount />
         </Form>
       </Modal>
+
+      <TemplatesDrawer
+        open={templatesOpen}
+        onClose={() => setTemplatesOpen(false)}
+        isMobile={isMobile}
+        onUse={openCreateFromTemplate}
+        onNew={() => openTemplateModal({ kind: 'new', values: {} })}
+        onEdit={(template) => openTemplateModal({ kind: 'edit', template })}
+      />
+
+      <TemplateModal target={templateTarget} open={templateModalOpen} onClose={() => setTemplateModalOpen(false)} isMobile={isMobile} />
 
       <Drawer
         title="Audit log"
