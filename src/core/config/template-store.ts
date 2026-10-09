@@ -13,8 +13,9 @@ export type TemplateStore = {
 };
 
 // Written when the templates file does not exist yet — on first launch, not
-// after: a list the user emptied stays empty. `./rwr_server` works on Windows
-// too (the PTY adapter adds `.exe` to a relative path without an extension).
+// after: a list the user emptied stays empty. `./rwr_server` and `./steamcmd`
+// work on Windows too (the PTY adapter adds `.exe` to a relative path without
+// an extension).
 export const createDefaultTemplates = (): InstanceTemplate[] => [
   {
     id: randomUUID(),
@@ -27,6 +28,17 @@ export const createDefaultTemplates = (): InstanceTemplate[] => [
       // requested` and exits only on one more Enter.
       stopCommand: 'quit\n',
       stopTimeoutMs: 15000
+    }
+  },
+  {
+    id: randomUUID(),
+    name: 'SteamCMD',
+    values: {
+      executable: './steamcmd',
+      // A one-off run (installing or updating a server), not a service.
+      restartPolicy: 'never',
+      // steamcmd exits on `quit` alone.
+      stopCommand: 'quit'
     }
   }
 ];

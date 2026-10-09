@@ -19,7 +19,7 @@ All **Running With Rifles** related content, assets, and trademarks—including 
 - **Multi-instance management** — run multiple game server instances with separate working directories
 - **Real-time terminal streaming** — WebSocket-based terminal with xterm.js
 - **Instance lifecycle management** — start, stop, restart, delete instances
-- **Instance templates** — save common settings (executable, stop command, restart policy, …) as templates and prefill the create form from one; an RWR template is included (see [Instance templates](#instance-templates))
+- **Instance templates** — save common settings (executable, stop command, restart policy, …) as templates and prefill the create form from one; RWR and SteamCMD templates are included (see [Instance templates](#instance-templates))
 - **Bounded, graceful stops** — a per-instance console stop command (e.g. `quit`), a force-kill after a stop timeout, restarts that wait for the old process, and squash stopping every instance before it exits (see [Stopping](#stopping))
 - **Crash auto-restart** — opt-in per instance, with exponential backoff, a max-attempt cap, and a cooldown that resets the counter after stable uptime
 - **Windows crash-dialog recovery** — detects the engine's `rwr_crashdump.dmp` and force-kills a process hung behind the "unhandled exception" dialog, so auto-restart still fires
@@ -196,8 +196,9 @@ Applying a template copies its values: changing or deleting a template later lea
 instances created from it alone. Template names are unique, ignoring case.
 
 Templates live in `config/templates.json`. On first launch (no such file yet) squash
-writes one, **RWR dedicated server** (`./rwr_server`, stop command `quit` plus an empty
-line, keep running); delete it like any other template and it does not come back. squash
+writes two: **RWR dedicated server** (`./rwr_server`, stop command `quit` plus an empty
+line, keep running) and **SteamCMD** (`./steamcmd`, stop command `quit`, no restart).
+Delete them like any other template and they do not come back. squash
 refuses to start if the file is not valid (bad JSON, not a list of `{ id, name, values }`,
 a repeated id) and leaves it untouched — fix or delete it.
 

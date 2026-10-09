@@ -1,7 +1,8 @@
 // Smoke for instance templates: the file store and the /api/templates routes,
 // driven through the real createHttpServer (auth hook included) with
 // fastify.inject — no port is opened. Checks:
-//   - a missing templates file is seeded with the RWR template and written;
+//   - a missing templates file is seeded with the RWR and SteamCMD templates
+//     and written;
 //     reopening keeps it (same id); a list emptied by the user stays empty
 //   - a corrupt or malformed file (duplicate ids included) fails loudly and is
 //     left byte-for-byte as is; a UTF-8 byte order mark is accepted
@@ -11,8 +12,8 @@
 //     name give one 201 and one 409
 //   - templates in a hand-edited file whose names clash can keep their own
 //     names
-//   - the seeded template's values pass the API schema, and an instance
-//     created from it passes CreateInstanceSchema
+//   - the seeded templates' values pass the API schema, and instances
+//     created from them pass CreateInstanceSchema
 //   - the routes need a valid token; create/update/delete work and persist; names
 //     are trimmed and unique ignoring case (409); unknown fields, bad values
 //     and missing bodies are 400; unknown ids are 404
@@ -55,8 +56,8 @@ const rejects = async (promise: Promise<unknown>): Promise<Error | undefined> =>
 const checkSeeding = async () => {
   const seededFile = file('seeded.json');
   const store = await createTemplateStore(seededFile);
-  const [seed, ...rest] = store.list();
-  check('missing file is seeded with one template', !!seed && rest.length === 0 && seed.name === 'RWR dedicated server');
+  const [seed, steamcmd, ...rest] = store.list();
+  check('missing file is seeded with the two templates', rest.length === 0 && seed?.name === 'RWR dedicated server' && steamcmd?.name === 'SteamCMD');
   check('seed is written to disk', fs.existsSync(seededFile) && JSON.stringify(readJson(seededFile)) === JSON.stringify(store.list()));
   check(
     'seed values are the rwr_server defaults',
@@ -64,17 +65,25 @@ const checkSeeding = async () => {
       seed.values.restartPolicy === 'always' && seed.values.stopTimeoutMs === 15000 && seed.values.cwd === undefined,
     JSON.stringify(seed?.values)
   );
-  check('seed values pass the template schema', TemplateValuesSchema.safeParse(seed?.values).success);
   check(
-    'an instance from the seed passes CreateInstanceSchema',
-    CreateInstanceSchema.safeParse({ cwd: '.', ...seed?.values, id: 'from-seed', name: 'from-seed' }).success
+    'SteamCMD seed values: ./steamcmd, no restart, quit without an extra Enter',
+    JSON.stringify(steamcmd?.values) === JSON.stringify({ executable: './steamcmd', restartPolicy: 'never', stopCommand: 'quit' }),
+    JSON.stringify(steamcmd?.values)
+  );
+  check('seed values pass the template schema', [seed, steamcmd].every(template => TemplateValuesSchema.safeParse(template?.values).success));
+  check(
+    'instances from the seeds pass CreateInstanceSchema',
+    [seed, steamcmd].every(template => CreateInstanceSchema.safeParse({ cwd: '.', ...template?.values, id: 'from-seed', name: 'from-seed' }).success)
   );
 
   const reopened = await createTemplateStore(seededFile);
-  check('reopening keeps the seed (same id, no second seed)', reopened.list().length === 1 && reopened.list()[0]?.id === seed?.id);
+  check('reopening keeps the seeds (same ids, no second seeding)', reopened.list().map(t => t.id).join() === [seed?.id, steamcmd?.id].join());
 
   await reopened.update(templates => templates.delete(seed!.id));
-  check('deleting the seed writes an empty list', fs.readFileSync(seededFile, 'utf8').trim() === '[]');
+  const oneLeft = await createTemplateStore(seededFile);
+  check('a deleted seed does not come back', oneLeft.list().map(t => t.name).join() === 'SteamCMD');
+  await oneLeft.update(templates => templates.delete(steamcmd!.id));
+  check('deleting both seeds writes an empty list', fs.readFileSync(seededFile, 'utf8').trim() === '[]');
   const emptied = await createTemplateStore(seededFile);
   check('an emptied list is not seeded again', emptied.list().length === 0);
 };
@@ -181,7 +190,7 @@ const checkRoutes = async () => {
 
     const listed = await call('GET', '/api/templates');
     const seed = (listed.json() as { data: InstanceTemplate[] }).data;
-    check('GET lists the seed', listed.statusCode === 200 && seed.length === 1 && seed[0]?.name === 'RWR dedicated server');
+    check('GET lists the seeds', listed.statusCode === 200 && seed.map(t => t.name).join('|') === 'RWR dedicated server|SteamCMD');
 
     const created = await call('POST', '/api/templates', { name: '  Castling  ', values: { cwd: '/srv/rwr', args: ['--a', '--b'], autoStart: true } });
     const castling = (created.json() as { data: InstanceTemplate }).data;
@@ -270,7 +279,7 @@ const checkRoutes = async () => {
     check('the file matches what GET returns', JSON.stringify(readJson(routesFile)) === JSON.stringify(finalList.data));
     check(
       'list order is creation order, failed requests left no trace',
-      finalList.data.map(t => t.name).join('|') === 'RWR dedicated server|CASTLING',
+      finalList.data.map(t => t.name).join('|') === 'RWR dedicated server|SteamCMD|CASTLING',
       finalList.data.map(t => t.name).join('|')
     );
   } finally {
