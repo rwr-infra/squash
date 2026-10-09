@@ -9,8 +9,10 @@ import type { TerminalService } from '../../services/terminal-service.js';
 import type { TerminalGateway } from '../ws/terminal-gateway.js';
 import type { AuditService } from '../../services/audit-service.js';
 import type { TemplateService } from '../../services/template-service.js';
+import type { ServerLogService } from '../../services/server-log-service.js';
 import { registerInstanceRoutes } from './routes/instance-routes.js';
 import { registerTemplateRoutes } from './routes/template-routes.js';
+import { registerServerLogRoutes } from './routes/server-log-routes.js';
 import { isAuthEnabled, isLoginEnabled, validateBearerToken, login, logout, currentUser } from './auth.js';
 import { appPaths } from '../../app/paths.js';
 
@@ -28,6 +30,7 @@ export type ApiDeps = {
   terminalGateway: TerminalGateway;
   auditService: AuditService;
   templateService: TemplateService;
+  serverLogService: ServerLogService;
 };
 
 export const createHttpServer = async (deps: ApiDeps): Promise<FastifyInstance> => {
@@ -113,6 +116,7 @@ export const createHttpServer = async (deps: ApiDeps): Promise<FastifyInstance> 
 
     await registerInstanceRoutes(api, deps);
     await registerTemplateRoutes(api, deps);
+    await registerServerLogRoutes(api, deps);
   }, { prefix: '/api' });
 
   // SPA history fallback: serve index.html for browser navigations to client-side

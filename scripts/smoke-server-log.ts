@@ -27,6 +27,12 @@
 //   - concurrent refreshes share one run
 //   - a 1M-line file: index build time, a read at the end, a full search, and
 //     the longest event-loop stall while indexing
+//   - the routes, through the real createHttpServer (auth hook included) with
+//     fastify.inject: token required, unknown instance 404 (the path comes
+//     from the instance's working directory only), a missing file is
+//     exists=false, lines/search answers carry the generation, query limits
+//     (400), case sensitivity, the 10,000-match cap, a moved working
+//     directory, and an unreadable file (503)
 // Uses a temp directory only.
 //
 // Usage: npm run smoke:server-log
@@ -36,6 +42,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { execFileSync } from 'node:child_process';
+import net from 'node:net';
 import { createLineIndex, MAX_READ_LINES, StaleIndexError } from '../src/core/log/line-index.js';
 import type { LineIndex } from '../src/core/log/line-index.js';
 
@@ -380,11 +387,144 @@ const checkLarge = async () => {
   check('large: refreshing an unchanged file is cheap (< 20 ms)', performance.now() - unchanged < 20);
 };
 
+// --- Routes ----------------------------------------------------------------
+
+const checkRoutes = async () => {
+  // auth.ts reads these when it is first imported.
+  process.env.AUTH_USERNAME = 'smoke';
+  process.env.AUTH_PASSWORD = 'smoke-password';
+  delete process.env.AUTH_TOKEN;
+  const staticDir = path.join(workRoot, 'static');
+  fs.mkdirSync(staticDir);
+  fs.writeFileSync(path.join(staticDir, 'index.html'), '<!doctype html>');
+  process.env.SQUASH_STATIC_DIR = staticDir;
+
+  const { createHttpServer } = await import('../src/api/http/http-server.js');
+  const { ServerLogService } = await import('../src/services/server-log-service.js');
+  const { SERVER_LOG_SEARCH_LIMIT } = await import('../src/api/http/schemas/server-log-schemas.js');
+  type ApiDeps = Parameters<typeof createHttpServer>[0];
+
+  // One instance, whose working directory the test can move.
+  const cwd = path.join(workRoot, 'instance-a');
+  fs.mkdirSync(cwd);
+  let instanceCwd = cwd;
+  const registry = {
+    getConfig: (id: string) => (id === 'a' ? { id: 'a', name: 'a', cwd: instanceCwd, executable: 'x', args: [], env: {}, logDir: 'logs' } : undefined)
+  };
+  const serverLogService = new ServerLogService(registry as unknown as ConstructorParameters<typeof ServerLogService>[0]);
+  const server = await createHttpServer({
+    instanceService: {} as ApiDeps['instanceService'],
+    logService: {} as ApiDeps['logService'],
+    terminalService: {} as ApiDeps['terminalService'],
+    terminalGateway: {} as ApiDeps['terminalGateway'],
+    auditService: { record: async () => {} } as unknown as ApiDeps['auditService'],
+    templateService: {} as ApiDeps['templateService'],
+    serverLogService
+  });
+
+  try {
+    const urls = ['/api/instances/a/server-log', '/api/instances/a/server-log/lines?from=0', '/api/instances/a/server-log/search?q=x'];
+    const unauthorized = await Promise.all(urls.map(url => server.inject({ method: 'GET', url })));
+    check('routes: every server-log route needs a token', unauthorized.every(res => res.statusCode === 401), unauthorized.map(res => res.statusCode).join(','));
+
+    const login = await server.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'smoke', password: 'smoke-password' } });
+    const token = (login.json() as { data?: { token?: string } }).data?.token;
+    if (!check('routes: login', !!token)) return;
+    const get = (url: string) => server.inject({ method: 'GET', url, headers: { authorization: `Bearer ${token}` } });
+    type Body = { success: boolean; data?: any; error?: { code: string; message: string } };
+    const body = (res: { json: () => unknown }) => res.json() as Body;
+
+    const unknown = await Promise.all(urls.map(url => get(url.replace('/a/', '/nope/'))));
+    check('routes: an unknown instance is 404', unknown.every(res => res.statusCode === 404 && body(res).error?.code === 'INSTANCE_NOT_FOUND'));
+
+    // Extra query parameters don't reach the path: it is <cwd>/rwr_server.log.
+    const missing = await get(`/api/instances/a/server-log?path=${encodeURIComponent('/etc/passwd')}&file=x&cwd=%2F`);
+    const missingData = body(missing).data;
+    check(
+      'routes: no file yet → exists=false with the path looked at (query parameters ignored)',
+      missing.statusCode === 200 && missingData.exists === false && missingData.lineCount === 0 && missingData.path === path.join(cwd, 'rwr_server.log'),
+      missing.body
+    );
+    const missingLines = body(await get('/api/instances/a/server-log/lines?from=0')).data;
+    const missingSearch = body(await get('/api/instances/a/server-log/search?q=x')).data;
+    check('routes: lines and search on a missing file are empty, not errors', missingLines.exists === false && missingLines.lines.length === 0 && missingSearch.exists === false && missingSearch.matches.length === 0);
+
+    const lines = Array.from({ length: SERVER_LOG_SEARCH_LIMIT + 5 }, (_, i) => `line ${i} hit${i === 7 ? ' Unique' : ''}`);
+    fs.writeFileSync(path.join(cwd, 'rwr_server.log'), `${lines.join('\r\n')}\r\n`);
+    const info = body(await get('/api/instances/a/server-log')).data;
+    check('routes: info counts the lines', info.exists === true && info.lineCount === lines.length && typeof info.generation === 'string', JSON.stringify(info));
+
+    const range = body(await get('/api/instances/a/server-log/lines?from=5&count=3')).data;
+    check('routes: lines returns the range with the snapshot', JSON.stringify(range.lines) === JSON.stringify(lines.slice(5, 8)) && range.from === 5 && range.generation === info.generation && range.lineCount === lines.length, JSON.stringify(range).slice(0, 200));
+    const defaulted = body(await get('/api/instances/a/server-log/lines?from=0')).data;
+    check('routes: count defaults to 200', defaulted.lines.length === 200);
+    const past = body(await get(`/api/instances/a/server-log/lines?from=${lines.length + 50}&count=10`)).data;
+    check('routes: a range past the end is empty', past.lines.length === 0);
+
+    const badQueries = [
+      '/api/instances/a/server-log/lines',
+      '/api/instances/a/server-log/lines?from=-1',
+      '/api/instances/a/server-log/lines?from=abc',
+      '/api/instances/a/server-log/lines?from=0&count=0',
+      '/api/instances/a/server-log/lines?from=0&count=1001',
+      '/api/instances/a/server-log/lines?from=1.5',
+      '/api/instances/a/server-log/lines?from=',
+      '/api/instances/a/server-log/lines?from=%20',
+      '/api/instances/a/server-log/lines?from=0x10',
+      '/api/instances/a/server-log/lines?from=1e3',
+      '/api/instances/a/server-log/lines?from=01',
+      '/api/instances/a/server-log/lines?from=0&count=1e3',
+      '/api/instances/a/server-log/search',
+      `/api/instances/a/server-log/search?q=${'x'.repeat(257)}`,
+      '/api/instances/a/server-log/search?q=x&caseSensitive=maybe',
+      '/api/instances/a/server-log/search?q=a%0Ab'
+    ];
+    const bad = await Promise.all(badQueries.map(url => get(url)));
+    check('routes: invalid queries are 400', bad.every(res => res.statusCode === 400 && body(res).error?.code === 'INVALID_REQUEST'), bad.map(res => res.statusCode).join(','));
+
+    const insensitive = body(await get('/api/instances/a/server-log/search?q=unique')).data;
+    const sensitive = body(await get('/api/instances/a/server-log/search?q=unique&caseSensitive=true')).data;
+    check('routes: search ignores case by default', JSON.stringify(insensitive.matches) === '[7]' && insensitive.truncated === false && insensitive.generation === info.generation);
+    check('routes: caseSensitive=true matches case', sensitive.matches.length === 0);
+    const capped = body(await get('/api/instances/a/server-log/search?q=hit')).data;
+    check(`routes: search stops at ${SERVER_LOG_SEARCH_LIMIT} matches and says so`, capped.matches.length === SERVER_LOG_SEARCH_LIMIT && capped.truncated === true);
+
+    // The working directory moves (an edit): the index follows the new path.
+    const moved = path.join(workRoot, 'instance-a-moved');
+    fs.mkdirSync(moved);
+    fs.writeFileSync(path.join(moved, 'rwr_server.log'), 'moved\n');
+    instanceCwd = moved;
+    const afterMove = body(await get('/api/instances/a/server-log')).data;
+    check('routes: a new working directory means a new file and generation', afterMove.path === path.join(moved, 'rwr_server.log') && afterMove.lineCount === 1 && afterMove.generation !== info.generation);
+
+    // A search whose client hangs up: the server carries on answering.
+    await server.listen({ port: 0, host: '127.0.0.1' });
+    const port = (server.server.address() as { port: number }).port;
+    await new Promise<void>((resolve) => {
+      const socket = net.connect(port, '127.0.0.1', () => {
+        socket.write(`GET /api/instances/a/server-log/search?q=hit HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${token}\r\n\r\n`);
+        setTimeout(() => { socket.destroy(); resolve(); }, 5);
+      });
+    });
+    const afterHangUp = await get('/api/instances/a/server-log/search?q=moved');
+    check('routes: a hung-up search leaves the server answering', afterHangUp.statusCode === 200 && JSON.stringify(body(afterHangUp).data.matches) === '[0]');
+
+    // A directory where the file should be: readable error, not a crash.
+    instanceCwd = path.join(workRoot, 'instance-dir-log');
+    fs.mkdirSync(path.join(instanceCwd, 'rwr_server.log'), { recursive: true });
+    const unreadable = await get('/api/instances/a/server-log');
+    check('routes: an unreadable file is 503 SERVER_LOG_UNREADABLE', unreadable.statusCode === 503 && body(unreadable).error?.code === 'SERVER_LOG_UNREADABLE', unreadable.body);
+  } finally {
+    await server.close();
+  }
+};
+
 await checkCorrectness({ stride: 7, chunkBytes: 13 }, 'tiny stride/chunks');
 await checkCorrectness({}, 'defaults');
 await checkMisc();
 await checkOverlongLine();
 await checkLarge();
+await checkRoutes();
 
 if (failures.length > 0) {
   console.log(`[smoke] ${failures.length} check(s) failed:\n  - ${failures.join('\n  - ')}`);
