@@ -7,6 +7,8 @@ import { InstanceService } from './services/instance-service.js';
 import { LogService } from './services/log-service.js';
 import { TerminalService } from './services/terminal-service.js';
 import { AuditService } from './services/audit-service.js';
+import { TemplateService } from './services/template-service.js';
+import { createTemplateStore } from './core/config/template-store.js';
 import { createHttpServer } from './api/http/http-server.js';
 import { createTerminalGateway } from './api/ws/terminal-gateway.js';
 import { isAuthEnabled, isWeaklyProtected } from './api/http/auth.js';
@@ -101,8 +103,9 @@ const main = async () => {
   const terminalService = new TerminalService(registry);
   const terminalGateway = createTerminalGateway(registry);
   const auditService = new AuditService();
+  const templateService = new TemplateService(await createTemplateStore(app.paths.templateConfigFile));
 
-  const httpServer = await createHttpServer({ instanceService, logService, terminalService, terminalGateway, auditService });
+  const httpServer = await createHttpServer({ instanceService, logService, terminalService, terminalGateway, auditService, templateService });
 
   let shutdownStartedAt: number | undefined;
   // Force-kills every instance still stopping; returns their ids.
