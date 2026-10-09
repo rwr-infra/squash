@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Alert, Button, ConfigProvider, Grid, Space, Spin, Switch, Tooltip, theme } from 'antd';
-import { ApartmentOutlined, ArrowLeftOutlined, CloseOutlined, ReloadOutlined, VerticalAlignBottomOutlined } from '@ant-design/icons';
+import { ApartmentOutlined, ArrowLeftOutlined, CloseOutlined, ReloadOutlined, SearchOutlined, VerticalAlignBottomOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { ApiError, fetchServerLogInfo, fetchServerLogLines } from '../services/apiService';
 import type { ServerLogInfo } from '../services/apiService';
 import { LogViewport } from '../components/LogViewport';
 import type { LogViewportHandle } from '../components/LogViewport';
+import { LogSearchBar } from '../components/LogSearchBar';
+import type { LogSearchHandle } from '../components/LogSearchBar';
 
 // Lines per request and per cache entry.
 const BLOCK_LINES = 200;
@@ -48,6 +50,7 @@ const ServerLogPage = () => {
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
   const viewportRef = useRef<LogViewportHandle>(null);
+  const searchRef = useRef<LogSearchHandle>(null);
   const [follow, setFollow] = useState(true);
   // When this page saw the log emptied or replaced (rwr_server restarted).
   const [resetAt, setResetAt] = useState<Date | undefined>();
@@ -66,9 +69,11 @@ const ServerLogPage = () => {
       const previous = seen.current;
       if (previous?.exists && next.exists && previous.generation !== next.generation) {
         // A new run's log: show its end. Cached blocks are keyed by
-        // generation and simply stop matching.
+        // generation and simply stop matching; search results describe
+        // lines that are gone.
         setResetAt(new Date());
         setFollow(true);
+        searchRef.current?.reset();
       }
       seen.current = next;
       return next;
@@ -190,6 +195,9 @@ const ServerLogPage = () => {
             </span>
           )}
           <Space style={{ marginLeft: 'auto' }} wrap>
+            <Tooltip title="Find (Ctrl+F / ⌘F)">
+              <Button size="small" icon={<SearchOutlined />} disabled={!info?.exists} onClick={() => searchRef.current?.open()} aria-label="Find in rwr_server.log" />
+            </Tooltip>
             <Tooltip title="Keep showing the newest lines">
               <Space size={4}>
                 <Switch size="small" checked={follow} onChange={(on) => { if (!on) viewportRef.current?.holdEnd(); setFollow(on); }} aria-label="Follow new lines" />
@@ -234,14 +242,28 @@ const ServerLogPage = () => {
             description="rwr_server writes it in its working directory (the path above) once it starts. This page checks again every few seconds."
           />
         ) : (
-          <LogViewport
-            ref={viewportRef}
-            lineCount={info.lineCount}
-            getLine={getLine}
-            onRangeChange={onRangeChange}
-            follow={follow}
-            onFollowChange={setFollow}
-          />
+          <LogSearchBar
+            ref={searchRef}
+            instanceId={instanceId}
+            generation={info.generation}
+            size={info.size}
+            firstVisibleLine={() => rangeRef.current.first}
+            onJump={(line) => viewportRef.current?.scrollToLine(line)}
+            onClose={() => viewportRef.current?.focus()}
+          >
+            {(search) => (
+              <LogViewport
+                ref={viewportRef}
+                lineCount={info.lineCount}
+                getLine={getLine}
+                onRangeChange={onRangeChange}
+                follow={follow}
+                onFollowChange={setFollow}
+                renderLine={search.renderLine}
+                activeLine={search.activeLine}
+              />
+            )}
+          </LogSearchBar>
         )}
       </div>
     </ConfigProvider>

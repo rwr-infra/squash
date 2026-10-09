@@ -49,6 +49,32 @@
   color: #6e7681;
 }
 
+.log-search-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #252526;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+.log-search-bar .log-search-input {
+  width: 240px;
+}
+
+/* Phones: the box gets the whole first row, the buttons the next. */
+@media (max-width: 767px) {
+  .log-search-bar .log-search-input {
+    width: 100%;
+  }
+}
+
+.log-search-status {
+  font-size: 12px;
+  color: #aaa;
+}
+
 .log-match {
   background: #9e6a03;
   color: inherit;

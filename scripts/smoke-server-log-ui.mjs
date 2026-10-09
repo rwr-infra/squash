@@ -15,6 +15,13 @@
 //   - a failed line load says so and recovers; a block read before an
 //     append that arrives after the page saw the append is read again (the
 //     completed last line shows)
+//   - Ctrl+F / ⌘F opens the find bar; Enter / Shift+Enter / F3 step through
+//     matches over the whole file with an "i / N" count ("+" past the 10,000
+//     cap), marking matches and the current row; "Aa" keeps the focus in
+//     the box; past the listed matches: the nearest one, a note, no wrap; a
+//     far match on a long line scrolls into view sideways; new lines offer
+//     "Search again"; Esc closes from anywhere in the bar and returns the
+//     keyboard to the log
 //   - the file emptied and rewritten: a notice, the new content, following
 //     its end; deleted: "No rwr_server.log yet"; re-created: back, without a
 //     notice; unknown instance: an error
@@ -141,6 +148,12 @@ const view = () => evaluate(`(() => {
     text: document.body.innerText.slice(0, 2000)
   };
 })()`);
+// Real pointer events at an element's centre (focus moves as for a user).
+const clickAt = async expression => {
+  const point = await evaluate(`(() => { const r = (${expression}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  await command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, button: 'none' });
+  for (const type of ['mousePressed', 'mouseReleased']) await command('Input.dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+};
 const loaded = async label => waitFor(async () => {
   const state = await view();
   return state && state.texts.length > 0 && state.texts.every(([, text]) => text !== '…') ? state : false;
@@ -274,6 +287,93 @@ try {
   faults.holdLinesMs = 0;
   state = await waitFor(async () => { const s = await view(); return s.texts.at(-1)?.[1] === 'partial more done' ? s : false; }, 'completed last line', 20000);
   check('a stale block answered late is read again', true);
+
+  // Find: Ctrl+F (⌘F on macOS), Enter / Shift+Enter / F3, match case, Esc.
+  const key = async (keyName, code, keyCode, modifiers = 0) => {
+    for (const type of ['keyDown', 'keyUp']) await command('Input.dispatchKeyEvent', { type, key: keyName, code, windowsVirtualKeyCode: keyCode, modifiers });
+  };
+  const findModifier = process.platform === 'darwin' ? 4 : 2; // Meta : Ctrl
+  const findInput = `document.querySelector('input[aria-label="Find in rwr_server.log"]')`;
+  const typeQuery = (text) => evaluate(`(() => { const el = ${findInput}; el.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(text)}); el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  const findStatus = () => evaluate(`document.querySelector('.log-search-status')?.innerText ?? ''`);
+  const activeRow = () => evaluate(`(() => { const row = document.querySelector('.log-row-active'); return row ? [Number(row.dataset.line), row.querySelector('.log-text').innerText] : null; })()`);
+  await evaluate(`document.querySelector('.log-viewport').focus()`);
+  await key('Home', 'Home', 36);
+  await waitFor(async () => (await view()).first === 0, 'top before searching');
+  await key('f', 'KeyF', 70, findModifier);
+  await waitFor(async () => evaluate(`document.activeElement === ${findInput}`), 'the find shortcut focuses the find box');
+  check('the find shortcut opens the find bar', true);
+  await typeQuery('seven');
+  check('before a search: a Search button, no match arrows', await evaluate(`[...document.querySelectorAll('.log-search-bar button')].some(b => b.innerText.trim() === 'Search') && !document.querySelector('.log-search-bar button[title="Next match (Enter)"]')`));
+  await clickAt(`[...document.querySelectorAll('.log-search-bar button')].find(b => b.innerText.trim() === 'Search')`);
+  await waitFor(async () => (await findStatus()).includes('/'), 'search results');
+  check('the Search button searches; then the match arrows replace it', await evaluate(`!!document.querySelector('.log-search-bar button[title="Next match (Enter)"]') && ![...document.querySelectorAll('.log-search-bar button')].some(b => b.innerText.trim() === 'Search')`));
+  check('a search over the whole file counts its matches, capped with "+"', (await findStatus()) === '1 / 10,000+', await findStatus());
+  let active = await waitFor(async () => { const row = await activeRow(); return row && row[0] === 0 ? row : false; }, 'jump to the first match below the view');
+  check('the first match from the view is shown and marked as the current row', active[1] === 'line 0 seven');
+  check('matches in view are highlighted', await evaluate(`document.querySelectorAll('.log-viewport mark.log-match').length >= 3 && [...document.querySelectorAll('.log-viewport mark.log-match')].every(m => m.innerText === 'seven')`));
+  await key('Enter', 'Enter', 13);
+  active = await waitFor(async () => { const row = await activeRow(); return row && row[0] === 7 ? row : false; }, 'Enter: next match');
+  check('Enter goes to the next match', (await findStatus()) === '2 / 10,000+' && active[1] === 'line 7 seven', await findStatus());
+  await key('Enter', 'Enter', 13, 8); // Shift+Enter
+  await waitFor(async () => (await activeRow())?.[0] === 0, 'Shift+Enter: previous match');
+  check('Shift+Enter goes back', (await findStatus()) === '1 / 10,000+');
+  await key('F3', 'F3', 114);
+  await waitFor(async () => (await activeRow())?.[0] === 7, 'F3: next match');
+  check('F3 goes to the next match', true);
+  // Match case by pointer, then Enter: the box keeps the focus and searches.
+  await typeQuery('SEVEN');
+  await clickAt(`document.querySelector('button[aria-pressed]')`);
+  check('clicking "Aa" leaves the focus in the find box', await evaluate(`document.activeElement === ${findInput} && document.querySelector('button[aria-pressed]').getAttribute('aria-pressed') === 'true'`));
+  await key('Enter', 'Enter', 13);
+  await waitFor(async () => (await findStatus()) === 'No matches', 'case-sensitive search');
+  check('match case: "SEVEN" finds nothing', !(await activeRow()));
+  await clickAt(`document.querySelector('button[aria-pressed]')`);
+
+  // At the end, a query with more than 10,000 matches: the nearest listed
+  // match above, a note that the rest isn't listed, and no wrap-around.
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.title === 'Jump to the end and follow').click()`);
+  await waitFor(async () => (await view()).last === lineCount - 1, 'back at the end');
+  await typeQuery('line');
+  await key('Enter', 'Enter', 13);
+  // Lines 0–10000 contain "line", except the long line 10: the 10,000th
+  // listed match is line 10000.
+  active = await waitFor(async () => { const row = await activeRow(); return row && row[0] === 10000 ? row : false; }, 'nearest listed match above the view');
+  check('with only earlier matches listed, the nearest one shows with a note', (await findStatus()).startsWith('10,000 / 10,000+') && (await findStatus()).includes('only the first'), await findStatus());
+  await key('Enter', 'Enter', 13);
+  await sleep(300);
+  check('Enter past the last listed match does not wrap to the top', (await activeRow())?.[0] === 10000);
+
+  // A match far along a long line comes into view sideways.
+  fs.appendFileSync(logFile, `${'y'.repeat(3000)} needle-far\n`);
+  lineCount += 1;
+  await waitFor(async () => (await view()).text.includes(`${lineCount.toLocaleString('en-US')} lines`), 'long line counted');
+  await typeQuery('needle-far');
+  await key('Enter', 'Enter', 13);
+  await waitFor(async () => (await activeRow())?.[0] === lineCount - 1, 'jump to the far match');
+  const markInView = await waitFor(() => evaluate(`(() => { const mark = document.querySelector('.log-row-active mark.log-match'); if (!mark) return false; const box = document.querySelector('.log-viewport').getBoundingClientRect(); const r = mark.getBoundingClientRect(); return r.left >= box.left && r.right <= box.right; })()`), 'far match in view', 5000).catch(() => false);
+  check('a match far along a long line is scrolled into view sideways', markInView);
+
+  // New lines: "Search again".
+  await typeQuery('tick-marker');
+  fs.appendFileSync(logFile, 'tick-marker one\n');
+  lineCount += 1;
+  await waitFor(async () => (await view()).text.includes(`${lineCount.toLocaleString('en-US')} lines`), 'marker line counted');
+  await key('Enter', 'Enter', 13);
+  await waitFor(async () => (await findStatus()) === '1 / 1', 'one marker');
+  fs.appendFileSync(logFile, 'tick-marker two\n');
+  lineCount += 1;
+  await waitFor(async () => evaluate(`[...document.querySelectorAll('.log-search-bar button')].some(b => b.innerText.includes('Search again'))`), 'Search again offered');
+  await evaluate(`[...document.querySelectorAll('.log-search-bar button')].find(b => b.innerText.includes('Search again')).click()`);
+  await waitFor(async () => (await findStatus()).endsWith('/ 2'), 'two markers');
+  check('new lines offer "Search again", which finds them', true);
+
+  // Esc from anywhere in the bar closes it and gives the keyboard back to the log.
+  await evaluate(`document.querySelector('.log-search-bar button[title="Next match (Enter)"]').focus()`);
+  await key('Escape', 'Escape', 27);
+  await waitFor(async () => evaluate(`!document.querySelector('.log-search-bar')`), 'Esc closes the find bar');
+  check('Esc closes the find bar and clears the marks', await evaluate(`document.querySelectorAll('mark.log-match').length === 0 && !document.querySelector('.log-row-active')`));
+  check('after Esc the log has the keyboard focus', await evaluate(`document.activeElement === document.querySelector('.log-viewport')`));
 
   // Emptied and rewritten (a server restart) while scrolled away: notice,
   // new content, following its end.

@@ -19,6 +19,7 @@ All **Running With Rifles** related content, assets, and trademarks—including 
 - **Multi-instance management** — run multiple game server instances with separate working directories
 - **Real-time terminal streaming** — WebSocket-based terminal with xterm.js
 - **Instance lifecycle management** — start, stop, restart, delete instances
+- **rwr_server.log viewer** — browse an instance's `rwr_server.log` in the browser, however large: virtual scrolling, follows new lines, Ctrl+F search over the whole file (see [rwr_server.log viewer](#rwr_serverlog-viewer))
 - **Instance templates** — save common settings (executable, stop command, restart policy, …) as templates and prefill the create form from one; RWR and SteamCMD templates are included (see [Instance templates](#instance-templates))
 - **Bounded, graceful stops** — a per-instance console stop command (e.g. `quit`), a force-kill after a stop timeout, restarts that wait for the old process, and squash stopping every instance before it exits (see [Stopping](#stopping))
 - **Crash auto-restart** — opt-in per instance, with exponential backoff, a max-attempt cap, and a cooldown that resets the counter after stable uptime
@@ -202,6 +203,30 @@ Delete them like any other template and they do not come back. squash
 refuses to start if the file is not valid (bad JSON, not a list of `{ id, name, values }`,
 a repeated id) and leaves it untouched — fix or delete it.
 
+### rwr_server.log viewer
+
+`rwr_server` writes its own log, `rwr_server.log`, in its working directory and empties
+it every time it starts. The file-icon button on an instance (and **Log** on the
+terminal page) opens it at `/server-log/<instance-id>`:
+
+- **Any size.** The server indexes the file by line and the page fetches only the
+  lines in view, so logs of millions of lines scroll smoothly. Lines longer than
+  16 KiB are cut and marked.
+- **Follows new lines** while you are at the end (checked every 2 seconds); scroll up
+  and it stays put. The **Follow** switch and **End** button bring it back.
+- **Ctrl+F** (**⌘F** on macOS) or the search button opens a find bar that searches the
+  whole file on the server (the browser's own find only sees the rows on screen): plain
+  text, case-insensitive unless **Aa** is on. **Search** (or Enter) finds the first match
+  from where you are; then Enter / F3 / ↓ go to the next match,
+  Shift+Enter / Shift+F3 to the previous one, Esc closes. Only the first 10,000 matches
+  are listed ("10,000+"): past them the bar says so — make the search more specific.
+  When new lines arrive, **Search again** includes them. A match beyond the first
+  16 KiB of a cut line is found, but the cut part is not shown.
+- When `rwr_server` starts again and empties the file, the page says so and shows
+  the new file. A missing file (the server has not run yet) is shown as such.
+
+The path is always `<working directory>/rwr_server.log`; the viewer only reads it.
+
 ### Portable distribution (no Node.js required)
 
 Each [GitHub Release](https://github.com/rwr-infra/squash/releases) carries one archive
@@ -360,6 +385,9 @@ All backend endpoints are served under the `/api` prefix; every other path is th
 | POST | `/api/templates` | yes | Create a template: `{ name, values }` (409 if the name is taken, ignoring case) |
 | PUT | `/api/templates/:id` | yes | Replace a template: `{ name, values }` (409 if renamed to a taken name, 404 if unknown) |
 | DELETE | `/api/templates/:id` | yes | Delete a template (404 if unknown) |
+| GET | `/api/instances/:id/server-log` | yes | The instance's `rwr_server.log`: `{ exists, size, lineCount, generation, modifiedAt, path }` (`generation` changes when the file is emptied or replaced) |
+| GET | `/api/instances/:id/server-log/lines` | yes | Lines `?from=` (0-based) `&count=` (1–1000, default 200), with the same snapshot fields |
+| GET | `/api/instances/:id/server-log/search` | yes | Matching line numbers for `?q=` (1–256 characters, no line breaks) `&caseSensitive=true\|false`; at most 10,000 (`truncated` when there are more) |
 
 "Auth: yes" endpoints require `Authorization: Bearer <token>` when login (or `AUTH_TOKEN`) is configured.
 

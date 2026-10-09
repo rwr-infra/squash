@@ -19,6 +19,8 @@ export type LogViewportHandle = {
   // Keeps the view at the end once following stops (else it would return to
   // where the user last scrolled).
   holdEnd: () => void;
+  // Gives the viewport keyboard focus (arrows, Page Up/Down, Space).
+  focus: () => void;
 };
 
 type Props = {
@@ -95,8 +97,30 @@ export const LogViewport = ({ ref, lineCount, getLine, onRangeChange, follow, on
       setTopLine(next);
       onFollowChange(false);
     },
-    holdEnd: () => setTopLine(maxTop)
+    holdEnd: () => setTopLine(maxTop),
+    focus: () => scrollerRef.current?.focus({ preventScroll: true })
   }), [visibleRows, maxTop, onFollowChange]);
+
+  // Long lines don't wrap: bring the active row's first highlighted match
+  // into view sideways, once per active line (and only once its row has
+  // loaded). Only scrollLeft changes, which the scroll handler ignores.
+  const centredLine = useRef<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (activeLine === undefined) {
+      centredLine.current = undefined;
+      return;
+    }
+    const scroller = scrollerRef.current;
+    const mark = scroller?.querySelector('.log-row-active mark.log-match');
+    if (!scroller || !mark || centredLine.current === activeLine) return;
+    centredLine.current = activeLine;
+    const box = scroller.getBoundingClientRect();
+    const rect = mark.getBoundingClientRect();
+    const left = rect.left - box.left + scroller.scrollLeft;
+    if (left < scroller.scrollLeft || left + rect.width > scroller.scrollLeft + scroller.clientWidth) {
+      scroller.scrollLeft = Math.max(0, left - scroller.clientWidth / 3);
+    }
+  });
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
