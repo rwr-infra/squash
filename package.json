@@ -16,6 +16,7 @@
     "smoke:pty": "tsx scripts/pty-rwr-smoke.ts",
     "smoke:release": "node scripts/smoke-release.mjs",
     "smoke:supervisor": "tsx scripts/smoke-supervisor.ts",
+    "smoke:auth": "tsx scripts/smoke-auth.ts",
     "smoke:restart-policy": "node scripts/smoke-restart-policy.mjs",
     "smoke:instance-form": "node scripts/smoke-instance-form.mjs",
     "smoke:pty-exit-window": "node scripts/smoke-pty-exit-window.mjs",

@@ -12,6 +12,13 @@ import { registerInstanceRoutes } from './routes/instance-routes.js';
 import { isAuthEnabled, isLoginEnabled, validateBearerToken, login, logout, currentUser } from './auth.js';
 import { appPaths } from '../../app/paths.js';
 
+declare module 'fastify' {
+  interface FastifyContextConfig {
+    // Served without a token (see the auth hook in createHttpServer).
+    public?: boolean;
+  }
+}
+
 export type ApiDeps = {
   instanceService: InstanceService;
   logService: LogService;
@@ -45,31 +52,29 @@ export const createHttpServer = async (deps: ApiDeps): Promise<FastifyInstance> 
     prefix: '/'
   });
 
-  // All backend endpoints live under /api. Everything else is the SPA. Auth is
-  // required for /api/* except the public ones (health, login, status) and the
-  // WS terminal (which authenticates via its query token).
-  const requiresAuth = (url: string): boolean => {
-    const path = url.split('?')[0];
-    if (!path.startsWith('/api/')) return false;
-    if (path === '/api/health' || path === '/api/auth/login' || path === '/api/auth/status') return false;
-    if (path.startsWith('/api/terminal')) return false;
-    return true;
-  };
-
-  server.addHook('preHandler', async (request, reply) => {
-    if (!requiresAuth(request.url)) return;
-    if (isAuthEnabled && !validateBearerToken(request.headers.authorization)) {
-      return reply.status(401).send({ success: false, error: { code: 'UNAUTHORIZED', message: 'Missing or invalid Authorization header' } });
-    }
-  });
-
+  // All backend endpoints live under /api. Everything else is the SPA.
   await server.register(async (api) => {
-    api.get('/health', async () => ({ success: true, data: { status: 'ok', timestamp: new Date().toISOString() } }));
+    // Every route registered in here — below or by the route modules — needs
+    // a valid token unless its own options mark it public (per method). This
+    // looks at the route the request matched, never at the raw URL: the
+    // router decodes %xx escapes and accepts absolute-form request lines
+    // ("GET http://host/api/... HTTP/1.1"), so a check on the URL string can
+    // be steered past while the request still reaches a protected route.
+    // Requests that match no route get the 404 handler outside this scope.
+    api.addHook('preHandler', async (request, reply) => {
+      if (request.routeOptions.config.public) return;
+      if (isAuthEnabled && !validateBearerToken(request.headers.authorization)) {
+        return reply.status(401).send({ success: false, error: { code: 'UNAUTHORIZED', message: 'Missing or invalid Authorization header' } });
+      }
+    });
+    const publicRoute = { config: { public: true } };
+
+    api.get('/health', publicRoute, async () => ({ success: true, data: { status: 'ok', timestamp: new Date().toISOString() } }));
 
     // Tells the frontend whether to show a login screen.
-    api.get('/auth/status', async () => ({ success: true, data: { loginEnabled: isLoginEnabled } }));
+    api.get('/auth/status', publicRoute, async () => ({ success: true, data: { loginEnabled: isLoginEnabled } }));
 
-    api.post('/auth/login', async (request, reply) => {
+    api.post('/auth/login', publicRoute, async (request, reply) => {
       const body = (request.body ?? {}) as { username?: string; password?: string };
       const token = login(body.username ?? '', body.password ?? '');
       if (!token) {
@@ -89,8 +94,10 @@ export const createHttpServer = async (deps: ApiDeps): Promise<FastifyInstance> 
       return { success: true, data: { ok: true } };
     });
 
-    // WS terminal stream → /api/terminal/:instanceId (auth via ?token=).
-    api.get('/terminal/:instanceId', { websocket: true }, (socket, request) => {
+    // WS terminal stream → /api/terminal/:instanceId. Public to the hook: it
+    // checks the ?token= itself (browsers can't set headers on a WebSocket).
+    // No HEAD route: it would call this socket handler as an HTTP one.
+    api.get('/terminal/:instanceId', { websocket: true, exposeHeadRoute: false, ...publicRoute }, (socket, request) => {
       const token = (request.query as { token?: string }).token;
       if (!validateBearerToken(token ? `Bearer ${token}` : undefined)) {
         socket.send(JSON.stringify({ type: 'error', message: 'Unauthorized' }));
