@@ -11,6 +11,7 @@ export const appPaths = {
   configDir: path.join(rootDir, 'config'),
   logDir: path.join(rootDir, 'logs'),
   instanceConfigFile: path.join(rootDir, 'config', 'instances.json'),
+  templateConfigFile: path.join(rootDir, 'config', 'templates.json'),
   // Derived from this file's location (src/ in dev, dist/ when compiled), so it
   // resolves correctly regardless of cwd — both `tsx src/index.ts` and a packaged
   // `node dist/index.js` find the bundled frontend next to the app root.

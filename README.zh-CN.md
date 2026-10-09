@@ -19,6 +19,7 @@
 - **多实例管理**——以独立工作目录运行多个游戏服务器实例
 - **实时终端流**——基于 WebSocket + xterm.js 的终端
 - **实例生命周期管理**——启动、停止、重启、删除实例
+- **实例模板**——把常用设置(可执行文件、停止命令、重启策略等)存为模板,新建实例时一键预填;自带 RWR 与 SteamCMD 模板(见[实例模板](#实例模板))
 - **有上限的优雅停止**——按实例配置控制台停止命令(如 `quit`)、停止超时后强制结束、重启会等旧进程退出、squash 退出前先停掉所有实例(见[停止](#停止))
 - **崩溃自动重启**——按实例可选开启,带指数退避、最大重试次数上限,以及在稳定运行一段时间后重置计数器的冷却机制
 - **Windows 崩溃弹窗恢复**——检测引擎生成的 `rwr_crashdump.dmp`,强制结束卡在「未处理异常」弹窗后面的进程,使自动重启仍能触发
@@ -41,7 +42,7 @@ squash/
 │   └── api/               # HTTP + WebSocket 接口
 ├── frontend/              # 前端(React + Vite)
 ├── scripts/               # 开发脚本(PTY 冒烟测试、打包)
-├── config/                # 实例配置(instances.json)
+├── config/                # 实例配置与模板(instances.json、templates.json)
 ├── Dockerfile             # 容器镜像
 └── LICENSE
 ```
@@ -165,6 +166,24 @@ cp .env.example .env
 `time`、`user`、`action`,以及可选的 `instanceId` / `detail`。Web UI 在实例列表页的
 **审计日志(Audit log)** 抽屉中展示这些记录。
 
+### 实例模板
+
+模板保存实例表单中除 Instance ID 以外的任意设置,每一项都可选。在 **Create Instance**
+中从 *Prefill from a template* 选择一个模板:模板设置的字段会被填入,其余字段回到默认值,
+已输入的 Instance ID 保留。新建或编辑对话框里的 **Save as template** 会把对话框当前的设置
+另存为新模板(只是 Instance ID 的 Name 不会带入);实例列表页的 **Templates** 抽屉可以
+新建、编辑、删除模板,或从某个模板直接打开 Create Instance。清空 *Prefill from a template*
+的选择会把这些字段恢复为默认值。
+
+应用模板是复制其值:之后修改或删除模板,不影响已经用它创建的实例。模板名称不区分大小写、
+不可重复。
+
+模板保存在 `config/templates.json`。首次启动(该文件尚不存在)时,squash 会写入两个模板:
+**RWR dedicated server**(`./rwr_server`、停止命令 `quit` 加一个空行、Keep running)和
+**SteamCMD**(`./steamcmd`、停止命令 `quit`、不自动重启)。它们可以像其他模板一样删除,
+删除后不会再生成。如果文件无效(JSON 错误、不是
+`{ id, name, values }` 的列表、id 重复),squash 会拒绝启动且不改动该文件——请修正或删除它。
+
 ### 便携发行包(无需 Node.js)
 
 每个 [GitHub Release](https://github.com/rwr-infra/squash/releases) 为每个平台提供一个归档。
@@ -199,7 +218,7 @@ cp .env.example .env
 保留)、目录不可写、缺少 `runtime/` 目录。`build-info.json` 记录了源码 commit 以及内置的 Node.js 与
 node-pty 版本,便于排查问题。
 
-**升级:** 数据保存在 squash 目录内的 `config/`(实例定义)、`logs/`(实例日志与审计日志)和 `.env` 中。
+**升级:** 数据保存在 squash 目录内的 `config/`(实例定义与模板)、`logs/`(实例日志与审计日志)和 `.env` 中。
 请把游戏服务器文件放在 squash 目录**之外**,并给实例使用绝对路径的 `cwd`,使其不依赖 squash 目录。
 先停止运行中的实例和 squash,把新版本解压到一个**新**目录,从旧目录复制这三项过去,再启动新版本。
 在新版本跑通之前保留旧目录——回滚就是重新启动旧版本。(此前版本的启动脚本会强制 `PORT=3000`;
@@ -302,6 +321,10 @@ curl http://localhost:3000/api/instances
 | POST | `/api/instances/:id/command` | 是 | 向实例的 stdin 发送命令 |
 | GET | `/api/instances/:id/logs/tail` | 是 | 拉取实例日志末尾 |
 | GET | `/api/audit` | 是 | 最近的审计日志条目(`?limit=`) |
+| GET | `/api/templates` | 是 | 列出实例模板 |
+| POST | `/api/templates` | 是 | 创建模板:`{ name, values }`(名称不区分大小写重复时返回 409) |
+| PUT | `/api/templates/:id` | 是 | 整体替换模板:`{ name, values }`(改成已被占用的名称时返回 409,不存在时返回 404) |
+| DELETE | `/api/templates/:id` | 是 | 删除模板(不存在时返回 404) |
 
 「鉴权:是」的接口在配置了登录(或 `AUTH_TOKEN`)时,需要 `Authorization: Bearer <token>`。
 

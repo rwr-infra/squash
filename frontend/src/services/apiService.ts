@@ -37,11 +37,23 @@ const assertAuthorized = (res: Response) => {
   }
 };
 
+// Carries the API's error code (e.g. TEMPLATE_NAME_TAKEN) so callers can react
+// to a specific failure; the message is the API's own.
+export class ApiError extends Error {
+  readonly code: string | undefined;
+
+  constructor(code: string | undefined, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = code;
+  }
+}
+
 const unwrap = async <T>(res: Response): Promise<T> => {
   assertAuthorized(res);
   const body = (await res.json()) as ApiResponse<T>;
   if (!body.success || body.data === undefined) {
-    throw new Error(body.error?.message ?? 'Unknown API error');
+    throw new ApiError(body.error?.code, body.error?.message ?? 'Unknown API error');
   }
   return body.data;
 };
@@ -214,6 +226,50 @@ export const logout = async (): Promise<void> => {
   } finally {
     clearToken();
   }
+};
+
+// --- Templates ---
+
+// The instance settings a template prefills: the instance form's fields
+// except the ID, each optional.
+export type InstanceTemplateValues = Partial<
+  Pick<CreateInstanceRequest, 'name' | 'cwd' | 'executable' | 'args' | 'autoStart' | 'restartPolicy' | 'restartDelayMs' | 'stopCommand' | 'stopTimeoutMs'>
+>;
+
+export type InstanceTemplate = {
+  readonly id: string;
+  readonly name: string;
+  readonly values: InstanceTemplateValues;
+};
+
+export type TemplateRequest = { name: string; values: InstanceTemplateValues };
+
+export const fetchTemplates = async (): Promise<InstanceTemplate[]> => {
+  const res = await fetch(`${API_BASE}/templates`, { headers: authHeaders() });
+  return unwrap(res);
+};
+
+export const createTemplate = async (data: TemplateRequest): Promise<InstanceTemplate> => {
+  const res = await fetch(`${API_BASE}/templates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(data)
+  });
+  return unwrap(res);
+};
+
+export const updateTemplate = async (id: string, data: TemplateRequest): Promise<InstanceTemplate> => {
+  const res = await fetch(`${API_BASE}/templates/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(data)
+  });
+  return unwrap(res);
+};
+
+export const deleteTemplate = async (id: string): Promise<void> => {
+  const res = await fetch(`${API_BASE}/templates/${encodeURIComponent(id)}`, { method: 'DELETE', headers: authHeaders() });
+  await unwrap(res);
 };
 
 // --- Audit ---
