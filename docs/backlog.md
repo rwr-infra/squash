@@ -15,6 +15,11 @@
 - **`stopping` 期间网页终端的键盘输入被丢弃**（低，既有）：`sendRawInput` 要求状态是 `running`，所以停服卡住时无法在网页上手动按回车，只能用 Force stop。
 - **编辑实例后终端尺寸回到 120×40**（低）：编辑会 `dispose()` 旧 supervisor 并新建一个，新的没有记住尺寸；已打开的终端页仍连着旧对象，要重新进入页面。
 
+## 安全
+
+- **静态 `AUTH_TOKEN` 用 `===` 比较**（低）：`src/api/http/auth.ts` 的 `validateBearerToken`/`currentUser` 不是常量时间比较，理论上可做时序探测。会话 token 走 `Map` 查找，不受影响。修复用 `crypto.timingSafeEqual`（先比长度）。
+- **Fastify 错误处理器记不下任何东西**（低）：`createHttpServer` 里 `fastify({...})` 没配 logger（`server.log` 是 noop，同文件的 pino `logger` 没用上）；`setErrorHandler` 注册在 `/api` 插件之后，插件内路由可能走 Fastify 默认处理器而不是统一的 `INTERNAL_ERROR` 格式。500 时无迹可查。
+
 ## 部署 / 构建 / CI
 
 - **日志体验**（低）：`src/api/http/auth.ts` 的 `pino({ name: 'auth' })` 没有设 ISO 时间戳，和 `src/index.ts` 的格式不一致；便携包控制台输出的是原始 JSON，对双击运行的用户不友好。注意三点：
