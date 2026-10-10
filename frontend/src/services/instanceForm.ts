@@ -4,7 +4,7 @@ import type { CreateInstanceRequest, InstanceTemplateValues, RestartPolicy } fro
 // arguments as the comma-separated text the user types.
 export type InstanceFormValues = Omit<CreateInstanceRequest, 'args'> & { args?: string };
 
-export const CREATE_DEFAULTS: Partial<InstanceFormValues> = {
+const CREATE_DEFAULTS: Partial<InstanceFormValues> = {
   cwd: '.',
   executable: './rwr_server',
   autoStart: false,
@@ -24,10 +24,34 @@ const CLEARED_TEMPLATE_FIELDS: Record<keyof InstanceTemplateValues, undefined> =
   restartPolicy: undefined,
   restartDelayMs: undefined,
   stopCommand: undefined,
-  stopTimeoutMs: undefined
+  stopTimeoutMs: undefined,
+  serverLogFile: undefined
 };
 
 export const TEMPLATE_FIELD_NAMES = Object.keys(CLEARED_TEMPLATE_FIELDS) as Array<keyof InstanceTemplateValues>;
+
+// The server's rules for serverLogFile (src/core/log/server-log-file.ts;
+// test/unit/server-log-file.test.ts runs both against the same cases). A file
+// name or a path below the working directory, either separator; nothing
+// absolute or UNC, no `:` (a drive, an NTFS stream), no segment of only dots
+// and spaces (`..`, `.. `) but `.`, no Windows device name.
+const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$) *(\.|$)/i;
+export const isValidServerLogFile = (value: string): boolean => {
+  if (value.length === 0 || value.length > 260 || value.includes('\0')) return false;
+  if (value.startsWith('/') || value.startsWith('\\') || value.includes(':')) return false;
+  const segments = value.split(/[\\/]/);
+  const last = segments[segments.length - 1];
+  return (
+    segments.every((segment) => (segment === '.' || !/^[. ]+$/.test(segment)) && !WINDOWS_DEVICE.test(segment.replace(/[. ]+$/, ''))) &&
+    last !== '' &&
+    last !== '.'
+  );
+};
+
+// What the server infers for an instance without the field: rwr_server's
+// log when the executable is rwr_server(.exe), else none.
+export const inferServerLogFile = (executable: string | undefined): string =>
+  /^rwr_server(\.exe)?$/i.test(executable?.split(/[\\/]/).pop() ?? '') ? 'rwr_server.log' : '';
 
 export const splitArgs = (text: string | undefined): string[] =>
   text ? text.split(',').map((arg) => arg.trim()).filter(Boolean) : [];
@@ -56,9 +80,15 @@ export const sanitizeTemplateValues = (values: unknown): InstanceTemplateValues 
     restartPolicy: RESTART_POLICIES.find((policy) => policy === raw.restartPolicy),
     restartDelayMs: integer(raw.restartDelayMs, 0),
     stopCommand: typeof raw.stopCommand === 'string' ? raw.stopCommand : undefined,
-    stopTimeoutMs: integer(raw.stopTimeoutMs, 1000, 600_000)
+    stopTimeoutMs: integer(raw.stopTimeoutMs, 1000, 600_000),
+    serverLogFile: typeof raw.serverLogFile === 'string' && isValidServerLogFile(raw.serverLogFile) ? raw.serverLogFile : undefined
   });
 };
+
+// Whether picking the template sets the log file (else the create form infers
+// it from the executable).
+export const templateSetsServerLogFile = (values: InstanceTemplateValues | undefined): boolean =>
+  values !== undefined && sanitizeTemplateValues(values).serverLogFile !== undefined;
 
 // A template's values as form values: only the fields it sets.
 export const templateToFormValues = (values: InstanceTemplateValues): Partial<InstanceFormValues> => {
@@ -67,12 +97,13 @@ export const templateToFormValues = (values: InstanceTemplateValues): Partial<In
 };
 
 // The create form after picking a template (or none): the defaults, overlaid
-// with what the template sets. The Instance ID is not part of it.
-export const createFormValues = (values?: InstanceTemplateValues): Partial<InstanceFormValues> => ({
-  ...CLEARED_TEMPLATE_FIELDS,
-  ...CREATE_DEFAULTS,
-  ...(values ? templateToFormValues(values) : {})
-});
+// with what the template sets. The Instance ID is not part of it. A template
+// without a log file (one saved before the field existed, or SteamCMD's)
+// gets the one the server would infer from the executable.
+export const createFormValues = (values?: InstanceTemplateValues): Partial<InstanceFormValues> => {
+  const filled = { ...CLEARED_TEMPLATE_FIELDS, ...CREATE_DEFAULTS, ...(values ? templateToFormValues(values) : {}) };
+  return { ...filled, serverLogFile: filled.serverLogFile ?? inferServerLogFile(filled.executable) };
+};
 
 const nonBlank = (text: string | undefined) => (text?.trim() ? text : undefined);
 
@@ -90,7 +121,8 @@ export const formToTemplateValues = (values: Partial<InstanceFormValues>): Insta
     restartPolicy: values.restartPolicy ?? undefined,
     restartDelayMs: values.restartDelayMs ?? undefined,
     stopCommand: nonBlank(values.stopCommand),
-    stopTimeoutMs: values.stopTimeoutMs ?? undefined
+    stopTimeoutMs: values.stopTimeoutMs ?? undefined,
+    serverLogFile: values.serverLogFile?.trim() || undefined
   };
   return withoutUndefined(picked);
 };

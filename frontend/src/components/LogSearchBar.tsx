@@ -22,6 +22,8 @@ export type LogSearchView = {
 type Props = {
   ref?: Ref<LogSearchHandle>;
   instanceId: string;
+  // The log file's name, for the box's label.
+  fileName: string;
   // The file as the page last saw it.
   generation: string;
   size: number;
@@ -74,7 +76,7 @@ const keepFocus = (event: MouseEvent) => event.preventDefault();
 // The find bar. Ctrl+F (⌘F on macOS) opens it instead of the browser's own
 // find, which only sees the rows on screen; the server searches the whole
 // file. Enter / F3: next match; Shift+Enter / Shift+F3: previous; Esc closes.
-export const LogSearchBar = ({ ref, instanceId, generation, size, firstVisibleLine, onJump, onClose, children }: Props) => {
+export const LogSearchBar = ({ ref, instanceId, fileName, generation, size, firstVisibleLine, onJump, onClose, children }: Props) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -249,8 +251,8 @@ export const LogSearchBar = ({ ref, instanceId, generation, size, firstVisibleLi
             className="log-search-input"
             autoFocus
             size="small"
-            placeholder="Find in rwr_server.log"
-            aria-label="Find in rwr_server.log"
+            placeholder={`Find in ${fileName}`}
+            aria-label={`Find in ${fileName}`}
             // Phones label their Enter key "Search".
             enterKeyHint="search"
             value={query}

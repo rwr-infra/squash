@@ -46,11 +46,14 @@ export class ServerLogService {
     const config = this.registry.getConfig(instanceId);
     if (!config) return undefined;
     const file = serverLogFileOf(config);
-    if (!isValidServerLogFile(file)) {
+    const cwd = path.resolve(config.cwd);
+    const filePath = path.resolve(cwd, ...serverLogFileSegments(file));
+    // The rules keep it inside; the check after resolving makes sure.
+    const relative = path.relative(cwd, filePath);
+    if (!isValidServerLogFile(file) || relative === '' || path.isAbsolute(relative) || relative.split(path.sep)[0] === '..') {
       this.indexes.delete(instanceId);
       throw new ServerLogDisabledError(instanceId, file);
     }
-    const filePath = path.resolve(config.cwd, ...serverLogFileSegments(file));
     const existing = this.indexes.get(instanceId);
     if (existing?.path === filePath && existing.file === file) return existing;
     const entry = { file, path: filePath, index: createLineIndex(filePath) };

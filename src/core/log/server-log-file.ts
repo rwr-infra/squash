@@ -9,15 +9,16 @@ export const RWR_SERVER_LOG_FILE = 'rwr_server.log';
 export const SERVER_LOG_FILE_MAX_LENGTH = 260;
 
 // A file name, or a path below the working directory (either separator).
-// Nothing that reaches out of it — no absolute, drive (`C:`, also the
-// drive-relative `C:x`) or UNC path, no `..` segment — and nothing that ends
-// in a directory. Checked on both platforms' rules: a config may move between
-// them. Windows may drop a segment's trailing dots and spaces (`.. ` → `..`),
-// so a segment of only dots and spaces counts as `..` — except `.` itself —
-// and a device name (`NUL`, `com1.log`) is no file.
+// Nothing that reaches out of it — no absolute or UNC path, no `:` anywhere
+// (a drive: `C:x`, also mid-path, where Windows resolves `x/C:..` on drive C;
+// or an NTFS stream), no `..` segment — and nothing that ends in a directory.
+// Checked on both platforms' rules: a config may move between them. Windows
+// may drop a segment's trailing dots and spaces (`.. ` → `..`), so a segment
+// of only dots and spaces counts as `..` — except `.` itself — and a device
+// name (`NUL`, `com1.log`) is no file.
 export const isValidServerLogFile = (value: unknown): value is string => {
   if (typeof value !== 'string' || value.length === 0 || value.length > SERVER_LOG_FILE_MAX_LENGTH || value.includes('\0')) return false;
-  if (value.startsWith('/') || value.startsWith('\\') || /^[a-zA-Z]:/.test(value)) return false;
+  if (value.startsWith('/') || value.startsWith('\\') || value.includes(':')) return false;
   const segments = serverLogFileSegments(value);
   const last = segments[segments.length - 1];
   return (
@@ -27,7 +28,7 @@ export const isValidServerLogFile = (value: unknown): value is string => {
   );
 };
 
-const WINDOWS_DEVICE = /^(con|prn|aux|nul|com\d|lpt\d|conin\$|conout\$) *(\.|$)/i;
+const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$) *(\.|$)/i;
 
 // Either separator, on every platform: resolve the segments, not the text.
 export const serverLogFileSegments = (value: string): string[] => value.split(/[\\/]/);

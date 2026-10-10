@@ -250,7 +250,7 @@ export const LogViewport = ({ ref, lineCount, getLine, onRangeChange, follow, on
   return (
     // role="log" implies aria-live=polite; rows swapped in by scrolling are
     // not news to announce.
-    <div ref={scrollerRef} className="log-viewport" tabIndex={0} onScroll={onScroll} onKeyDown={onKeyDown} role="log" aria-live="off" aria-label="rwr_server.log">
+    <div ref={scrollerRef} className="log-viewport" tabIndex={0} onScroll={onScroll} onKeyDown={onKeyDown} role="log" aria-live="off" aria-label="Server log">
       {/* The rows stay in the flow (translated into place), so the spacer is
           as wide as the widest row in view. overflow hidden: rows translated
           past either end must not change the height the scrollbar maps onto. */}

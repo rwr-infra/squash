@@ -4,10 +4,25 @@
 //   - a config or request without the field gets rwr_server.log when the
 //     executable is rwr_server (any directory, optional .exe, any case),
 //     else none; an explicit value, '' included, is kept
+//   - the web form's copy of both rules (frontend/src/services/instanceForm.ts)
+//     gives the same answers
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { inferServerLogFile, isValidServerLogFile, serverLogFileOf } from '../../src/core/log/server-log-file.js';
+import * as server from '../../src/core/log/server-log-file.js';
+import { serverLogFileOf } from '../../src/core/log/server-log-file.js';
 import { CreateInstanceSchema } from '../../src/api/http/schemas/instance-schemas.js';
 import { TemplateValuesSchema } from '../../src/api/http/schemas/template-schemas.js';
+
+// Loaded by path: the frontend is not part of the backend's TypeScript
+// project (it imports without extensions). Its imports are type-only.
+type Rules = {
+  readonly isValidServerLogFile: (value: string) => boolean;
+  readonly inferServerLogFile: (executable: string | undefined) => string;
+};
+const frontendModule = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../frontend/src/services/instanceForm.ts');
+const webForm = (await import(frontendModule)) as Rules;
+const implementations: ReadonlyArray<readonly [string, Rules]> = [['server', server], ['web form', webForm]];
 
 const INSIDE = ['rwr_server.log', 'server.log', 'logs/server.log', 'logs\\server.log', './rwr_server.log', 'a/./b.log', '...log', 'log', 'console.log', 'nul_x.log', 'com10.log', 'x'.repeat(260)];
 const OUTSIDE = [
@@ -28,6 +43,10 @@ const OUTSIDE = [
   '.. \\x.log',
   '... /x.log',
   'a/ . /x.log',
+  'x/C:../C:../Windows/win.ini',
+  'logs/c:x.log',
+  'a.log:stream',
+  ':',
   ' ',
   'logs/..',
   'logs/',
@@ -41,14 +60,13 @@ const OUTSIDE = [
   'LPT9',
   'aux .log',
   'conout$',
+  'COM¹',
+  'lpt³.log',
   'a\0b.log',
   'x'.repeat(261)
 ];
 
-describe('isValidServerLogFile', () => {
-  it.each([undefined, null, 42, true, {}, ['rwr_server.log']])('%j (not text) is refused', value => {
-    expect(isValidServerLogFile(value)).toBe(false);
-  });
+describe.each(implementations)('isValidServerLogFile (%s)', (_, { isValidServerLogFile }) => {
   it.each(INSIDE)('%j is inside the working directory', value => {
     expect(isValidServerLogFile(value)).toBe(true);
   });
@@ -57,15 +75,27 @@ describe('isValidServerLogFile', () => {
   });
 });
 
-describe('inferServerLogFile', () => {
+describe('isValidServerLogFile (server)', () => {
+  it.each([undefined, null, 42, true, {}, ['rwr_server.log']])('%j (not text) is refused', value => {
+    expect(server.isValidServerLogFile(value)).toBe(false);
+  });
+});
+
+describe.each(implementations)('inferServerLogFile (%s)', (_, { inferServerLogFile }) => {
   it.each(['./rwr_server', 'rwr_server', 'rwr_server.exe', 'RWR_Server.EXE', '/opt/rwr/rwr_server', 'C:\\rwr\\rwr_server.exe'])(
     '%j → rwr_server.log',
     executable => {
       expect(inferServerLogFile(executable)).toBe('rwr_server.log');
     }
   );
-  it.each(['./steamcmd', 'steamcmd.exe', './rwr_server2', './rwr_server.bak', './rwr_server.sh', './rwr_server_x', '/opt/rwr_server/run', '', undefined, 42])('%j → none', executable => {
+  it.each(['./steamcmd', 'steamcmd.exe', './rwr_server2', './rwr_server.bak', './rwr_server.sh', './rwr_server_x', '/opt/rwr_server/run', '', undefined])('%j → none', executable => {
     expect(inferServerLogFile(executable)).toBe('');
+  });
+});
+
+describe('serverLogFileOf', () => {
+  it('a non-text executable infers none', () => {
+    expect(server.inferServerLogFile(42)).toBe('');
   });
   it('an explicit value wins, an empty one too', () => {
     expect(serverLogFileOf({ executable: './rwr_server', serverLogFile: '' })).toBe('');

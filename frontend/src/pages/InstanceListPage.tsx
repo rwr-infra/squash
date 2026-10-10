@@ -9,7 +9,7 @@ import { ReloadOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, DeleteO
 import { useQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query';
 import type { InstanceStatus, CreateInstanceRequest, InstanceWithRuntime, AuditEntry, InstanceTemplate } from '../services/apiService';
 import { fetchInstances, createInstance, updateInstance, startInstance, stopInstance, restartInstance, deleteInstance, fetchAudit, fetchTemplates, getAuthStatus, logout } from '../services/apiService';
-import { CREATE_DEFAULTS, TEMPLATE_FIELD_NAMES, createFormValues, formToTemplateValues, splitArgs } from '../services/instanceForm';
+import { TEMPLATE_FIELD_NAMES, createFormValues, formToTemplateValues, inferServerLogFile, splitArgs, templateSetsServerLogFile } from '../services/instanceForm';
 import type { InstanceFormValues } from '../services/instanceForm';
 
 const auditActionColor: Record<AuditEntry['action'], string> = {
@@ -50,7 +50,11 @@ const InstanceListPage = () => {
   // The template the create form was last filled from, and the values it
   // opens with (a template picked in the templates drawer).
   const [templateId, setTemplateId] = useState<string | undefined>();
-  const [createInitial, setCreateInitial] = useState<Partial<InstanceFormValues>>(CREATE_DEFAULTS);
+  const [createInitial, setCreateInitial] = useState<Partial<InstanceFormValues>>(createFormValues);
+  // While a new instance's log file is the one its executable implies (the
+  // defaults, or a template that sets none) and nobody has typed in it, it
+  // follows the executable. Never while editing: the saved value stays.
+  const logFileFollowsExecutable = useRef(true);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [templateTarget, setTemplateTarget] = useState<TemplateTarget | null>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
@@ -128,7 +132,8 @@ const InstanceListPage = () => {
     if (savingRef.current) return;
     setEditing(null);
     setTemplateId(undefined);
-    setCreateInitial(CREATE_DEFAULTS);
+    setCreateInitial(createFormValues());
+    logFileFollowsExecutable.current = true;
     setModalOpen(true);
   };
 
@@ -137,6 +142,7 @@ const InstanceListPage = () => {
     setEditing(null);
     setTemplateId(template.id);
     setCreateInitial(createFormValues(template.values));
+    logFileFollowsExecutable.current = !templateSetsServerLogFile(template.values);
     setTemplatesOpen(false);
     setModalOpen(true);
   };
@@ -145,7 +151,9 @@ const InstanceListPage = () => {
   // the Instance ID typed so far stays.
   const applyTemplate = (id: string | undefined) => {
     setTemplateId(id);
-    form.setFieldsValue(createFormValues(templates.find((template) => template.id === id)?.values));
+    const values = templates.find((template) => template.id === id)?.values;
+    form.setFieldsValue(createFormValues(values));
+    logFileFollowsExecutable.current = !templateSetsServerLogFile(values);
     form.setFields(TEMPLATE_FIELD_NAMES.map((name) => ({ name, errors: [] })));
   };
 
@@ -166,6 +174,7 @@ const InstanceListPage = () => {
   const openEdit = (record: InstanceWithRuntime) => {
     if (savingRef.current) return;
     setEditing(record);
+    logFileFollowsExecutable.current = false;
     setModalOpen(true);
   };
 
@@ -189,6 +198,9 @@ const InstanceListPage = () => {
         // so the server-side default applies.
         stopTimeoutMs: values.stopTimeoutMs ?? undefined,
         restartDelayMs: values.restartDelayMs ?? undefined,
+        // Always sent, '' too: left out, the server would infer it from the
+        // executable again.
+        serverLogFile: values.serverLogFile?.trim() ?? '',
         autoRestart: values.restartPolicy !== 'never'
       };
       if (editing) {
@@ -227,7 +239,9 @@ const InstanceListPage = () => {
     return (
       <Space wrap>
         <Button size={size} icon={<ApartmentOutlined />} onClick={() => navigate(`/terminal/${record.config.id}`)} title="Open Terminal" />
-        <Button size={size} icon={<FileTextOutlined />} onClick={() => navigate(`/server-log/${encodeURIComponent(record.config.id)}`)} title="View rwr_server.log" />
+        {record.config.serverLogFile && (
+          <Button size={size} icon={<FileTextOutlined />} onClick={() => navigate(`/server-log/${encodeURIComponent(record.config.id)}`)} title={`View ${record.config.serverLogFile}`} />
+        )}
         <Button size={size} icon={<PlayCircleOutlined />} disabled={running || stopping} onClick={() => startMut.mutate(record.config.id)} title="Start" />
         {/* Force stop asks first: a double click on Stop would otherwise land
             on it once the first request has returned. */}
@@ -381,7 +395,20 @@ const InstanceListPage = () => {
             style={{ width: '100%', marginTop: 16 }}
           />
         )}
-        <Form form={form} layout="vertical" disabled={saving} onFinish={handleSubmit} initialValues={initialValues} style={{ marginTop: 16 }}>
+        <Form
+          form={form}
+          layout="vertical"
+          disabled={saving}
+          onFinish={handleSubmit}
+          initialValues={initialValues}
+          // User edits only (not setFieldsValue): typing a log file pins it;
+          // a new executable re-infers one that still follows.
+          onValuesChange={(changed: Partial<InstanceFormValues>) => {
+            if ('serverLogFile' in changed) logFileFollowsExecutable.current = false;
+            else if ('executable' in changed && logFileFollowsExecutable.current) form.setFieldValue('serverLogFile', inferServerLogFile(changed.executable));
+          }}
+          style={{ marginTop: 16 }}
+        >
           <Form.Item name="id" label="Instance ID" rules={[{ required: true, pattern: /^[a-zA-Z0-9_-]+$/, message: 'Alphanumeric, dash, underscore only' }]} tooltip={editing ? 'The ID cannot be changed' : undefined}>
             <Input placeholder="my-server-1" disabled={!!editing || saving} />
           </Form.Item>

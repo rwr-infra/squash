@@ -24,6 +24,8 @@
 - 可配置文件名，而非布尔开关 —— 用户选择（2026-10-10），推翻 [归档](../../archive/2026-10-10-server-log-viewer.md) 的"路径固定"。安全前提：持 token 者本来就能设任意 `cwd`/`executable` 执行任意程序，读文件不是新增能力；仍保持"接口不接受路径参数"，路径只来自实例配置。（2026-10-10）
 - 路径规则：相对 `cwd`；拒绝绝对路径（POSIX/Windows/UNC）、盘符前缀 `C:`、任何 `..` 段、NUL、末段为空或 `.`；≤ 260 字符；可含子目录（`/` 或 `\`）。—— 让"相对工作目录"成为唯一语义，校验简单。（2026-10-10）
   - 审查后补充：只由点和空格组成的段一律视为 `..`（单个 `.` 除外），因为 Windows 可能去掉段尾的点和空格；Windows 设备名（`NUL`、`com1.log`、`aux .log`）拒绝；读取时按两种分隔符拆段再 resolve，所以 POSIX 上 `\` 也是子目录分隔符。（2026-10-10）
+  - 第二轮审查：任何位置的 `:` 都拒绝（Windows 下路径中间的 `x/C:..` 会解析到 C 盘、逃出 cwd；也排除 NTFS 流）。代价：POSIX 上带冒号的文件名（如 `12:00.log`）不能用——配置可能在平台间迁移，规则宁可简单。service 在 resolve 之后再核对结果严格位于 cwd 内。前端校验/推断是后端的手抄副本，`test/unit/server-log-file.test.ts` 对两份跑同一张用例表。（2026-10-10）
+  - 新建实例时，推断出的日志文件跟随用户修改的 Executable，直到用户手动改过该字段或模板设置了它；编辑实例时不跟随。（2026-10-10）
 - 字段缺失时推断：可执行文件 basename（去掉 `.exe`，不区分大小写）为 `rwr_server` → `rwr_server.log`，否则 `''`。后端在读配置时（内存中，不主动写盘）和 create/update 请求省略该字段时推断；前端套用不含该字段的模板时同样推断。推断只发生在字段缺失时，保存后即为显式值。—— 用户选择；旧 rwr 实例保留入口、steamcmd 自动隐藏，无需手工改。（2026-10-10）
 - 模板里该字段只存非空值（与其他模板字段一致"只存填写了的"）；模板无法显式表达"关"，靠推断。—— 极少有 rwr_server 却不要日志的场景。（2026-10-10）
 - 关闭时 server-log 接口返回 404 `SERVER_LOG_DISABLED` —— 不只藏按钮。（2026-10-10）
@@ -55,10 +57,12 @@
 - 高风险 diff：无（中风险）；路径校验函数请顺带过目。
 
 ## Checkpoints
-- [ ] 1. 后端：`serverLogFile` 字段、校验、推断（读配置 + create/update）、模板值与种子、server-log 服务/路由按配置读取、关闭时 404、文案用文件名；单测 + 集成测试。
-      证据： ｜ commit：
-- [ ] 2. 前端：实例/模板表单字段与校验、套用模板时推断、隐藏列表与终端页入口、日志页标题/文案与"未启用"状态；浏览器 smoke 补检查。
-      证据： ｜ commit：
+- [x] 1. 后端：`serverLogFile` 字段、校验、推断（读配置 + create/update）、模板值与种子、server-log 服务/路由按配置读取、关闭时 404、文案用文件名；单测 + 集成测试。
+      证据：`npm run typecheck` 过；`npm test` 791/791；变异（去掉 service 路径复查）被 server-log.test 抓住；Diff Review + Conformance 发现已修（Windows `.. ` 段、非字符串值、设备名、`\` 分隔符、去掉 `.sh` 推断） ｜ commit：`9edb53f`
+      留给 CP2：e2e 补 `GET /instances` 带推断值、`POST/PUT /instances` 非法 `serverLogFile` 400 且磁盘不变；手改非法非空值的实例入口会显示，日志页要显示"未启用"。
+- [x] 2. 前端：实例/模板表单字段与校验、套用模板时推断、隐藏列表与终端页入口、日志页标题/文案与"未启用"状态；浏览器 smoke 补检查。
+      证据：`npm run typecheck` 过；`npm test` 881/881（新 `instance-config.test.ts` 走真 registry + InstanceService + 路由；单测对前后端两份规则跑同一张表，变异前端规则被抓住）；frontend lint + `tsc -b` 过；`smoke:instance-form` 56/56、`smoke:server-log-ui` 73/73；Diff Review + Conformance + 复核的发现已修（Windows 中段盘符逃逸、新建时日志文件跟随 Executable、禁用后停止加载与重试）；用户在 127.0.0.1:4747 人工验证 5 步全部通过（steamcmd 无入口、新建表单推断与跟随、`logs/console_log.txt` 自定义文件、打开中被关闭、模板表单） ｜ commit：见下一条
+      用户确认：只更新代码种子，不迁移已有 `templates.json`。
 - [ ] 3. API 日志：注入容错 logger、分级 onResponse、`/api` 统一错误处理器；集成测试（级别映射、无 token、错误格式）。
       证据： ｜ commit：
 - [ ] 4. 文档：README（中英）、backlog 删已完成项；package + smoke:release。

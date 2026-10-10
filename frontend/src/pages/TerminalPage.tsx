@@ -49,6 +49,8 @@ const TerminalPage = () => {
     setRuntimeInfo(runtime);
   };
   const [loading, setLoading] = useState(true);
+  // No Log button until the config says there is a log file.
+  const [serverLogFile, setServerLogFile] = useState('');
   const [quickCmd, setQuickCmd] = useState('');
 
   const screens = Grid.useBreakpoint();
@@ -57,7 +59,8 @@ const TerminalPage = () => {
   useEffect(() => {
     if (!instanceId) return;
     fetchInstance(instanceId)
-      .then(({ runtime }) => {
+      .then(({ config, runtime }) => {
+        setServerLogFile(config.serverLogFile ?? '');
         setStatus(runtime.status);
         setPid(runtime.pid);
         setRuntimeInfo(runtime);
@@ -233,7 +236,9 @@ const TerminalPage = () => {
           </Popconfirm>
           <Button size="small" icon={<SyncOutlined />} disabled={(stopping && !restartPending) || stopPending} onClick={handleRestart} loading={restartPending} title="Restart">{isMobile ? null : 'Restart'}</Button>
           <Button size="small" icon={<ExpandOutlined />} onClick={handleResize} title="Fit">{isMobile ? null : 'Fit'}</Button>
-          <Button size="small" icon={<FileTextOutlined />} onClick={() => navigate(`/server-log/${encodeURIComponent(instanceId)}`)} title="View rwr_server.log">{isMobile ? null : 'Log'}</Button>
+          {serverLogFile && (
+            <Button size="small" icon={<FileTextOutlined />} onClick={() => navigate(`/server-log/${encodeURIComponent(instanceId)}`)} title={`View ${serverLogFile}`}>{isMobile ? null : 'Log'}</Button>
+          )}
         </Space>
       </div>
 

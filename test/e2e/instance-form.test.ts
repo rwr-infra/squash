@@ -11,8 +11,14 @@
 //     failed save keeps the dialog and its values, a retry succeeds
 //   - an invalid create sends nothing; a double create sends one POST; a
 //     create inherits nothing from an earlier edit
+//   - the log file: an edit sends it as set (blank too), a plain create
+//     sends rwr_server.log for the default executable, an invalid one is
+//     reported on its field and sends nothing; the list shows a Log button
+//     only for instances with one; in a new instance an implied log file
+//     follows the executable until typed in or set by a template
 //   - templates: picking fills the form (and switching resets what the new
-//     one does not set), a malformed template fills only its well-typed
+//     one does not set; a template without a log file gets the one its
+//     executable implies), a malformed template fills only its well-typed
 //     fields, "Save as template" from create and edit (never the ID, nor a
 //     Name equal to it), Escape closes only the top dialog, a taken name is
 //     reported on the field, the drawer lists, edits, deletes and creates
@@ -46,6 +52,7 @@ const { check: record, run } = recordedChecks([
   'edit payload retains alpha env/logDir',
   'cleared restart delay is omitted',
   'stop command trailing Enter preserved',
+  'edit payload sends the log file as set, blank included',
   'repeated submit while pending makes one request',
   'pending save shows loading and disables fields/cancel/create/edit',
   'pending dialog cannot close or switch via cancel/mask/Escape/edit',
@@ -59,13 +66,16 @@ const { check: record, run } = recordedChecks([
   'all create inputs including ID are disabled while pending',
   'create payload inherits no hidden edit values',
   'create readback has independent defaults',
+  'a plain create sends the log file implied by the default executable',
   'isolated persisted configs retain both original hidden values',
+  'the list shows a Log button only for instances with a log file',
   'picking a template fills its fields and keeps the typed ID',
   'switching template resets what the new one does not set to the defaults',
   'applying a template clears the errors of the fields it refilled',
   'create from a template sends one POST',
   'create from a template posts its values with the ID',
   'a malformed template fills only its well-typed fields',
+  'an invalid log file is reported on its field and sends nothing',
   'save as template from the create dialog prefills its settings',
   'Escape closes only the template dialog',
   'a Name equal to the Instance ID is left out of the template',
@@ -78,6 +88,7 @@ const { check: record, run } = recordedChecks([
   'the instance dialog stays open with its values after saving a template',
   'drawer lists every template',
   'a malformed template is summarized by its usable fields',
+  'the drawer summary names the log file',
   'the drawer summary shows the Enter after quit',
   'editing shows only what the template sets',
   'editing a template sends PUT for it',
@@ -87,6 +98,7 @@ const { check: record, run } = recordedChecks([
   "switching away from the drawer's template drops its values too",
   'a plain Create starts from the defaults again',
   'a plain Create has no template picked',
+  "a new instance's implied log file follows the executable until set by hand or by a template",
   'a new template starts empty',
   'a template save in flight makes one request',
   'a template save in flight disables its fields and buttons',
@@ -111,9 +123,9 @@ const persist = () => fs.writeFileSync(configFile, JSON.stringify([...configs.va
 const castlingValues = { name: 'Castling server', cwd: '/srv/castling', executable: './rwr_server', args: ['--a', '--b'], autoStart: true, restartPolicy: 'on-failure', restartDelayMs: 5000, stopCommand: 'quit\n', stopTimeoutMs: 20000 };
 const templates = new Map<string, Json>([
   ['t-castling', { id: 't-castling', name: 'Castling', values: castlingValues }],
-  ['t-minimal', { id: 't-minimal', name: 'Minimal', values: { executable: './other' } }],
+  ['t-minimal', { id: 't-minimal', name: 'Minimal', values: { executable: './other', serverLogFile: 'logs/other.log' } }],
   // As if hand-edited: wrong types and foreign fields, which the UI must drop.
-  ['t-broken', { id: 't-broken', name: 'Broken', values: { executable: './bad', args: '--a', stopCommand: ['quit', ''], id: 'evil', env: { A: '1' }, autoStart: 'yes', restartDelayMs: -1, stopTimeoutMs: 1.5, cwd: '' } }]
+  ['t-broken', { id: 't-broken', name: 'Broken', values: { executable: './bad', args: '--a', stopCommand: ['quit', ''], id: 'evil', env: { A: '1' }, autoStart: 'yes', restartDelayMs: -1, stopTimeoutMs: 1.5, cwd: '', serverLogFile: '../evil.log' } }]
 ]);
 const templateRequests: { readonly method: string; readonly route: string; readonly payload: Json | undefined }[] = [];
 // While `hold` is set, template writes wait for release() (like `pending`
@@ -251,6 +263,7 @@ const flow = async () => {
   check('edit payload retains alpha env/logDir', requests.at(-1)!.payload.env?.FIXTURE === 'alpha' && requests.at(-1)!.payload.logDir === 'logs-alpha');
   check('cleared restart delay is omitted', !Object.hasOwn(requests.at(-1)!.payload, 'restartDelayMs'));
   check('stop command trailing Enter preserved', requests.at(-1)!.payload.stopCommand === 'quit\n');
+  check('edit payload sends the log file as set, blank included', requests.at(-1)!.payload.serverLogFile === '');
   const count = requests.length;
   await evaluate(`${modal}.querySelector('form').dispatchEvent(new Event('submit', {bubbles:true, cancelable:true})); ${modal}.querySelector('form').dispatchEvent(new Event('submit', {bubbles:true, cancelable:true}));`);
   await clickSave();
@@ -290,11 +303,17 @@ const flow = async () => {
   check('same-turn double create produces one POST', requests.length === beforeInvalid + 1 && pending.length === 1 && requests.at(-1)!.method === 'POST');
   check('all create inputs including ID are disabled while pending', await evaluate(`Array.from(${modal}.querySelectorAll('input, textarea, button[role="switch"]')).every(el => el.disabled) && document.getElementById('id').disabled`));
   check('create payload inherits no hidden edit values', !Object.hasOwn(requests.at(-1)!.payload, 'env') && !Object.hasOwn(requests.at(-1)!.payload, 'logDir'));
+  const createdLogFile = requests.at(-1)!.payload.serverLogFile;
   await saved();
   const created = await readBack(base, 'created');
   check('create readback has independent defaults', Object.keys(created.env).length === 0 && created.logDir === 'logs' && created.name === 'created');
+  check('a plain create sends the log file implied by the default executable', createdLogFile === 'rwr_server.log');
   const disk = JSON.parse(fs.readFileSync(configFile, 'utf8')) as Json[];
   check('isolated persisted configs retain both original hidden values', disk.find((item) => item.id === 'alpha')!.env.FIXTURE === 'alpha' && disk.find((item) => item.id === 'beta')!.logDir === 'logs-beta');
+  // alpha and beta (executable "unused") have none; created has rwr_server.log.
+  const logButtons = `Object.fromEntries(Array.from(document.querySelectorAll('tr')).filter(row => row.querySelector('code')).map(row => [row.querySelector('code').innerText, Array.from(row.querySelectorAll('button[title^="View "]')).map(b => b.title)]))`;
+  await waitFor(() => evaluate(`!!${logButtons}.created`), 'created listed');
+  checkEqual('the list shows a Log button only for instances with a log file', await evaluate(logButtons), { alpha: [], beta: [], created: ['View rwr_server.log'] });
 
   // --- Templates --------------------------------------------------------------
   const visibleModals = `Array.from(document.querySelectorAll('.ant-modal')).filter(m => m.getBoundingClientRect().height > 0)`;
@@ -323,7 +342,7 @@ const flow = async () => {
     return {
       id: el('id')?.value ?? null, templateName: el('templateName')?.value ?? null, name: el('name').value, cwd: el('cwd').value,
       executable: el('executable').value, args: el('args').value, stopCommand: el('stopCommand').value,
-      restartDelayMs: el('restartDelayMs').value, stopTimeoutMs: el('stopTimeoutMs').value,
+      restartDelayMs: el('restartDelayMs').value, stopTimeoutMs: el('stopTimeoutMs').value, serverLogFile: el('serverLogFile').value,
       autoStart: el('autoStart').getAttribute('aria-checked'),
       restartPolicy: el('restartPolicy').closest('.ant-select').innerText.trim()
     };
@@ -350,13 +369,13 @@ const flow = async () => {
   let state = await formState('');
   checkEqual('picking a template fills its fields and keeps the typed ID', state, {
     id: 'from-template', templateName: null, name: 'Castling server', cwd: '/srv/castling', executable: './rwr_server', args: '--a, --b',
-    stopCommand: 'quit\n', restartDelayMs: '5000', stopTimeoutMs: '20000', autoStart: 'true', restartPolicy: 'On failure (non-zero exit or signal)'
+    stopCommand: 'quit\n', restartDelayMs: '5000', stopTimeoutMs: '20000', serverLogFile: 'rwr_server.log', autoStart: 'true', restartPolicy: 'On failure (non-zero exit or signal)'
   });
   await pickTemplate('Minimal');
   state = await formState('');
   checkEqual('switching template resets what the new one does not set to the defaults', state, {
     id: 'from-template', templateName: null, name: '', cwd: '.', executable: './other', args: '', stopCommand: '',
-    restartDelayMs: '3000', stopTimeoutMs: '', autoStart: 'false', restartPolicy: 'Keep running (recommended for RWR)'
+    restartDelayMs: '3000', stopTimeoutMs: '', serverLogFile: 'logs/other.log', autoStart: 'false', restartPolicy: 'Keep running (recommended for RWR)'
   });
   await input('cwd', '');
   await evaluate(`${instanceModal}.querySelector('form').dispatchEvent(new Event('submit', {bubbles:true, cancelable:true}))`);
@@ -369,7 +388,7 @@ const flow = async () => {
   await waitFor(() => pending.length, 'create-from-template request');
   const fromTemplate = requests.at(-1)!.payload;
   check('create from a template sends one POST', requests.length === beforeTemplateCreate + 1);
-  checkEqual('create from a template posts its values with the ID', fromTemplate, { ...castlingValues, id: 'from-template', autoRestart: true });
+  checkEqual('create from a template posts its values with the ID', fromTemplate, { ...castlingValues, id: 'from-template', autoRestart: true, serverLogFile: 'rwr_server.log' });
   await saved();
 
   // A hand-edited template with wrong types and foreign fields: the drawer
@@ -379,8 +398,15 @@ const flow = async () => {
   await pickTemplate('Broken');
   checkEqual('a malformed template fills only its well-typed fields', await formState(''), {
     id: 'from-broken', templateName: null, name: '', cwd: '.', executable: './bad', args: '', stopCommand: '',
-    restartDelayMs: '3000', stopTimeoutMs: '', autoStart: 'false', restartPolicy: 'Keep running (recommended for RWR)'
+    restartDelayMs: '3000', stopTimeoutMs: '', serverLogFile: '', autoStart: 'false', restartPolicy: 'Keep running (recommended for RWR)'
   });
+  await input('serverLogFile', '../x.log');
+  const beforeBadLogFile = requests.length;
+  await evaluate(`${instanceModal}.querySelector('form').dispatchEvent(new Event('submit', {bubbles:true, cancelable:true}))`);
+  const logFileError = `document.getElementById('serverLogFile').closest('.ant-form-item').querySelector('.ant-form-item-explain-error')?.innerText ?? ''`;
+  await waitFor(() => evaluate(logFileError), 'log file error');
+  await sleep(250);
+  check('an invalid log file is reported on its field and sends nothing', requests.length === beforeBadLogFile && (await evaluate(logFileError)).includes('inside the Working Directory'));
 
   // Save as template from the create dialog, then Escape: only the top dialog closes.
   await pickTemplate('Castling');
@@ -389,7 +415,7 @@ const flow = async () => {
   await waitFor(() => evaluate(`${templateModal}.getAnimations({ subtree: true }).length === 0`), 'template dialog settles');
   checkEqual('save as template from the create dialog prefills its settings', await formState('template_'), {
     id: null, templateName: '', name: 'Castling server', cwd: '/srv/castling', executable: './rwr_server', args: '--a, --b', stopCommand: 'quit\n',
-    restartDelayMs: '5000', stopTimeoutMs: '20000', autoStart: 'true', restartPolicy: 'On failure (non-zero exit or signal)'
+    restartDelayMs: '5000', stopTimeoutMs: '20000', serverLogFile: 'rwr_server.log', autoStart: 'true', restartPolicy: 'On failure (non-zero exit or signal)'
   });
   await key('Escape', 'Escape', 27);
   await waitFor(() => evaluate(`!${templateModal}`), 'Escape closes the template dialog');
@@ -414,7 +440,7 @@ const flow = async () => {
   check('template dialog opens above the instance dialog', await evaluate(`(() => { const m = ${templateModal}; const r = m.querySelector('.ant-modal-container').getBoundingClientRect(); return m.contains(document.elementFromPoint(r.x + r.width / 2, r.y + 24)); })()`));
   checkEqual('template dialog is prefilled from the instance form without its ID', await formState('template_'), {
     id: null, templateName: '', name: 'alpha edited', cwd: '.', executable: 'unused', args: 'alpha', stopCommand: 'quit\n',
-    restartDelayMs: '3000', stopTimeoutMs: '', autoStart: 'false', restartPolicy: 'Keep running (recommended for RWR)'
+    restartDelayMs: '3000', stopTimeoutMs: '', serverLogFile: '', autoStart: 'false', restartPolicy: 'Keep running (recommended for RWR)'
   });
   const beforeNameless = templateRequests.length;
   await submitTemplate();
@@ -441,19 +467,20 @@ const flow = async () => {
   await openDrawer();
   check('drawer lists every template', await evaluate(`!!${drawerItem('Castling')} && !!${drawerItem('Minimal')} && !!${drawerItem('Alpha tpl')} && !!${drawerItem('Broken')}`));
   check('a malformed template is summarized by its usable fields', await evaluate(`${drawerItem('Broken')}.querySelector('.ant-list-item-meta-description').innerText.trim() === './bad'`));
+  check('the drawer summary names the log file', await evaluate(`${drawerItem('Minimal')}.innerText.includes('log logs/other.log')`));
   check('the drawer summary shows the Enter after quit', await evaluate(`${drawerItem('Castling')}.innerText.includes('stop: quit ⏎ ⏎') && ${drawerItem('Castling')}.innerText.includes('stop timeout 20000 ms')`));
   await evaluate(`${drawerItem('Minimal')}.querySelector('button[title="Edit template"]').click()`);
   await waitFor(() => evaluate(`!!${templateModal} && document.getElementById('template_templateName')?.value === 'Minimal'`), 'edit template dialog');
   checkEqual('editing shows only what the template sets', await formState('template_'), {
     id: null, templateName: 'Minimal', name: '', cwd: '', executable: './other', args: '', stopCommand: '',
-    restartDelayMs: '', stopTimeoutMs: '', autoStart: 'false', restartPolicy: 'Not set'
+    restartDelayMs: '', stopTimeoutMs: '', serverLogFile: 'logs/other.log', autoStart: 'false', restartPolicy: 'Not set'
   });
   await input('template_executable', './changed');
   await textarea('template_stopCommand', 'quit\n');
   await submitTemplate();
   await waitFor(() => evaluate(`!${templateModal}`), 'edit template closes');
   check('editing a template sends PUT for it', templateRequests.at(-1)!.method === 'PUT' && templateRequests.at(-1)!.route === '/api/templates/t-minimal');
-  checkEqual('editing a template replaces it with the form values', templateRequests.at(-1)!.payload, { name: 'Minimal', values: { executable: './changed', stopCommand: 'quit\n' } });
+  checkEqual('editing a template replaces it with the form values', templateRequests.at(-1)!.payload, { name: 'Minimal', values: { executable: './changed', stopCommand: 'quit\n', serverLogFile: 'logs/other.log' } });
   await waitFor(() => evaluate(`${drawerItem('Minimal')}.innerText.includes('./changed')`), 'drawer shows the edit');
 
   await evaluate(`${drawerItem('Alpha tpl')}.querySelector('button[title="Delete template"]').click()`);
@@ -468,15 +495,31 @@ const flow = async () => {
   await pickTemplate('Minimal');
   checkEqual('switching away from the drawer\'s template drops its values too', await formState(''), {
     id: '', templateName: null, name: '', cwd: '.', executable: './changed', args: '', stopCommand: 'quit\n',
-    restartDelayMs: '3000', stopTimeoutMs: '', autoStart: 'false', restartPolicy: 'Keep running (recommended for RWR)'
+    restartDelayMs: '3000', stopTimeoutMs: '', serverLogFile: 'logs/other.log', autoStart: 'false', restartPolicy: 'Keep running (recommended for RWR)'
   });
   await closeInstanceDialog();
   await openCreateDialog();
   checkEqual('a plain Create starts from the defaults again', await formState(''), {
     id: '', templateName: null, name: '', cwd: '.', executable: './rwr_server', args: '', stopCommand: '',
-    restartDelayMs: '3000', stopTimeoutMs: '', autoStart: 'false', restartPolicy: 'Keep running (recommended for RWR)'
+    restartDelayMs: '3000', stopTimeoutMs: '', serverLogFile: 'rwr_server.log', autoStart: 'false', restartPolicy: 'Keep running (recommended for RWR)'
   });
   check('a plain Create has no template picked', await evaluate(`!document.querySelector('.template-picker').innerText.includes('Castling') && !document.querySelector('.template-picker').innerText.includes('Minimal')`));
+  const logFileValue = () => evaluate(`document.getElementById('serverLogFile').value`);
+  const follows: unknown[] = [];
+  await input('executable', './steamcmd');
+  follows.push(await logFileValue());
+  await input('executable', 'C:\\rwr\\rwr_server.exe');
+  follows.push(await logFileValue());
+  await input('serverLogFile', 'mine.log');
+  await input('executable', './steamcmd');
+  follows.push(await logFileValue());
+  await pickTemplate('Minimal');
+  await input('executable', './rwr_server');
+  follows.push(await logFileValue());
+  await pickTemplate('Castling');
+  await input('executable', './steamcmd');
+  follows.push(await logFileValue());
+  checkEqual("a new instance's implied log file follows the executable until set by hand or by a template", follows, ['', 'rwr_server.log', 'mine.log', 'logs/other.log', '']);
   await closeInstanceDialog();
 
   await openDrawer();
@@ -484,7 +527,7 @@ const flow = async () => {
   await waitFor(() => evaluate(`!!${templateModal}`), 'new template dialog');
   checkEqual('a new template starts empty', await formState('template_'), {
     id: null, templateName: '', name: '', cwd: '', executable: '', args: '', stopCommand: '',
-    restartDelayMs: '', stopTimeoutMs: '', autoStart: 'false', restartPolicy: 'Not set'
+    restartDelayMs: '', stopTimeoutMs: '', serverLogFile: '', autoStart: 'false', restartPolicy: 'Not set'
   });
   await input('template_templateName', '  Empty  ');
   templateGate.hold = true;
