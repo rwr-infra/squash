@@ -46,6 +46,7 @@
 - supervisor 的"记录后断言"细则：label 预先声明且全文件唯一；检查按 label 记到声明它的场景（超时后晚到的检查不会串到下一个场景）；声明了但没运行的 label 以 "not reached" 失败——所以变异下新测试的失败数可以多于旧脚本（多出的只能是 not reached），判定"旧失败 ⊆ 新失败、其余皆 not reached"；未声明、声明为 skip 却被记录、同一 label 记录两次，都让场景失败。这种写法下 `-t` 单跑一条也会运行整个场景（CP4，2026-10-10）
 - 旧脚本的全局 240 s 失败时限保留为文件末尾的一条测试（"the scenarios finish within 240 s"），另加每个场景 beforeAll 的超时（默认 60 s，restart policies 120 s）防挂起；不放在 afterAll 里抛错，因为 afterAll 抛错会跳过其后的 hook（临时目录就没删，已复现）（CP4 Conformance，2026-10-10）
 - 清理顺序：开始清理即禁止新建 harness → 强制停止未结束的 supervisor → 杀残留 PID → `dispose()` 最多等 10 s → 再杀一次 → 删临时目录（删除重试 10 次，失败则报错，不再像旧脚本那样静默忽略）；进程正常退出时再兜底杀一次残留（CP4，2026-10-10）
+- "large: reading at the end is fast (< 100 ms)" 改为连读 3 次取最小值，阈值不变，每次耗时打进日志：Windows CI 上单次读一次测得 207 ms（原因不明，随后一次读 1 ms，重跑通过），旧 smoke 在 Windows 上测得约 1 ms。这是对单次计时的放宽；残余风险：三次都慢仍会失败。这条检查（新旧一样）抓不到读取退化（Mac 上从头扫描约 65 ms），已记入 backlog（用户选定，2026-10-10）
 - 不测 `describeListenError`、不测 `src/index.ts` 里闸门的接线 —— 前者不是闸门；后者由 `smoke-release`（B 类，CI 中）覆盖，记为剩余风险
 
 ## Acceptance
