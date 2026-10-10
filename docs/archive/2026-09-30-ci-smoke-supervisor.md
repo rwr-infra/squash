@@ -27,7 +27,7 @@
 - zsh 把 `===`/`====` 当 `=cmd` 展开（`=== not found`），echo 分隔线别用等号开头。
 
 ## 剩余风险 / 后续
-- 见上 Windows 覆盖缺口 → 已写入 `docs/tasks/2026-09-30-stop-escalation/TASK.md` Pitfalls。
+- 见上 Windows 覆盖缺口 → 已由 stop-escalation 关闭：`smoke:supervisor` 的 stopCommand 用例在 Windows 上也覆盖停服期间输出，见 [stop-escalation 归档](2026-09-30-stop-escalation.md)。
 - CI 只在 `push` 触发，无 `pull_request`：fork 来的 PR 不会跑检查（当前仓库无外部贡献者，暂不处理）。
 
 ## 指针

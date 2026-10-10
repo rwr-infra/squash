@@ -39,5 +39,5 @@
 
 - [探针](../../scripts/smoke-pty-handles.mjs) / `package.json` smoke:pty-handles
 - [backlog 条目](../backlog.md)（已归因待修复）
-- [输入资源修复](../tasks/2026-10-01-pty-cleanup/TASK.md)、[生命周期调查](2026-10-01-pty-lifecycle.md)
+- [输入资源修复](2026-10-01-pty-cleanup.md)、[生命周期调查](2026-10-01-pty-lifecycle.md)
 - 依赖实现：`node_modules/node-pty/lib/windowsPtyAgent.js`、`windowsConoutConnection.js`、`worker/conoutSocketWorker.js`

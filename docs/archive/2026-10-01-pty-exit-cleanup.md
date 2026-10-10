@@ -28,5 +28,5 @@ supervisor 路径每次自然退出的 OS 句柄保留从约 15/轮（归因轮�
 
 ## 指针
 
-- [适配层](../../src/core/pty/pty-process-adapter.ts)、[归因归档](2026-10-01-pty-handle-attribution.md)、[输入资源修复](../tasks/2026-10-01-pty-cleanup/TASK.md)
+- [适配层](../../src/core/pty/pty-process-adapter.ts)、[归因归档](2026-10-01-pty-handle-attribution.md)、[输入资源修复](2026-10-01-pty-cleanup.md)
 - 上游依据：node-pty v1.2.0-beta.12 `src/win/conpty.cc`（退出线程先删 baton）、`lib/windowsConoutConnection.js`（dispose 仅 kill 路径可达）
