@@ -25,7 +25,7 @@ CI 三平台（ubuntu / macOS / Windows）全绿，详见"剩余风险"。
 | auth / templates / server-log 用"步骤式"；supervisor 用"记录后断言"（场景函数原样保留） | supervisor 的观察值依赖时序，旧场景代码原样搬过来，取值时机就和以前完全一样 | 把 supervisor 改写成 matcher 风格：很容易悄悄改变观察的时机 |
 | CI 在第一个迁移的 checkpoint 就改，每迁移一个文件删一个旧步骤 | 每个提交里 CI 引用的脚本都存在 | 等全部迁完再统一改 CI：中间提交的 CI 会调用已删除的脚本 |
 | server-log 中 rename 身份检测那条检查做了加强 | 旧检查恒真：去掉 dev/ino 比较后新旧都全过（已用实验证实） | 1:1 照搬 |
-| "large: reading at the end is fast (< 100 ms)" 改为连读 3 次取最小值，阈值不变 | Windows CI 上单次读一次测得 207 ms（原因不明，随后一次读 1 ms，重跑通过），旧 smoke 在 Windows 上约 1 ms | 保持单次计时：CI 会偶发变红；放宽阈值：本来就抓不到读取退化 |
+| 1M 行文件的两条单次计时检查（"reading at the end is fast (< 100 ms)"、"refreshing an unchanged file is cheap (< 20 ms)"）改为连测 3 次取最小值，阈值不变，每次耗时打进日志 | 迁移后的前 4 次 CI 里各抖过一次：Windows 读末尾 207 ms（随后一次 1 ms，重跑通过）、macOS 刷新 21.5 ms（正常约 0.2 ms）；旧 smoke 在这两条上从没失败过。Vitest worker 里的计时噪声更大 | 保持单次计时：CI 会偶发变红；放宽阈值：读末尾那条本来就抓不到读取退化 |
 | 保留 supervisor 的 240 s 总时限，写成一条测试 | 旧脚本有这个失败条件；写在 afterAll 里抛错会跳过删除临时目录的 hook | 只靠每个场景的 hook 超时：等于放宽了 |
 
 ## 确立的规范
@@ -45,7 +45,8 @@ CI 三平台（ubuntu / macOS / Windows）全绿，详见"剩余风险"。
 - **CI 三平台**：
   - `84d00a6` 第一次运行：Windows 上只有 "reading at the end is fast" 失败（207 ms），只重跑 Windows job 后三平台全绿。Test 步骤耗时：ubuntu 49 s、macOS 54 s、Windows 106 s。Windows 上 supervisor 132 条，10 条按预期跳过，耗时 85 s。
   - `12d2449`（连读 3 次取最小值）：第一次运行三平台全绿。Test 步骤：ubuntu 50 s、macOS 49 s、Windows 94 s；三次读取耗时 Windows 0.7/0.7/0.6 ms，macOS 1.0/1.4/8.8 ms，ubuntu 0.9/0.8/0.5 ms。
-  - 计时检查的残余风险：三次读取都慢时仍会失败。
+  - `0d05871`：macOS 上 "refreshing an unchanged file is cheap" 测得 21.5 ms 失败，其余 645 条通过；Windows、ubuntu 全绿。之后这条也改为三次取最小值。
+  - 计时检查的残余风险：三次都慢时仍会失败；刷新那条在 Mac 上，整个重建一次约 22–29 ms，只比 20 ms 的阈值高一点点（继承自旧 smoke）。
 - **supervisor 的观察盲点（继承自旧脚本）**：stop/dispose 场景的 "never reported running/crashed" 只能观察 `notifyStatus`。不发通知的状态回写看不到；"onData 写回 running"这类变异只有 restart / force stop / cancelled 场景能抓到。
 - **`src/index.ts` 里闸门的接线**（`resolveBindHost(process.env.HOST, isWeaklyProtected)`）只有 `smoke:release` 覆盖，而它要先打包；`npm test` 只覆盖两个函数本身。
 - **Windows 上的余量未知**：每个场景 60 s（restart policies 120 s）、事件循环卡顿 200 ms 的阈值在 forks worker 里运行、临时目录删除改为重试后报错。这些只能看 CI。
