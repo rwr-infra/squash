@@ -83,8 +83,8 @@
       证据（最终版本）：typecheck ✓；`npm test` → 5 files / 514 passed；清单 131/131，缺失 0，例外无；1M 行信息行与基线相同（31 ms / 0 ms 卡顿）；变异"指纹只比尾部" → 旧/新失败集合相同（2）；"不去掉行尾 \r" → 相同（15）；"不比较 dev/ino" → 旧 0 失败、新 2 失败（见 Decisions：加强一条空检查）；`-t` 全过滤后无残留。CI 删 server-log 步骤。审查：Diff Review（注释不准、计数失败后不读 ranges）、Conformance（继承的空检查、上游失败导致下游空过 → 先赋值后断言、`readMs` 初值 NaN） ｜ commit：见 git log
 - [x] 4. 迁移 supervisor（node-pty、假子进程、时序、残留进程清理）；清单比对 + 变异 + 失败后无残留；删除旧脚本
       证据（最终版本）：typecheck ✓；`npm test` → 6 files / 646 passed，50 s（基线四个 smoke 合计约 52 s）；清单 131/131 + 1 条新增（240 s 总时限）；场景函数体与旧脚本 diff 只有 `workRoot()`、`supervisors.add`、`closing` 守卫三处；变异"`onData` 写回 running" → 旧 exit 1（7 FAIL）/ 新 28 失败 = 旧 7 条 + 21 条 "not reached"（旧脚本提前 return 后不运行的检查）；"`start()` 不查 disposed" → 新旧同 1 条；以上变异与正常运行、`-t` 全过滤后：`pgrep -f 'child ready'` 与孙进程 marker 均 0，无临时目录；超时实验（restart policies 超时设 1 s）：只有该场景 17 条失败，其余 114 条通过，无残留；总时限实验（上限设 100 ms）：该测试失败、无残留。CI 删 supervisor 步骤。审查：Diff Review（exit 兜底、晚到检查串场景、定时器）、Conformance（240 s 时限被删 → 恢复为测试；"not reached" 语义登记；清理先杀后等） ｜ commit：见 git log
-- [ ] 5. 清理：删除 E 类，D 类移到 `scripts/diagnostics/` 并修正路径
-      证据： ｜ commit：
+- [x] 5. 清理：删除 E 类，D 类移到 `scripts/diagnostics/` 并修正路径
+      证据：四个探针各改 2 处（root 上两级、`../../dist`），`node --check` ✓；静态解析验证（`rm -rf dist && npm run build:server` 后按各文件位置计算：root = 仓库根，`../../dist/…` 目标存在，`node-pty` 解析到仓库 node_modules）✓；macOS 上运行只到平台断言（不执行改动行，仅证明语法与内置 import）；Windows 实跑未做；`find dist -path '*smoke*' -o -name '*.test.*'` → 0；分支相对 main 在 `src/` 只有 `src/smoke/` 4 个删除；typecheck ✓、`npm test` 646 passed；README/backlog 只引用 npm script 名（未变）。审查：Diff Review（暂存提醒）、Conformance（无确认缺陷；`tsc` 不清理 dist 的打包风险记入剩余风险） ｜ commit：见 git log
 - [ ] 6. CLAUDE.md + 跨平台：CLAUDE.md diff 经用户确认（CP2–CP5 期间 CLAUDE.md 仍指向已删除的 smoke 脚本）；用户阅读 `vitest.config.ts` 与 `release.yml` 的 diff；push（需授权）后 CI 三平台全绿。CI 改动本身已随 CP2–CP4 逐步完成
       证据： ｜ commit：
 
