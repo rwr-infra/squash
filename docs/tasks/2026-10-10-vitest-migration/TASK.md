@@ -41,6 +41,8 @@
 - 步骤式测试（一个场景内的 it 依次执行、共享状态）只能整文件运行，`-t` 单跑一步会因缺少前置状态而失败；在文件头注明。旧脚本本来就不能单跑，不算回归（CP2 Diff Review，2026-10-10）
 - 收集阶段（describe 回调体）不做有副作用的事：临时目录在 `beforeAll` 里懒创建（`useTempDir` 返回 getter），server 在 `beforeAll` 里创建（`createApiServer`）。原因：`-t` 把整个文件过滤掉时 Vitest 不执行任何 hook，fork 退出时也不触发 `exit` 事件，收集阶段建的目录会残留（已复现）（CP2，2026-10-10）
 - 迁移时 `JSON.stringify(a) === JSON.stringify(b)` 的检查保持逐字节比较，不改成 `toEqual`（后者忽略键顺序和 `undefined` 键，属于放宽）；字符串/数字数组之间的比较改成 `toEqual` 等价（CP2 Diff Review，2026-10-10）
+- "a new file with the old content as its start is a new generation" 改为与 rename 前的 generation 比较（同时保留旧的比较）：旧脚本比较的是更早的 generation，前面的 header 步骤已换过，检查恒真，去掉 dev/ino 比较后新旧都全过（已实验证实）。属于加强，不是放宽（CP3 Conformance，2026-10-10）
+- 1M 行块用"记录后断言"（`beforeAll` 里计时，it 里断言），与步骤式并存；文件头注明（CP3 Conformance，2026-10-10）
 - 不测 `describeListenError`、不测 `src/index.ts` 里闸门的接线 —— 前者不是闸门；后者由 `smoke-release`（B 类，CI 中）覆盖，记为剩余风险
 
 ## Acceptance
@@ -74,8 +76,8 @@
       证据：typecheck ✓；`npm test` → 2 files / 54 passed；临时探针（已删）：两个 integration 文件各用 node-pty spawn 子进程 → 通过、pid 不同、时间不重叠；变异（单测无旧脚本对应）：`isLoopbackHost` 接受 0.0.0.0 → 3 fail，去掉 `toLowerCase` → 1 fail，"token 挽救弱密码" → 3 fail；`npm audit` 告警集合与安装前相同。审查：Diff Review（project 间会并发 → 加 `sequence.groupOrder`；补 auth 组合）、Conformance（补组合；无确认缺陷） ｜ commit：见 git log
 - [x] 2. 迁移 auth + templates（都是 `createHttpServer` + `inject`）；清单比对 + 变异；删除旧脚本
       证据（最终版本）：typecheck ✓；`npm test` → 4 files / 383 passed；清单 auth 277/277、templates 52/52，缺失 0，例外（`expect.soft`）无；变异"按原始 URL 判断鉴权" → 旧 exit 1（119 FAIL）/ 新 119 failed；变异"`[]` 当作文件缺失" → 旧/新失败同样 2 条；撤销后 329 passed；`-t` 全过滤与单步运行后无临时目录残留。CI：`npm test` 步骤替换 auth/templates 两步。审查：Diff Review（`toEqual` 放宽 2 处 → 改回逐字节；收集阶段副作用 → `beforeAll` + `createApiServer`）、Conformance（无确认缺陷；BOM 改回转义；`-t` 注释改正） ｜ commit：见 git log
-- [ ] 3. 迁移 server-log（索引 + 路由 + 1M 行性能阈值）；清单比对 + 变异；删除旧脚本
-      证据： ｜ commit：
+- [x] 3. 迁移 server-log（索引 + 路由 + 1M 行性能阈值）；清单比对 + 变异；删除旧脚本
+      证据（最终版本）：typecheck ✓；`npm test` → 5 files / 514 passed；清单 131/131，缺失 0，例外无；1M 行信息行与基线相同（31 ms / 0 ms 卡顿）；变异"指纹只比尾部" → 旧/新失败集合相同（2）；"不去掉行尾 \r" → 相同（15）；"不比较 dev/ino" → 旧 0 失败、新 2 失败（见 Decisions：加强一条空检查）；`-t` 全过滤后无残留。CI 删 server-log 步骤。审查：Diff Review（注释不准、计数失败后不读 ranges）、Conformance（继承的空检查、上游失败导致下游空过 → 先赋值后断言、`readMs` 初值 NaN） ｜ commit：见 git log
 - [ ] 4. 迁移 supervisor（node-pty、假子进程、时序、残留进程清理）；清单比对 + 变异 + 失败后无残留；删除旧脚本
       证据： ｜ commit：
 - [ ] 5. 清理：删除 E 类，D 类移到 `scripts/diagnostics/` 并修正路径
@@ -94,7 +96,19 @@
 
 ## Pitfalls
 
-（出现时追加）
+### Pitfall: Write 工具把字符串里的 \uXXXX 写成了原字符
+- 现象：templates 的 `'\uFEFF…'`、server-log 的 `'\uFFFD\uFFFDA'` 落盘后变成不可见的原字符（CP2 Conformance 发现 BOM）
+- 状态：CONFIRMED
+- 原因：经 Write 工具写入的内容里，`\u` 转义被解码
+- 已否决：依赖编辑器显示来检查（看不见）
+- 来源：`perl -ne 'print if /\x{EF}\x{BB}\x{BF}|\x{EF}\x{BF}\x{BD}/'`
+- 下一步：写含 \u 转义的测试后，统计新旧文件里 `\r`、`\n`、`\u` 的数量并扫描原始字节
+
+### Pitfall: 1:1 迁移会把旧脚本的空检查一起搬过来
+- 现象：标签对得上、变异也对得上，但某条检查恒真（server-log 的 rename 身份检测）
+- 状态：CONFIRMED
+- 原因：清单比对只比标题，变异只覆盖挑选的路径
+- 下一步：对"只有 X 才能分辨"的检查，专门做一个关掉 X 的变异
 
 ## Sources
 

@@ -18,7 +18,6 @@
     "smoke:supervisor": "tsx scripts/smoke-supervisor.ts",
     "smoke:restart-policy": "node scripts/smoke-restart-policy.mjs",
     "smoke:instance-form": "node scripts/smoke-instance-form.mjs",
-    "smoke:server-log": "tsx scripts/smoke-server-log.ts",
     "smoke:server-log-ui": "node scripts/smoke-server-log-ui.mjs",
     "smoke:pty-exit-window": "node scripts/smoke-pty-exit-window.mjs",
     "smoke:pty-lifecycle": "node scripts/smoke-pty-lifecycle.mjs",
