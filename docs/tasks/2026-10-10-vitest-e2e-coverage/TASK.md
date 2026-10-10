@@ -123,8 +123,17 @@
         - 清理开始后不再启动浏览器。
       - 修复后重跑：正常运行和 F1 结果都不变
       ｜ commit：见 git log（`test: move the instance-form smoke to Vitest`）
-- [ ] 5. server-log-ui → `test/e2e/server-log-ui.test.ts`，删除旧脚本
-      证据： ｜ commit：
+- [x] 5. server-log-ui → `test/e2e/server-log-ui.test.ts`，删除旧脚本
+      证据（以下都在提交状态上运行）：
+      - typecheck 通过；`npm test` 646 条通过
+      - `npm run smoke:server-log-ui`：70 passed，45 s（旧脚本 51 s）；首屏 303 ms；清单缺失 0，PASS 顺序一致；无残留 Chrome 和临时目录
+      - bundle 变异：
+        - G1（mark 的 class 改掉）：新旧都在 "matches in view are highlighted" 上失败，旧的 28 条 PASS 全部通过，其余 40 条 not recorded
+        - G2（"Search again" 文字改掉）：旧脚本因 "Timed out: Search again offered" 退出；新测试由 "the flow ends without an error" 报出同一错误，旧的 37 条 PASS 全部通过，其余 32 条 not recorded
+      - 前端未构建时报 "Build the frontend first"；`-t` 过滤不留目录
+      - 两份审查都没有 high/medium。已修复：`listen` 失败时会挂到超时（改为直接 await）；启动顺序恢复为先 listen、再启动浏览器
+      - 迁完后 `scripts/` 只剩 `package.mjs`、`node-runtime.*` 和 `diagnostics/`
+      ｜ commit：见 git log（`test: move the server-log-ui smoke to Vitest`）
 - [ ] 6. 文档：CLAUDE.md、两份 README 的测试小节、backlog；push 并跑 CI 三平台（需要授权），在 Codecov 上确认
       证据： ｜ commit：
 

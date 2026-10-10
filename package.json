@@ -16,7 +16,7 @@
     "smoke:release": "vitest run --config test/e2e/e2e.config.ts --project release",
     "smoke:restart-policy": "vitest run --config test/e2e/e2e.config.ts --project restart-policy",
     "smoke:instance-form": "vitest run --config test/e2e/e2e.config.ts --project instance-form",
-    "smoke:server-log-ui": "node scripts/smoke-server-log-ui.mjs",
+    "smoke:server-log-ui": "vitest run --config test/e2e/e2e.config.ts --project server-log-ui",
     "smoke:pty-exit-window": "node scripts/diagnostics/smoke-pty-exit-window.mjs",
     "smoke:pty-lifecycle": "node scripts/diagnostics/smoke-pty-lifecycle.mjs",
     "smoke:pty-cleanup": "node scripts/diagnostics/smoke-pty-cleanup.mjs",
