@@ -9,7 +9,7 @@
 
 ## Scope
 - 必须完成：
-  - `vitest.e2e.config.ts`，包含 `restart-policy`、`release`、`browser` 三个 project（加入 `tsconfig.json` 的 include）；`test/e2e/*.test.ts`；共享 helper 放在 `test/helpers/`（包括从两份浏览器 smoke 中抽出的 CDP 客户端）
+  - `test/e2e/e2e.config.ts`，每个 smoke 一个 project（restart-policy、release、instance-form、server-log-ui）；`test/e2e/*.test.ts`；共享 helper 放在 `test/helpers/`（包括从两份浏览器 smoke 中抽出的 CDP 客户端）
   - 删除 `scripts/smoke-{restart-policy,release,instance-form,server-log-ui}.mjs`；`package.json` 里的 `smoke:*` 改为调用 Vitest
   - 新增 `@vitest/coverage-v8@5.0.3`（精确版本）和 `test:coverage`；在 `vitest.config.ts` 里配置覆盖率（v8，只统计 `src/**/*.ts`，输出 lcov）；`.gitignore` 加 `coverage/`
   - CI：Test 步骤改为 `npm run test:coverage`，三个平台都上传 Codecov（`flags` 为 OS，`CODECOV_TOKEN` secret，出错不让 CI 变红，见 Decisions）；新增 `codecov.yml`（status 设为 informational，不阻塞）
@@ -34,11 +34,14 @@
   
   原因：`fail_ci_if_error: false` 时，codecov wrapper 在签名或 SHA 校验失败后仍会运行 CLI；action 还会把 token 写进 `GITHUB_ENV`，传给后续步骤；而且 tag 上的这次运行要出 release。否决 `@v5` 浮动标签：这是拿到 secret 的第三方 action（2026-10-10）
 - 覆盖率三个平台都跑，按 OS 打 flag，由 Codecov 合并 —— 用户选择；Windows 专属分支也能计入（2026-10-10）
-- e2e 放在单独的 `vitest.e2e.config.ts` —— `npm test` 和 IDE 插件都不会去跑依赖构建产物或 Chrome 的测试（2026-10-10）
+- e2e 放在单独的 `test/e2e/e2e.config.ts`：`npm test` 不会去跑依赖构建产物或 Chrome 的测试。这个文件名也不在 VS Code Vitest 插件默认的搜索模式 `**/*{vite,vitest}*.config*` 里。最初的名字 `vitest.e2e.config.ts` 能被这个模式匹配到，是 CP2 审查时发现的（2026-10-10）
 - 保留 `smoke:*` 这些 npm script 名称 —— CI、README、CLAUDE.md 改动最小（2026-10-10）
 - 测试改写为 TS 并纳入 typecheck；浏览器测试改从 `src/` 导入 schema 和服务端（原来从 `dist/` 导入），不再需要先 `build:server` —— 与 integration 一致（2026-10-10）
 - 覆盖率只统计后端 `src/` —— 前端没有单测；e2e 跑的是子进程里的 `dist`，不计入（2026-10-10）
 - 范围追加：前端页面 title 从 `frontend` 改为 `squash`（`frontend/index.html`），单独提交 —— 用户要求（2026-10-10）
+- 四个 smoke 都按"记录后断言"迁移（`test/helpers/checks.ts`）：旧流程原样放进 beforeAll 跑一次，每条 check 对应一个同名测试。检查失败时抛 `CheckFailed`，相当于旧脚本的提前退出；后面的 label 记为 "not recorded"。非检查类错误（旧脚本会因此退出 1）和清理问题，由每个文件新增的唯一一条测试 "the flow ends without an error" 报告。清理由 helper 只调用一次；流程超时时由 afterAll（90 s）接手 —— 观察时机和旧脚本完全相同，与上次的 supervisor 迁移是同一思路（2026-10-10）
+- 去掉了 restart-policy 和 instance-form 写的 `.cache/*-evidence.json`，以及 "all N checks passed" 日志 —— 仓库里没有任何地方读它们，Vitest 报告可以替代；PASS/FAIL 行仍照旧打印（2026-10-10）
+- 变异判定的补充：旧脚本因异常退出时（不是 FAIL label，release 里是 `smoke run`），新测试对应的是 "the flow ends without an error" 报出同一个错误（2026-10-10）
 
 ## Acceptance
 - 成功路径：
@@ -67,7 +70,7 @@
   - `npm run test:coverage`
   - `npm run build:server && VITE_API_URL= npm --prefix frontend run build && npm run smoke:restart-policy && npm run smoke:instance-form && npm run smoke:server-log-ui`
   - `npm run package && npm run smoke:release`（先把 `frontend/.env.local` 移开，结束后放回）
-- 清单比对：旧脚本输出里的 PASS 行（基线存在 `.cache/baseline/`）对比 `npx vitest run --config vitest.e2e.config.ts --project <p> --reporter=json --outputFile=…`
+- 清单比对：旧脚本输出里的 PASS 行（基线存在 `.cache/baseline/`）对比 `npx vitest run --config test/e2e/e2e.config.ts --project <p> --reporter=json --outputFile=…`
 - 人工检查：用户在 codecov.io 激活仓库，添加 `CODECOV_TOKEN` secret；push 后确认分支的上传出现在 codecov.io；合并后确认 README 徽标
 - 高风险 diff：无（中风险）。CI 和 package.json scripts 的改动会单独指出
 
@@ -81,8 +84,17 @@
       - `codecov.yml` 通过 codecov.io/validate；npm audit 仍是原有的 8 条
       - Diff Review：1 medium 和 2 条 low 已修复并复核；CLAUDE.md 的更新放到 CP6；CI 上的计时等首次运行确认
       ｜ commit：见 git log（`test: measure backend coverage …`）
-- [ ] 2. restart-policy → `test/e2e/restart-policy.test.ts`，新建 `vitest.e2e.config.ts`，删除旧脚本
-      证据： ｜ commit：
+- [x] 2. restart-policy → `test/e2e/restart-policy.test.ts`，新建 `test/e2e/e2e.config.ts`，删除旧脚本
+      证据（以下都在提交状态上运行）：
+      - `npm run typecheck` 通过；`npm test` 646 条通过
+      - `npm run smoke:restart-policy`：48 passed，4 条 Windows 专属 skipped，71 s；清单缺失 0，PASS 顺序与旧脚本一致；成功后 fixture 目录已删除，没有 fake-rwr 进程残留
+      - 变异测试：
+        - A（`MAX_RESTART_ATTEMPTS` 5→4）：旧 FAIL 1 条，新同一条失败，其余 12 条 not recorded，旧的 34 条 PASS 全部通过，失败时保留 fixture
+        - B（`stopProcess` 的 restartReason 改坏）：旧脚本抛 "Condition not met" 后 exit 1；新测试由 "the flow ends without an error" 报出同一错误，其余 19 条 not recorded
+      - 缺少 dist 时报 "Run build:server first"；`-t` 过滤不留目录
+      - helper 的三条路径用一次性测试验证过
+      - Diff Review 与 Conformance Review：没有 high/medium。修了这些 low：Node ≥ 24 前置检查补回；检查失败后的清理问题现在会进入报告；超时时与正在进行的清理竞争；afterAll 时限 30 s → 90 s；配置文件名会被 VS Code 插件匹配到；提示文字和无效注释。复核又指出 2 条 low，已修：超时恰好发生在清理期间时，清理问题由 afterAll 输出；一处注释。归档链接留到 CP6
+      ｜ commit：见 git log（`test: move the restart-policy smoke to Vitest`）
 - [ ] 3. release → `test/e2e/release.test.ts`（归档路径改由 `SQUASH_RELEASE_ARCHIVE` 指定），删除旧脚本
       证据： ｜ commit：
 - [ ] 4. `test/helpers/cdp.ts` + instance-form → `test/e2e/instance-form.test.ts`，删除旧脚本

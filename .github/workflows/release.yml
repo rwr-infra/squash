@@ -83,9 +83,10 @@ jobs:
         run: npm run package
         timeout-minutes: 20
 
-      # Requires the compiled server and frontend produced by Package. Exercises
-      # real HTTP/WS + PTY restart policies in isolated fixtures, including the
-      # full 60-second stable-run reset. Failure blocks artifact upload/release.
+      # Vitest (test/e2e/restart-policy.test.ts, test/e2e/e2e.config.ts). Requires
+      # the compiled server and frontend produced by Package. Exercises real
+      # HTTP/WS + PTY restart policies in isolated fixtures, including the full
+      # 60-second stable-run reset. Failure blocks artifact upload/release.
       - name: Smoke-test restart policies end to end
         run: npm run smoke:restart-policy
         timeout-minutes: 10
