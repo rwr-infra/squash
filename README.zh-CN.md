@@ -100,6 +100,7 @@ docker run -d \
 ```bash
 npm install
 npm run dev          # tsx watch——运行 src/index.ts 并在变更时热重载
+npm test             # Vitest：单元测试与集成测试（npm run test:coverage 同时统计覆盖率）
 ```
 
 ### 生产模式(编译)
@@ -484,8 +485,8 @@ Windows 检查模拟 crashdump 恢复，并通过 IPC 调用管理器真实关�
 npm run smoke:instance-form
 ```
 
-先构建服务端与前端；前端环境文件不要设置 `VITE_API_URL`，或在构建时将其覆盖为空，
-确保页面使用测试服务的同源 API。未自动找到 Chromium 时，设置 `SQUASH_BROWSER_PATH`。
+先构建前端（测试直接加载 `src/` 中的服务端代码）；前端环境文件不要设置 `VITE_API_URL`，
+或在构建时将其覆盖为空，确保页面使用测试服务的同源 API。未自动找到 Chromium 时，设置 `SQUASH_BROWSER_PATH`。
 此浏览器检查是本地命令，尚未接入 CI。
 fixture 禁止浏览器连接其他来源；构建中带外部 API 地址时会失败，不会向该服务发送请求。
 

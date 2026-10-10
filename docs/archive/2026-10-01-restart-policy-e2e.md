@@ -5,7 +5,7 @@
 - 用户选择继续补充端到端验证；本次未修改用户实例配置或生产实现，未启动实际 RWR、未部署。
 
 ## 结果与证据
-- 新增 [smoke-restart-policy.mjs](../../scripts/smoke-restart-policy.mjs)，使用真实编译后的管理器、HTTP、WebSocket 和 Windows ConPTY 模拟子进程。
+- 新增 `scripts/smoke-restart-policy.mjs`（2026-10-10 起为 `test/e2e/restart-policy.test.ts`），使用真实编译后的管理器、HTTP、WebSocket 和 Windows ConPTY 模拟子进程。
 - 固定 Node 24.21.0 最终 **51 项 PASS，exit 0**；最终脚本 SHA-256 `7ae8515d46b810e39e4c9897ebb815f1ab8dfcadc3f5073a4249458538331d34` 与受审版本一致。
 - 验证了三种策略和 legacy 布尔配置的零码/非零运行行为；HTTP 创建/编辑/拒绝非法策略及管理器重载；WS 初始、实时、晚连接完整暂停状态和 HTTP 字段一致性。
 - 验证了待重启时 Stop/编辑/删除取消；五次重试持续暂停；真实稳定运行 60 秒后计数重置且观察期内不提前重置；精确 60000ms 退避预算和公开计划时间。

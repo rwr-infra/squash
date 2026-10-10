@@ -104,6 +104,7 @@ to `/app/frontend/dist`. Mount `/app/config` and
 ```bash
 npm install
 npm run dev          # tsx watch — runs src/index.ts and reloads on change
+npm test             # Vitest: unit and integration tests (npm run test:coverage also measures coverage)
 ```
 
 ### Production (compiled)
@@ -546,9 +547,9 @@ isolated API fixture (no game server or user configuration):
 npm run smoke:instance-form
 ```
 
-Build the server and frontend first, with `VITE_API_URL` unset in frontend env
+Build the frontend first, with `VITE_API_URL` unset in frontend env
 files or overridden to an empty value at build time so the UI uses the fixture's
-same-origin API. Set `SQUASH_BROWSER_PATH` if Chromium is not detected automatically.
+same-origin API (the test loads the server code from `src/`). Set `SQUASH_BROWSER_PATH` if Chromium is not detected automatically.
 This browser check is a local command and is not part of CI.
 The fixture blocks browser connections to other origins, so a build with an
 external API address fails without sending requests to that service.
