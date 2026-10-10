@@ -1,5 +1,7 @@
 # squash
 
+[![codecov](https://codecov.io/gh/rwr-infra/squash/graph/badge.svg)](https://codecov.io/gh/rwr-infra/squash)
+
 > [中文说明](README.zh-CN.md) | English
 
 > [!WARNING]

@@ -1,0 +1,19 @@
+# Coverage of the backend (src/) by `npm run test:coverage`, uploaded by every
+# OS job in .github/workflows/release.yml with the OS as its flag; Codecov
+# merges the three. It informs (badge, reports) and never fails a commit.
+codecov:
+  notify:
+    # Report once all three OS uploads are in, not on a partial merge.
+    after_n_builds: 3
+
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+comment:
+  after_n_builds: 3
