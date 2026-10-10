@@ -15,7 +15,7 @@
     "package": "npm run build && node scripts/package.mjs",
     "smoke:release": "vitest run --config test/e2e/e2e.config.ts --project release",
     "smoke:restart-policy": "vitest run --config test/e2e/e2e.config.ts --project restart-policy",
-    "smoke:instance-form": "node scripts/smoke-instance-form.mjs",
+    "smoke:instance-form": "vitest run --config test/e2e/e2e.config.ts --project instance-form",
     "smoke:server-log-ui": "node scripts/smoke-server-log-ui.mjs",
     "smoke:pty-exit-window": "node scripts/diagnostics/smoke-pty-exit-window.mjs",
     "smoke:pty-lifecycle": "node scripts/diagnostics/smoke-pty-lifecycle.mjs",

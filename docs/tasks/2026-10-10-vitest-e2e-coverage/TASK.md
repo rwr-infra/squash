@@ -107,8 +107,22 @@
       - 归档不存在时报 "archive not found … run `npm run package` first"；`-t` 过滤不留目录
       - 两份审查都没有 high/medium，已修复的 low：清理时对已处理进程补杀可能误杀（PID 复用）、清理开始后流程仍可能启动 launcher、错误栈重复打印、跳过的 label 带 "undefined"、token 的写法（`String(token)`）
       ｜ commit：见 git log（`test: move the release smoke to Vitest`）
-- [ ] 4. `test/helpers/cdp.ts` + instance-form → `test/e2e/instance-form.test.ts`，删除旧脚本
-      证据： ｜ commit：
+- [x] 4. `test/helpers/cdp.ts` + instance-form → `test/e2e/instance-form.test.ts`，删除旧脚本
+      证据（以下都在提交状态上运行；frontend/dist 来自 CP3 那次打包，没有 VITE_* 变量）：
+      - typecheck 通过
+      - `npm run smoke:instance-form`：50 passed，16 s；清单缺失 0，PASS 顺序一致；无残留 Chrome 进程和 .cache 目录
+      - bundle 变异（直接改 `frontend/dist`，跑完已恢复）：
+        - F1（下拉选项文字改掉）：新旧都在同一条检查上失败，旧的 19 条 PASS 全部通过，其余 29 条 not recorded
+        - F2（"Instance templates" 按钮的 title 改掉）：旧脚本抛 TypeError 后退出；新测试由 "the flow ends without an error" 报出同一错误，旧的 34 条 PASS 全部通过，其余 15 条 not recorded
+      - 前端未构建时报 "Build frontend first"；`-t` 过滤不留目录；`npm test` 646 条通过；本测试 profile 的 Chrome 没有残留
+      - 两份审查都没有 high/medium。已修的 low：
+        - cdp 的 `close()` 改为返回问题描述、不抛错，清理会继续关闭 server 和删除目录；
+        - 未连接时 `command` 立即 reject；
+        - 误导的错误提示；
+        - 等待浏览器启动的时限做成参数（instance-form 恢复为旧的 15 s）；
+        - 清理开始后不再启动浏览器。
+      - 修复后重跑：正常运行和 F1 结果都不变
+      ｜ commit：见 git log（`test: move the instance-form smoke to Vitest`）
 - [ ] 5. server-log-ui → `test/e2e/server-log-ui.test.ts`，删除旧脚本
       证据： ｜ commit：
 - [ ] 6. 文档：CLAUDE.md、两份 README 的测试小节、backlog；push 并跑 CI 三平台（需要授权），在 Codecov 上确认

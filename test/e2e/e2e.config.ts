@@ -7,6 +7,8 @@ import { defineConfig } from 'vitest/config';
 // is its own project, run by its npm script (`npm run smoke:<name>`):
 //   - restart-policy: dist/ and frontend/dist (CI runs it after Package)
 //   - release: the release archive from `npm run package` (CI runs it last)
+//   - instance-form: frontend/dist built without VITE_* and a local
+//     Chrome/Chromium (local only, not in CI)
 // Run together, they go one at a time, in this order.
 const project = (name: string, groupOrder: number) => ({
   extends: true as const,
@@ -23,6 +25,6 @@ export default defineConfig({
     // Child processes, not worker threads, as in the root vitest.config.ts:
     // these spawn and signal real processes.
     pool: 'forks',
-    projects: [project('restart-policy', 0), project('release', 1)]
+    projects: [project('restart-policy', 0), project('release', 1), project('instance-form', 2)]
   }
 });
