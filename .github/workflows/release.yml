@@ -67,6 +67,20 @@ jobs:
         run: npm run smoke:auth
         timeout-minutes: 3
 
+      # The template store (seeding, transactional writes, a corrupt file left
+      # untouched) and /api/templates. Seconds.
+      - name: Smoke-test instance templates
+        run: npm run smoke:templates
+        timeout-minutes: 3
+
+      # The rwr_server.log line index against generated files (CRLF, UTF-8
+      # across reads, long lines, truncation and replacement) and its /api
+      # routes. Seconds; the one place the index runs on Windows and Linux
+      # before a real rwr_server does.
+      - name: Smoke-test the rwr_server.log index
+        run: npm run smoke:server-log
+        timeout-minutes: 3
+
       # Drives the real supervisor + node-pty against a fake child: a user stop
       # ends in `stopped` with no auto-restart, a crash is still `crashed` and
       # restarted. Runs before Package so a status regression fails in seconds,

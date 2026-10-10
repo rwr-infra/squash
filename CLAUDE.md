@@ -20,10 +20,10 @@ npm run smoke:release  # extract that archive, run it via its launcher without s
 npm run smoke:pty      # interactive PTY smoke harness (scripts/pty-rwr-smoke.ts)
 npm run smoke:supervisor  # supervisor state-machine smoke (fake node child through node-pty)
 npm run smoke:auth     # /api auth regression: route inventory, path spellings, absolute-form, WS upgrades (in CI)
-npm run smoke:templates   # template store + /api/templates (tsx, no browser)
-npm run smoke:server-log  # line index vs ground truth (CRLF, UTF-8 across chunks, long lines, truncation) + server-log routes
+npm run smoke:templates   # template store + /api/templates (tsx, no browser; in CI)
+npm run smoke:server-log  # line index vs ground truth (CRLF, UTF-8 across chunks, long lines, truncation) + server-log routes (in CI)
 npm run smoke:instance-form   # headless Chrome over the built frontend: instance form + templates
-npm run smoke:server-log-ui   # headless Chrome: log viewer (desktop + phone/touch, wrap, find bar)
+npm run smoke:server-log-ui   # headless Chrome: log viewer (desktop + phone/touch, wrap, find bar); the browser smokes are local-only
 ```
 
 Frontend (run from `frontend/`):
@@ -72,7 +72,7 @@ Login is on by default (`admin`/`admin`, overridable via `AUTH_USERNAME`/`AUTH_P
 
 ## Platform notes
 
-CI (`release.yml`, every push) runs typecheck, `smoke:auth`, `smoke:supervisor`, package, `smoke:restart-policy` and `smoke:release` on Linux, macOS and Windows; a real `rwr_server` has been validated by hand on Windows Server only, not on Linux. `rwr_server` answers `quit` with `Exit requested` and exits only on one more Enter, so its stopCommand is `quit` plus an empty line. On Windows both kill modes are `taskkill /T /F`, so without a stopCommand a stop produces no shutdown output — the smoke's stopCommand cases are what exercise output while `stopping` there; under ConPTY a node child reads each written `<cmd>\r` as `<cmd>\r\n`. Under ConPTY a node child never gets stdout `'resize'`, and `process.stdout.getWindowSize()` only returns the size cached by that event — a smoke child that must observe its size reads `process.stdout._handle.getWindowSize()`. On macOS, `node-pty`'s `spawn-helper` may lack the execute bit (`posix_spawnp failed`); the README documents the `chmod +x` fix. The Docker image runs `node dist/index.js` under `tini` as a non-root `squash` user, with `config/` and `logs/` intended as mounted volumes; `docker stop` needs a grace period above the longest `stopTimeoutMs` + 2s (`--stop-timeout 20` for the default).
+CI (`release.yml`, every push) runs typecheck, `smoke:auth`, `smoke:templates`, `smoke:server-log`, `smoke:supervisor`, package, `smoke:restart-policy` and `smoke:release` on Linux, macOS and Windows; a real `rwr_server` has been validated by hand on Windows Server only, not on Linux. `rwr_server` answers `quit` with `Exit requested` and exits only on one more Enter, so its stopCommand is `quit` plus an empty line. On Windows both kill modes are `taskkill /T /F`, so without a stopCommand a stop produces no shutdown output — the smoke's stopCommand cases are what exercise output while `stopping` there; under ConPTY a node child reads each written `<cmd>\r` as `<cmd>\r\n`. Under ConPTY a node child never gets stdout `'resize'`, and `process.stdout.getWindowSize()` only returns the size cached by that event — a smoke child that must observe its size reads `process.stdout._handle.getWindowSize()`. On macOS, `node-pty`'s `spawn-helper` may lack the execute bit (`posix_spawnp failed`); the README documents the `chmod +x` fix. The Docker image runs `node dist/index.js` under `tini` as a non-root `squash` user, with `config/` and `logs/` intended as mounted volumes; `docker stop` needs a grace period above the longest `stopTimeoutMs` + 2s (`--stop-timeout 20` for the default).
 
 ## Release bundles
 

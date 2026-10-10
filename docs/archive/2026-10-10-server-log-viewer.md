@@ -48,7 +48,7 @@
   - 16 KiB 截断之后的匹配没有高亮（README 已说明）；
   - 匹配超过 10,000 条时无法从当前视野分页继续搜索；
   - 首次建索引不能中止；同一实例的并发搜索不限流（前端发起新搜索前会中止旧的）。
-- 以上未验证项和局限已记入 [backlog](../backlog.md)。新 smoke（`smoke:server-log`、`smoke:server-log-ui`）是否进 CI 尚未决定。
+- 以上未验证项和局限已记入 [backlog](../backlog.md)。`smoke:server-log` 已加入 CI，索引因此会在 Windows 和 Linux 上跑（此前只在 macOS 上跑过）；`smoke:server-log-ui` 需要构建好的前端和 Chrome，仍只在本地跑。
 
 ## 指针
 - `src/core/log/line-index.ts`（`createLineIndex`、`StaleIndexError`）、`src/services/server-log-service.ts`

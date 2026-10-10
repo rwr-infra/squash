@@ -34,7 +34,8 @@
 ## 剩余风险 / 后续
 - 模板没有审计记录（实例的 PUT 也没有，保持一致）。
 - 模板不包含 env 和 logDir（表单本来就不编辑这两项）。
-- `smoke:templates`、`smoke:instance-form` 是否进 CI 尚未决定。
+- `smoke:templates` 已加入 CI（三平台）；`smoke:instance-form` 需要构建好的前端和 Chrome，仍只在本地跑。
+- `smoke:instance-form` 的"retry succeeds and updates list"在弹窗关闭后立刻读列表，偶发失败（列表重取晚于弹窗关闭）；已改为等待列表更新（`e4bed53`）。
 
 ## 指针
 - `src/core/config/template-store.ts`、`src/services/template-service.ts`、`src/api/http/routes/template-routes.ts`
