@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
 
-const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 assert.equal(process.platform, 'win32', 'This smoke requires Windows ConPTY');
 assert(Number(process.versions.node.split('.')[0]) >= 24, 'Use Node >=24');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -74,7 +74,7 @@ const runWorker = async () => {
     };
     return term;
   };
-  const { createInstanceSupervisor } = await import('../dist/core/instance/instance-supervisor.js');
+  const { createInstanceSupervisor } = await import('../../dist/core/instance/instance-supervisor.js');
   const supervisor = await createInstanceSupervisor({ id: 'window-probe', name: 'window-probe', cwd: work, executable: process.execPath, args: [childFile], env: {}, logDir: work, restartPolicy: 'never', stopCommand: `__exit__\n${'x'.repeat(payloadSize)}`, stopTimeoutMs: 5000 });
   supervisor.onData(chunk => { output += chunk; });
   await supervisor.start();

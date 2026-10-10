@@ -1,6 +1,6 @@
-// Regression smoke for the instance supervisor's state machine, driven through
-// the real createInstanceSupervisor + node-pty against a fake child (this Node
-// binary running an inline script). Checks:
+// The instance supervisor's state machine, driven through the real
+// createInstanceSupervisor + node-pty against a fake child (this Node binary
+// running an inline script).
 //   - stop() while the child keeps printing during its shutdown and then exits
 //     non-zero ends in `stopped` — never back to `running`, never `crashed` —
 //     and is not auto-restarted
@@ -28,39 +28,54 @@
 //     dispose() meanwhile cancels the restart instead of starting a new
 //     process; concurrent restarts join into one
 //
-// Usage: npm run smoke:supervisor
-
+// Each scenario runs once, in its suite's beforeAll, and records its checks
+// as it goes — the observations are timing-sensitive, so they are taken at
+// the moment the scenario reaches them, and a scenario that cannot go on
+// returns early. Every check is then one test, named by its label, asserting
+// what was recorded. A scenario must list its labels up front (scenario()
+// throws on a check it did not declare).
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { createInstanceSupervisor, resolveRestartPolicy } from '../src/core/instance/instance-supervisor.js';
-import { CreateInstanceSchema } from '../src/api/http/schemas/instance-schemas.js';
-import type { InstanceConfig, InstanceStatus, InstanceSupervisor } from '../src/core/instance/instance-types.js';
-import { toInstanceLogFile } from '../src/core/log/log-writer.js';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createInstanceSupervisor, resolveRestartPolicy } from '../../src/core/instance/instance-supervisor.js';
+import { CreateInstanceSchema } from '../../src/api/http/schemas/instance-schemas.js';
+import type { InstanceConfig, InstanceStatus, InstanceSupervisor } from '../../src/core/instance/instance-types.js';
+import { toInstanceLogFile } from '../../src/core/log/log-writer.js';
+import { useTempDir } from '../helpers/temp-dir.js';
 
 const isWindows = process.platform === 'win32';
 const RESTART_DELAY_MS = 200;
 // Long enough for a wrongly scheduled restart to have fired and spawned.
 const RESTART_WINDOW_MS = RESTART_DELAY_MS * 4;
+// The smoke these tests replace failed when the whole run took longer.
+const TOTAL_LIMIT_MS = 240_000;
 
-const log = (msg: string) => console.log(`[smoke] ${msg}`);
-const failures: string[] = [];
+const log = (msg: string) => console.log(msg);
+
+type CheckResult = { readonly label: string; readonly ok: boolean; readonly detail: string };
+// Where each declared label records — by label, unique across the file — so a
+// check lands in its own scenario's results even when it runs late (after its
+// scenario's beforeAll timed out and the next scenario began).
+const recorders = new Map<string, { readonly results: CheckResult[]; readonly skip: boolean }>();
 const check = (label: string, ok: boolean, detail = '') => {
-  console.log(`[smoke] ${ok ? 'PASS' : 'FAIL'} ${label}${detail ? ` — ${detail}` : ''}`);
-  if (!ok) failures.push(label);
+  const recorder = recorders.get(label);
+  if (!recorder) throw new Error(`check "${label}" is not declared by any scenario`);
+  if (recorder.skip) throw new Error(`check "${label}" is declared as skipped on this platform`);
+  if (recorder.results.some((result) => result.label === label)) throw new Error(`check "${label}" recorded twice`);
+  recorder.results.push({ label, ok, detail });
   return ok;
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Every harness cwd/logDir lives under one root, removed on any exit path.
-const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'squash-supervisor-smoke-'));
+// Every harness cwd/logDir lives under one root.
+const workRoot = useTempDir('squash-supervisor-test-');
 // Live children and grandchildren a failed check may leave behind (a child
-// stuck in `stopping` outlives this script: it ignores the PTY's SIGHUP). A
+// stuck in `stopping` outlives the file: it ignores the PTY's SIGHUP). A
 // PID leaves the set as soon as its process is known to be gone — Windows
 // reuses PIDs quickly, and killing a recycled one would hit an unrelated
-// process.
+// process. Killed in the afterAll at the end of the file.
 const strays = new Set<number>();
-process.on('exit', () => {
+const killStrays = () => {
   for (const pid of strays) {
     try {
       process.kill(pid, 'SIGKILL');
@@ -68,12 +83,16 @@ process.on('exit', () => {
       // Already gone.
     }
   }
-  try {
-    fs.rmSync(workRoot, { recursive: true, force: true });
-  } catch {
-    // Best-effort: on Windows a still-running child can hold its cwd.
-  }
+};
+// Every supervisor created, for the afterAll at the end of the file.
+const supervisors = new Set<InstanceSupervisor>();
+let closing = false;
+let startedAt = 0;
+beforeAll(() => {
+  startedAt = Date.now();
 });
+// Should the afterAll never run (the process exits first), the strays still go.
+process.on('exit', killStrays);
 
 // Fake rwr_server. On SIGHUP/SIGTERM (node-pty's POSIX kill) it keeps printing
 // for ~200ms and then exits 1 — like a real server logging its shutdown.
@@ -186,7 +205,10 @@ type Harness = {
 };
 
 const createHarness = async (mode: string, overrides: Partial<InstanceConfig> = {}): Promise<Harness> => {
-  const cwd = fs.mkdtempSync(path.join(workRoot, `${mode}-`));
+  // A scenario still running after its beforeAll timed out must not start a
+  // child the cleanup at the end of the file has already gone past.
+  if (closing) throw new Error('the file is shutting down');
+  const cwd = fs.mkdtempSync(path.join(workRoot(), `${mode}-`));
   const id = `smoke-${mode}`;
   const supervisor = await createInstanceSupervisor({
     id,
@@ -200,6 +222,7 @@ const createHarness = async (mode: string, overrides: Partial<InstanceConfig> = 
     restartDelayMs: RESTART_DELAY_MS,
     ...overrides
   });
+  supervisors.add(supervisor);
   const statuses: InstanceStatus[] = [];
   let lastPid: number | undefined;
   supervisor.onStatus((runtime) => {
@@ -835,55 +858,225 @@ const checkRestartCancelled = async (by: 'stop' | 'force' | 'dispose') => {
   check(`${label}: no new process was started`, childReadyCount(output()) === 1, JSON.stringify(output()));
 };
 
-// The expanded policy matrix launches many real ConPTY children on Windows;
-// a failing check waits out its timeouts, so leave room for the rest to run.
-setTimeout(() => {
-  console.error('[smoke] timed out');
-  process.exit(1);
-}, 240_000).unref();
-
-// Forget PIDs that are gone right after each check, while a recycled PID is
-// least likely.
-const run = async (checkFn: () => Promise<void>) => {
-  await checkFn();
-  for (const pid of strays) {
-    if (!isAlive(pid)) strays.delete(pid);
+// Every supervisor a scenario created, so that one which failed half-way does
+// not keep a child (or the PTY's handles) alive past the file. The strays go
+// first: a scenario that failed may have left a child whose graceful stop
+// would outlast this hook (stopTimeoutMs up to 60s) — and a hook that times
+// out runs nothing after the await it timed out in.
+afterAll(async () => {
+  closing = true;
+  for (const supervisor of supervisors) {
+    if (!isSettled(supervisor)) {
+      try {
+        supervisor.stop({ force: true });
+      } catch {
+        // Not stoppable from its state; dispose() below handles it.
+      }
+    }
   }
+  killStrays();
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([
+    Promise.allSettled([...supervisors].map((supervisor) => supervisor.dispose())),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, 10_000);
+    })
+  ]);
+  clearTimeout(timer);
+  killStrays();
+}, 30_000);
+
+type Declared = string | { readonly label: string; readonly skip: boolean };
+
+// Runs `run` once (beforeAll) and turns each declared label into a test of
+// what it recorded: a label never recorded fails as "not reached" (the smoke
+// returned early after a failed check and never ran the rest). `skip`: not
+// checked on this platform — the scenario does not record it, and recording
+// it anyway, or a label not declared at all, fails the scenario.
+const scenario = (name: string, labels: readonly Declared[], run: () => Promise<void>, timeoutMs = 60_000) => {
+  describe(name, () => {
+    const results: CheckResult[] = [];
+    const declared = labels.map((entry) => (typeof entry === 'string' ? { label: entry, skip: false } : entry));
+    for (const { label, skip } of declared) {
+      if (recorders.has(label)) throw new Error(`label "${label}" is declared twice`);
+      recorders.set(label, { results, skip });
+    }
+    beforeAll(async () => {
+      try {
+        await run();
+      } finally {
+        // Forget PIDs that are gone right after each scenario, while a
+        // recycled PID is least likely.
+        for (const pid of strays) {
+          if (!isAlive(pid)) strays.delete(pid);
+        }
+      }
+    }, timeoutMs);
+    for (const { label, skip } of declared) {
+      it.skipIf(skip)(label, () => {
+        const result = results.find((entry) => entry.label === label);
+        expect(result, 'not reached: an earlier check in this scenario failed and ended it').toBeDefined();
+        expect(result!.ok, result!.detail || 'failed').toBe(true);
+      });
+    }
+  });
 };
 
-await run(() => checkUserStop('stop'));
-await run(() => checkUserStop('dispose'));
-await run(checkCrashRestarts);
-await run(checkCleanExit);
-await run(checkRestartPolicies);
-await run(() => checkPendingRecovery('stop'));
-await run(() => checkPendingRecovery('dispose'));
-await run(() => checkPendingRecovery('start'));
-await run(() => checkPendingRecovery('restart'));
-await run(checkRecoveryLimit);
-await run(checkResize);
-await run(checkSendCommand);
-await run(checkStopCommand);
-await run(checkStopCommandEnter);
-await run(checkBlankStopCommand);
-if (isWindows) {
-  // No signals on Windows: without a stopCommand, stop is an immediate taskkill.
-  log('skip stop timeout (signal) on Windows');
-} else {
-  await run(() => checkStopTimeout('signal'));
-}
-await run(() => checkStopTimeout('command'));
-await run(checkForceStop);
-await run(checkRestartWaits);
-await run(checkRestartWhileStopping);
-await run(() => checkRestartCancelled('stop'));
-await run(() => checkRestartCancelled('force'));
-await run(() => checkRestartCancelled('dispose'));
+scenario('user stop', [
+  'stop: child started',
+  'output updates lastOutputAt',
+  // kill() is `taskkill /T /F` on Windows: no signal, so no shutdown output.
+  { label: 'stop: child printed while stopping', skip: isWindows },
+  'stop: ends in stopped',
+  'stop: never reported running/crashed after the request',
+  'stop: reported stopping first',
+  'stop: no auto-restart'
+], () => checkUserStop('stop'));
 
-if (failures.length > 0) {
-  console.error(`[smoke] ${failures.length} check(s) failed: ${failures.join('; ')}`);
-  process.exit(1);
+scenario('dispose', [
+  'dispose: child started',
+  { label: 'dispose: child printed while stopping', skip: isWindows },
+  'dispose: ends in stopped',
+  'dispose: never reported running/crashed after the request',
+  'dispose: reported stopping first',
+  'dispose: no auto-restart',
+  'dispose: resolves once the process has exited',
+  'dispose: a disposed supervisor refuses to start'
+], () => checkUserStop('dispose'));
+
+scenario('crash', ['crash: reported crashed', 'crash: auto-restarted'], checkCrashRestarts);
+
+scenario('clean exit', ['clean exit: ends in stopped', 'clean exit: no auto-restart'], checkCleanExit);
+
+scenario('restart policies', [
+  'policy: legacy enabled maps to on-failure',
+  'policy: legacy disabled maps to never',
+  'policy: explicit always overrides legacy disabled',
+  'policy API: rejects an unknown policy',
+  'policy API: omitted policy retains legacy default',
+  ...(['never', 'on-failure', 'always'] as const).flatMap((restartPolicy) => [
+    `policy API: accepts ${restartPolicy}`,
+    ...['clean-once', 'crash-once'].flatMap((mode) =>
+      restartPolicy === 'always' || (restartPolicy === 'on-failure' && mode === 'crash-once')
+        ? [`${restartPolicy}/${mode}: restarts once`]
+        : [`${restartPolicy}/${mode}: no restart`, `${restartPolicy}/${mode}: explains why`]
+    )
+  ])
+], checkRestartPolicies, 120_000);
+
+for (const action of ['stop', 'dispose', 'start', 'restart'] as const) {
+  scenario(`pending recovery/${action}`, [
+    `pending recovery/${action}: clean exit is scheduled`,
+    ...(action === 'start' || action === 'restart' ? [`pending recovery/${action}: replacement child is ready`] : []),
+    `pending recovery/${action}: no stale timer or duplicate spawn`,
+    `pending recovery/${action}: expected state`
+  ], () => checkPendingRecovery(action));
 }
-log('all checks passed');
-// Leftover PTYs would keep the event loop alive.
-process.exit(0);
+
+scenario('recovery limit', [
+  'recovery limit: pauses after 5 retries on exit 0',
+  'recovery limit: exponential backoff',
+  'recovery limit: remains paused',
+  'recovery limit: Stop clears desired running state',
+  'recovery limit: manual Start clears the breaker'
+], checkRecoveryLimit);
+
+scenario('resize', [
+  'resize: spawns at the 120x40 default',
+  'resize: running PTY follows resize()',
+  'resize: restart() keeps the last size',
+  'resize: while stopped does not throw',
+  'resize: next start() uses the size set while stopped'
+], checkResize);
+
+scenario('sendCommand', ['sendCommand: child started', 'sendCommand: each command arrives as its own line, in order'], checkSendCommand);
+
+scenario('stopCommand', [
+  'stopCommand: child started',
+  'stopCommand: lines sent in order; leading blanks dropped, a later blank sent as Enter',
+  'stopCommand: child printed while stopping',
+  'stopCommand: no signal sent',
+  'stopCommand: ends in stopped',
+  'stopCommand: never reported running/crashed after the request',
+  'stopCommand: no force-kill'
+], checkStopCommand);
+
+scenario('stopCommand + Enter', [
+  'stopCommand + Enter: child started',
+  'stopCommand + Enter: sent `quit`, then a bare Enter',
+  'stopCommand + Enter: the Enter came well after "Exit requested", not buffered with `quit`',
+  'stopCommand + Enter: ends in stopped',
+  'stopCommand + Enter: never reported running/crashed after the request',
+  'stopCommand + Enter: no force-kill'
+], checkStopCommandEnter);
+
+scenario('blank stopCommand', [
+  'blank stopCommand: child started',
+  'blank stopCommand: treated as unset',
+  'blank stopCommand: ends in stopped'
+], checkBlankStopCommand);
+
+for (const via of ['signal', 'command'] as const) {
+  const label = `stop timeout (${via})`;
+  // No signals on Windows: without a stopCommand, stop is an immediate taskkill.
+  const skip = via === 'signal' && isWindows;
+  scenario(label, [
+    `${label}: child and grandchild started`,
+    `${label}: child got the graceful stop and ignored it; grandchild alive`,
+    `${label}: ends in stopped`,
+    `${label}: waited for stopTimeoutMs first`,
+    `${label}: never reported running/crashed after the request`,
+    `${label}: no auto-restart`,
+    `${label}: instance log records the force-kill`,
+    `${label}: child and grandchild are gone`
+  ].map((entry) => ({ label: entry, skip })), () => (skip ? Promise.resolve() : checkStopTimeout(via)));
+}
+
+scenario('force stop', [
+  'force stop: child and grandchild started',
+  'force stop: still stopping after the stop command',
+  'force stop: a plain Stop while stopping changes nothing',
+  'force stop: grandchild alive before the force stop',
+  'force stop: accepted while stopping',
+  'force stop: ends in stopped at once',
+  'force stop: instance log records it',
+  'force stop: child and grandchild are gone'
+], checkForceStop);
+
+scenario('restart', [
+  'restart: child started',
+  'restart: old process had exited before the new one started',
+  'restart: old shutdown output precedes the new start',
+  'restart: went through stopping → stopped → running',
+  'restart: new process is running',
+  'restart: concurrent restarts join into one'
+], checkRestartWaits);
+
+scenario('restart while stopping', [
+  'restart while stopping: child and grandchild started',
+  'restart while stopping: child ignored the stop command',
+  'restart while stopping: accepted',
+  'restart while stopping: waited for the stop to finish',
+  'restart while stopping: old process gone before the new start, grandchild killed',
+  'restart while stopping: joined the pending stop',
+  'restart while stopping: the stop was force-killed on timeout',
+  'restart while stopping: new process is running'
+], checkRestartWhileStopping);
+
+for (const by of ['stop', 'force', 'dispose'] as const) {
+  const label = `restart cancelled by ${by}`;
+  scenario(label, [
+    `${label}: child started`,
+    `${label}: restart is waiting for the old process`,
+    `${label}: restart failed`,
+    `${label}: ends in stopped`,
+    `${label}: no new process was started`
+  ], () => checkRestartCancelled(by));
+}
+
+// Each scenario has its own timeout against a hang; this keeps the smoke's
+// limit on the run as a whole. A test, not a check in the afterAll above: a
+// hook that throws stops the hooks after it, the temp dir's removal included.
+it(`the scenarios finish within ${TOTAL_LIMIT_MS / 1000} s`, () => {
+  expect(Date.now() - startedAt).toBeLessThan(TOTAL_LIMIT_MS);
+});

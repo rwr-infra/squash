@@ -1,7 +1,6 @@
-// Regression smoke for the /api auth hook: every protected route refuses a
-// request without a valid token however its path is written, and its handler
-// never runs. Through the real createHttpServer, with every service a stub
-// that counts its calls. Checks:
+// The /api auth hook: every protected route refuses a request without a valid
+// token however its path is written, and its handler never runs. Through the
+// real createHttpServer, with every service a stub that counts its calls.
 //   - the routes the server registers under /api are exactly the protected
 //     ones listed here plus the public ones (a new route must be added to one
 //     list or the other, and a new public one is a conscious decision)
@@ -15,34 +14,16 @@
 //   - the public routes (health, auth status, login) and the SPA answer
 //     without a token, an unknown /api path is 404, and a valid token gets
 //     through (positive control)
-//
-// Usage: npm run smoke:auth
-
-import fs from 'node:fs';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createApiServer, login, type ApiDeps, type ApiServer } from '../helpers/api-server.js';
+import { useTempDir } from '../helpers/temp-dir.js';
 
-const failures: string[] = [];
-const check = (label: string, ok: boolean, detail = '') => {
-  console.log(`[smoke] ${ok ? 'PASS' : 'FAIL'} ${label}${detail ? ` — ${detail}` : ''}`);
-  if (!ok) failures.push(label);
-  return ok;
-};
-
-const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'squash-auth-smoke-'));
-process.on('exit', () => fs.rmSync(workRoot, { recursive: true, force: true }));
-fs.writeFileSync(path.join(workRoot, 'index.html'), '<!doctype html><title>spa</title>');
-
-// auth.ts reads these when it is first imported: a strong password, so the
-// hook is what stands between the network and the handlers.
-process.env.AUTH_USERNAME = 'smoke';
-process.env.AUTH_PASSWORD = 'a-long-unguessable-smoke-password';
-delete process.env.AUTH_TOKEN;
-process.env.SQUASH_STATIC_DIR = workRoot;
-
-const { createHttpServer } = await import('../src/api/http/http-server.js');
-type ApiDeps = Parameters<typeof createHttpServer>[0];
+// A strong password, so the hook is what stands between the network and the
+// handlers.
+const PASSWORD = 'a-long-unguessable-smoke-password';
+const workRoot = useTempDir('squash-auth-test-');
 
 // Every service method records its call and returns nothing useful.
 const calls: string[] = [];
@@ -62,7 +43,15 @@ const deps = {
   templateService: stub('templateService'),
   serverLogService: stub('serverLogService')
 } as unknown as ApiDeps;
-const server = await createHttpServer(deps);
+
+let server: ApiServer;
+beforeAll(async () => {
+  server = await createApiServer({ password: PASSWORD, staticDir: path.join(workRoot(), 'static'), deps });
+  await server.ready();
+});
+afterAll(async () => {
+  await server?.close();
+});
 
 // Protected routes as [method, route pattern, body]; every GET also has an
 // automatic HEAD route, checked too.
@@ -152,86 +141,123 @@ const wsFirstMessage = (url: string) =>
     ws.onerror = () => { clearTimeout(timer); resolve('error'); };
   });
 
-try {
-  await server.ready();
+// Handler calls made while `run` was under way.
+const callsDuring = async <T>(run: () => Promise<T>): Promise<{ readonly result: T; readonly calls: readonly string[] }> => {
+  const before = calls.length;
+  const result = await run();
+  return { result, calls: calls.slice(before) };
+};
+
+const withBody = (body: unknown) => (body === undefined ? {} : { payload: body as object });
+
+it('the /api routes are exactly the listed protected and public ones', () => {
   const registered = [...registeredRoutes(server.printRoutes({ commonPrefix: false }))].filter((route) => route.split(' ')[1]!.startsWith('/api'));
   const expected = [...PROTECTED.map(([method, route]) => `${method} ${route}`), ...PUBLIC_ROUTES];
-  check(
-    'the /api routes are exactly the listed protected and public ones',
-    registered.length === expected.length && expected.every((route) => registered.includes(route)),
-    `unlisted: ${registered.filter((route) => !expected.includes(route)).join(', ') || '-'}; missing: ${expected.filter((route) => !registered.includes(route)).join(', ') || '-'}`
-  );
+  expect(registered.sort()).toEqual(expected.sort());
+});
 
+describe('through inject', () => {
   for (const [method, , url, body] of PROTECTED) {
     for (const spelled of spellings(url)) {
-      const before = calls.length;
-      const res = await server.inject({ method: method as 'GET', url: spelled, ...(body === undefined ? {} : { payload: body as object }) });
-      check(`no token: ${method} ${spelled}`, res.statusCode === 401 && calls.length === before, `${res.statusCode}, ${calls.slice(before).join(',') || 'no calls'}`);
+      it(`no token: ${method} ${spelled}`, async () => {
+        const { result, calls } = await callsDuring(() => server.inject({ method: method as 'GET', url: spelled, ...withBody(body) }));
+        expect(result.statusCode).toBe(401);
+        expect(calls).toEqual([]);
+      });
     }
-    const before = calls.length;
-    const wrong = await server.inject({ method: method as 'GET', url, headers: { authorization: 'Bearer not-a-session' }, ...(body === undefined ? {} : { payload: body as object }) });
-    check(`wrong token: ${method} ${url}`, wrong.statusCode === 401 && calls.length === before);
+    it(`wrong token: ${method} ${url}`, async () => {
+      const { result, calls } = await callsDuring(() =>
+        server.inject({ method: method as 'GET', url, headers: { authorization: 'Bearer not-a-session' }, ...withBody(body) })
+      );
+      expect(result.statusCode).toBe(401);
+      expect(calls).toEqual([]);
+    });
   }
 
   // The %61pi spelling reaches the route: it must meet the hook, not miss it.
-  const encoded = await server.inject({ method: 'GET', url: '/%61pi/instances' });
-  check('an encoded path still meets the hook (401 UNAUTHORIZED)', encoded.statusCode === 401 && encoded.json().error?.code === 'UNAUTHORIZED', `${encoded.statusCode}`);
+  it('an encoded path still meets the hook (401 UNAUTHORIZED)', async () => {
+    const encoded = await server.inject({ method: 'GET', url: '/%61pi/instances' });
+    expect(encoded.statusCode).toBe(401);
+    expect(encoded.json().error?.code).toBe('UNAUTHORIZED');
+  });
+});
 
-  await server.listen({ port: 0, host: '127.0.0.1' });
-  const port = (server.server.address() as net.AddressInfo).port;
+describe('over a socket', () => {
+  let port = 0;
+  beforeAll(async () => {
+    await server.listen({ port: 0, host: '127.0.0.1' });
+    port = (server.server.address() as net.AddressInfo).port;
+  });
+
   for (const [method, , url, body] of PROTECTED) {
     for (const target of [`http://smoke${url}`, `http://smoke${url.replace('/api/', '/%61pi/')}`]) {
-      const before = calls.length;
-      const status = await rawStatus(port, method, target, body);
-      check(`no token, absolute-form: ${method} ${target}`, status === 401 && calls.length === before, `${status}, ${calls.slice(before).join(',') || 'no calls'}`);
+      it(`no token, absolute-form: ${method} ${target}`, async () => {
+        const { result, calls } = await callsDuring(() => rawStatus(port, method, target, body));
+        expect(result).toBe(401);
+        expect(calls).toEqual([]);
+      });
     }
   }
 
   // A WebSocket upgrade to a protected route meets the hook too.
   const upgrade = ['Connection: Upgrade', 'Upgrade: websocket', 'Sec-WebSocket-Version: 13', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=='];
   for (const target of ['/api/instances', '/%61pi/instances', `http://smoke/api/audit`]) {
-    const before = calls.length;
-    const status = await rawStatus(port, 'GET', target, undefined, upgrade);
-    check(`no token, WebSocket upgrade: ${target}`, status === 401 && calls.length === before, `${status}`);
+    it(`no token, WebSocket upgrade: ${target}`, async () => {
+      const { result, calls } = await callsDuring(() => rawStatus(port, 'GET', target, undefined, upgrade));
+      expect(result).toBe(401);
+      expect(calls).toEqual([]);
+    });
   }
 
   // The terminal WebSocket checks its own ?token=.
-  const ws = `ws://127.0.0.1:${port}/api/terminal/x`;
-  for (const [label, url] of [['no token', ws], ['a wrong token', `${ws}?token=not-a-session`], ['an encoded path, no token', `ws://127.0.0.1:${port}/%61pi/terminal/x`]] as const) {
-    const before = calls.length;
-    const first = await wsFirstMessage(url);
-    check(`terminal WebSocket with ${label} is refused`, first.includes('Unauthorized') && !calls.slice(before).includes('terminalGateway.handleConnection'), first);
+  for (const [label, query, prefix] of [['no token', '', 'api'], ['a wrong token', '?token=not-a-session', 'api'], ['an encoded path, no token', '', '%61pi']] as const) {
+    it(`terminal WebSocket with ${label} is refused`, async () => {
+      const { result, calls } = await callsDuring(() => wsFirstMessage(`ws://127.0.0.1:${port}/${prefix}/terminal/x${query}`));
+      expect(result).toContain('Unauthorized');
+      expect(calls).not.toContain('terminalGateway.handleConnection');
+    });
   }
-  const headTerminal = await server.inject({ method: 'HEAD', url: '/api/terminal/x' });
-  check('the terminal route has no HEAD route', headTerminal.statusCode === 404, `${headTerminal.statusCode}`);
+  it('the terminal route has no HEAD route', async () => {
+    expect((await server.inject({ method: 'HEAD', url: '/api/terminal/x' })).statusCode).toBe(404);
+  });
 
-  // Still public.
-  const health = await server.inject({ method: 'GET', url: '/api/health' });
-  const status = await server.inject({ method: 'GET', url: '/api/auth/status' });
-  const badLogin = await server.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'smoke', password: 'wrong' } });
-  const spa = await server.inject({ method: 'GET', url: '/', headers: { accept: 'text/html' } });
-  const unknown = await server.inject({ method: 'GET', url: '/api/no-such-route' });
-  check('health is public', health.statusCode === 200);
-  check('auth status is public', status.statusCode === 200);
-  check('login is reachable without a token (wrong password: its own 401)', badLogin.statusCode === 401 && badLogin.json().error?.code === 'INVALID_CREDENTIALS', badLogin.body);
-  check('the SPA needs no token', spa.statusCode === 200 && spa.body.includes('spa'));
-  check('an unknown /api path is 404', unknown.statusCode === 404);
+  describe('still public', () => {
+    it('health is public', async () => {
+      expect((await server.inject({ method: 'GET', url: '/api/health' })).statusCode).toBe(200);
+    });
+    it('auth status is public', async () => {
+      expect((await server.inject({ method: 'GET', url: '/api/auth/status' })).statusCode).toBe(200);
+    });
+    it('login is reachable without a token (wrong password: its own 401)', async () => {
+      const badLogin = await server.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'smoke', password: 'wrong' } });
+      expect(badLogin.statusCode).toBe(401);
+      expect(badLogin.json().error?.code).toBe('INVALID_CREDENTIALS');
+    });
+    it('the SPA needs no token', async () => {
+      const spa = await server.inject({ method: 'GET', url: '/', headers: { accept: 'text/html' } });
+      expect(spa.statusCode).toBe(200);
+      expect(spa.body).toContain('spa');
+    });
+    it('an unknown /api path is 404', async () => {
+      expect((await server.inject({ method: 'GET', url: '/api/no-such-route' })).statusCode).toBe(404);
+    });
+  });
 
   // Positive control: a valid token gets through to the handler.
-  const login = await server.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'smoke', password: 'a-long-unguessable-smoke-password' } });
-  const token = (login.json() as { data?: { token?: string } }).data?.token;
-  const before = calls.length;
-  const allowed = await server.inject({ method: 'GET', url: '/api/instances', headers: { authorization: `Bearer ${token}` } });
-  check('a valid token reaches the handler', allowed.statusCode === 200 && calls.slice(before).includes('instanceService.listInstances'), `${allowed.statusCode}`);
-  const beforeWs = calls.length;
-  await wsFirstMessage(`${ws}?token=${token}`);
-  check('the terminal WebSocket with a valid token reaches the gateway', calls.slice(beforeWs).includes('terminalGateway.handleConnection'));
-} finally {
-  await server.close();
-}
+  describe('with a valid token', () => {
+    let token = '';
+    beforeAll(async () => {
+      token = await login(server, PASSWORD);
+    });
 
-if (failures.length > 0) {
-  console.log(`[smoke] ${failures.length} check(s) failed:\n  - ${failures.join('\n  - ')}`);
-  process.exit(1);
-}
-console.log('[smoke] all auth checks passed');
+    it('a valid token reaches the handler', async () => {
+      const { result, calls } = await callsDuring(() => server.inject({ method: 'GET', url: '/api/instances', headers: { authorization: `Bearer ${token}` } }));
+      expect(result.statusCode).toBe(200);
+      expect(calls).toContain('instanceService.listInstances');
+    });
+    it('the terminal WebSocket with a valid token reaches the gateway', async () => {
+      const { calls } = await callsDuring(() => wsFirstMessage(`ws://127.0.0.1:${port}/api/terminal/x?token=${token}`));
+      expect(calls).toContain('terminalGateway.handleConnection');
+    });
+  });
+});

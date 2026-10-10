@@ -33,7 +33,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 const isWindows = process.platform === 'win32';
-const ROOT = path.resolve(import.meta.dirname, '..');
+const ROOT = path.resolve(import.meta.dirname, '../..');
 const CACHE_DIR = path.join(ROOT, '.cache', 'pty-handles');
 const CWD_DIR = path.join(CACHE_DIR, 'cwd');
 const CENSUS_PS1 = path.join(CACHE_DIR, 'census.ps1');
@@ -216,7 +216,7 @@ async function workerMain(args) {
 // exercises the real adapter, parser, log writer and state machine. The
 // production adapter destroys conin itself on the real PTY exit.
 async function supervisorRounds(args, send, waitGo) {
-  const { createInstanceSupervisor } = await import('../dist/core/instance/instance-supervisor.js');
+  const { createInstanceSupervisor } = await import('../../dist/core/instance/instance-supervisor.js');
   const fixtureDir = path.join(CACHE_DIR, 'supervisor-fixture');
   mkdirSync(fixtureDir, { recursive: true });
   let supervisor = null;

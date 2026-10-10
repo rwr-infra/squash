@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
 
-const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 assert.equal(process.platform, 'win32');
 assert(Number(process.versions.node.split('.')[0]) >= 24);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -34,7 +34,7 @@ if (process.argv[2] === '--worker') {
   const originalExec = childProcess.execFile;
   childProcess.execFile = function (file, ...args) { if (file === 'taskkill') taskkills++; return Reflect.apply(originalExec, this, [file, ...args]); };
   syncBuiltinESMExports();
-  const { createPtyProcess } = await import('../dist/core/pty/pty-process-adapter.js');
+  const { createPtyProcess } = await import('../../dist/core/pty/pty-process-adapter.js');
   const options = { command: process.execPath, args: [path.join(work, 'child.cjs')], cwd: work, env: process.env, cols: 120, rows: 40, name: 'cleanup' };
   if (mode === 'version' || mode === 'shape') {
     assert.throws(() => createPtyProcess(options), mode === 'version' ? /requires node-pty/ : /compatibility artifact/);
