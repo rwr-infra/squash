@@ -58,20 +58,15 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # Every protected /api route refuses requests without a valid token,
-      # however the path is spelled (escapes, absolute-form request lines,
-      # WebSocket upgrades), and a new /api route must be registered as
-      # protected or explicitly public. Seconds; blocks the build and, on a
+      # Vitest (test/): the listen-address gate; every protected /api route
+      # refuses requests without a valid token, however the path is spelled
+      # (escapes, absolute-form request lines, WebSocket upgrades), and a new
+      # /api route must be registered as protected or explicitly public; the
+      # template store and /api/templates. Seconds; blocks the build and, on a
       # tag, the release.
-      - name: Smoke-test API authentication
-        run: npm run smoke:auth
-        timeout-minutes: 3
-
-      # The template store (seeding, transactional writes, a corrupt file left
-      # untouched) and /api/templates. Seconds.
-      - name: Smoke-test instance templates
-        run: npm run smoke:templates
-        timeout-minutes: 3
+      - name: Test
+        run: npm test
+        timeout-minutes: 10
 
       # The rwr_server.log line index against generated files (CRLF, UTF-8
       # across reads, long lines, truncation and replacement) and its /api

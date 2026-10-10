@@ -31,12 +31,16 @@
 - 本任务只做 A 类 + 基建 + 清理，B/C 另开任务（用户选定，2026-10-10）
 - 测试放在 `test/`，不和源码放一起 —— `tsconfig.build.json` 编译 `src/**`，测试放进 src 会进 dist 和发布包
 - 显式 `import { describe, it, expect } from 'vitest'`，不开 globals —— tsconfig `types: ["node"]` 不用改
-- **旧检查一条对应一个 `it`，测试名用旧 label 原文**；场景用"`beforeAll` 里执行动作并记录观察值，`it` 里断言"的写法。这样运行时的测试名清单就能和基线 PASS 清单逐条比对，证明没有丢检查。只有 label 依赖运行时数据、收集阶段无法生成的检查，才用 `expect.soft(…, label)`，并登记在例外清单里
+- **旧检查一条对应一个 `it`，测试名用旧 label 原文**。两种写法：确定性的流程（auth、templates、server-log）用"步骤式"——it 依次执行、每步先动作后断言、共享前面步骤的状态；时序敏感的 supervisor 用"记录后断言"——场景在 `beforeAll` 里原样运行并记录每条检查的结果，每个 it 断言一条记录（CP2 Conformance 指出原写法只描述了后者，2026-10-10）。这样运行时的测试名清单就能和基线 PASS 清单逐条比对，证明没有丢检查。只有 label 依赖运行时数据、收集阶段无法生成的检查，才用 `expect.soft(…, label)`，并登记在例外清单里
 - `integration` 项目串行跑文件 —— supervisor 对时序敏感，server-log 要测事件循环卡顿，原来的 smoke 也是串行的
 - 探针（D 类）不纳入测试框架 —— 它们的产出是测量数据和退出码 2（"残留见证"），不是 pass/fail 回归
 - `smoke:pty`（`pty-rwr-smoke.ts` + `src/smoke/`）删除，不保留（用户选定，2026-10-10）
 - `test/helpers/` 不在 CP1 预建，迁移时按实际需要创建（不写无使用者的抽象；CP1 Conformance 认可，2026-10-10）
 - unit 和 integration 两个 project 用 `sequence.groupOrder` 先后跑 —— Vitest 的 project 之间默认并发，`fileParallelism: false` 只管 project 内部（CP1 Diff Review，2026-10-10）
+- CI 在 CP2 就加 `npm test` 步骤（timeout 10），每迁移一个文件就删掉对应的旧步骤，而不是等到 CP6 —— 每个提交里 CI 引用的脚本都存在（CP2，2026-10-10）
+- 步骤式测试（一个场景内的 it 依次执行、共享状态）只能整文件运行，`-t` 单跑一步会因缺少前置状态而失败；在文件头注明。旧脚本本来就不能单跑，不算回归（CP2 Diff Review，2026-10-10）
+- 收集阶段（describe 回调体）不做有副作用的事：临时目录在 `beforeAll` 里懒创建（`useTempDir` 返回 getter），server 在 `beforeAll` 里创建（`createApiServer`）。原因：`-t` 把整个文件过滤掉时 Vitest 不执行任何 hook，fork 退出时也不触发 `exit` 事件，收集阶段建的目录会残留（已复现）（CP2，2026-10-10）
+- 迁移时 `JSON.stringify(a) === JSON.stringify(b)` 的检查保持逐字节比较，不改成 `toEqual`（后者忽略键顺序和 `undefined` 键，属于放宽）；字符串/数字数组之间的比较改成 `toEqual` 等价（CP2 Diff Review，2026-10-10）
 - 不测 `describeListenError`、不测 `src/index.ts` 里闸门的接线 —— 前者不是闸门；后者由 `smoke-release`（B 类，CI 中）覆盖，记为剩余风险
 
 ## Acceptance
@@ -68,15 +72,15 @@
 
 - [x] 1. 基建 + 单元测试：装 vitest，写 config / tsconfig / npm scripts；`bind-host`、`isWeaklyProtected` 单测；确认 `.js` → `.ts` 解析、forks 池、项目级串行配置可用
       证据：typecheck ✓；`npm test` → 2 files / 54 passed；临时探针（已删）：两个 integration 文件各用 node-pty spawn 子进程 → 通过、pid 不同、时间不重叠；变异（单测无旧脚本对应）：`isLoopbackHost` 接受 0.0.0.0 → 3 fail，去掉 `toLowerCase` → 1 fail，"token 挽救弱密码" → 3 fail；`npm audit` 告警集合与安装前相同。审查：Diff Review（project 间会并发 → 加 `sequence.groupOrder`；补 auth 组合）、Conformance（补组合；无确认缺陷） ｜ commit：见 git log
-- [ ] 2. 迁移 auth + templates（都是 `createHttpServer` + `inject`）；清单比对 + 变异；删除旧脚本
-      证据： ｜ commit：
+- [x] 2. 迁移 auth + templates（都是 `createHttpServer` + `inject`）；清单比对 + 变异；删除旧脚本
+      证据（最终版本）：typecheck ✓；`npm test` → 4 files / 383 passed；清单 auth 277/277、templates 52/52，缺失 0，例外（`expect.soft`）无；变异"按原始 URL 判断鉴权" → 旧 exit 1（119 FAIL）/ 新 119 failed；变异"`[]` 当作文件缺失" → 旧/新失败同样 2 条；撤销后 329 passed；`-t` 全过滤与单步运行后无临时目录残留。CI：`npm test` 步骤替换 auth/templates 两步。审查：Diff Review（`toEqual` 放宽 2 处 → 改回逐字节；收集阶段副作用 → `beforeAll` + `createApiServer`）、Conformance（无确认缺陷；BOM 改回转义；`-t` 注释改正） ｜ commit：见 git log
 - [ ] 3. 迁移 server-log（索引 + 路由 + 1M 行性能阈值）；清单比对 + 变异；删除旧脚本
       证据： ｜ commit：
 - [ ] 4. 迁移 supervisor（node-pty、假子进程、时序、残留进程清理）；清单比对 + 变异 + 失败后无残留；删除旧脚本
       证据： ｜ commit：
 - [ ] 5. 清理：删除 E 类，D 类移到 `scripts/diagnostics/` 并修正路径
       证据： ｜ commit：
-- [ ] 6. CI + CLAUDE.md：`release.yml` 合并为 `npm test`；CLAUDE.md diff 经用户确认；push（需授权）后 CI 三平台全绿
+- [ ] 6. CLAUDE.md + 跨平台：CLAUDE.md diff 经用户确认（CP2–CP5 期间 CLAUDE.md 仍指向已删除的 smoke 脚本）；用户阅读 `vitest.config.ts` 与 `release.yml` 的 diff；push（需授权）后 CI 三平台全绿。CI 改动本身已随 CP2–CP4 逐步完成
       证据： ｜ commit：
 
 ## Baseline（main @ d9f97f4，macOS，Node 24.15.0）
