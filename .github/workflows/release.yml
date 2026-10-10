@@ -91,9 +91,10 @@ jobs:
         run: npm run smoke:restart-policy
         timeout-minutes: 10
 
-      # Extracts release/<archive> for this OS into a temp dir, strips node from
-      # PATH and drives it through start.sh / start.bat: health, frontend, login,
-      # PTY round-trip, loopback-only default, weak-password refusal, clean exit.
+      # Vitest (test/e2e/release.test.ts). Extracts release/<archive> for this
+      # OS into a temp dir, strips node from PATH and drives it through
+      # start.sh / start.bat: health, frontend, login, PTY round-trip,
+      # loopback-only default, weak-password refusal, clean exit.
       - name: Smoke-test the release archive
         run: npm run smoke:release
         timeout-minutes: 10

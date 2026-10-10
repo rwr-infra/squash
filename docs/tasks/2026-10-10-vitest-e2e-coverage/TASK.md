@@ -40,8 +40,10 @@
 - 覆盖率只统计后端 `src/` —— 前端没有单测；e2e 跑的是子进程里的 `dist`，不计入（2026-10-10）
 - 范围追加：前端页面 title 从 `frontend` 改为 `squash`（`frontend/index.html`），单独提交 —— 用户要求（2026-10-10）
 - 四个 smoke 都按"记录后断言"迁移（`test/helpers/checks.ts`）：旧流程原样放进 beforeAll 跑一次，每条 check 对应一个同名测试。检查失败时抛 `CheckFailed`，相当于旧脚本的提前退出；后面的 label 记为 "not recorded"。非检查类错误（旧脚本会因此退出 1）和清理问题，由每个文件新增的唯一一条测试 "the flow ends without an error" 报告。清理由 helper 只调用一次；流程超时时由 afterAll（90 s）接手 —— 观察时机和旧脚本完全相同，与上次的 supervisor 迁移是同一思路（2026-10-10）
-- 去掉了 restart-policy 和 instance-form 写的 `.cache/*-evidence.json`，以及 "all N checks passed" 日志 —— 仓库里没有任何地方读它们，Vitest 报告可以替代；PASS/FAIL 行仍照旧打印（2026-10-10）
+- 去掉了 restart-policy 和 instance-form 写的 `.cache/*-evidence.json`，以及三个 smoke 末尾的汇总行（"all N checks passed" / "N check(s) failed" / "x/y passed"） —— 仓库里没有任何地方读它们，Vitest 报告可以替代；PASS/FAIL 行仍照旧打印（2026-10-10）
 - 变异判定的补充：旧脚本因异常退出时（不是 FAIL label，release 里是 `smoke run`），新测试对应的是 "the flow ends without an error" 报出同一个错误（2026-10-10）
+- release：归档路径从命令行参数改为 `SQUASH_RELEASE_ARCHIVE` —— npm script 不再透传参数给脚本。`tarCommand` 的类型由新增的 `scripts/node-runtime.d.mts` 手写声明，不在 typecheck 的直接范围内，与 `.mjs` 发生漂移时 typecheck 发现不了。第 1 段异常仍然不打断第 2、3 段（与旧脚本一致），最后再抛出（2026-10-10）
+- e2e 测试自己在 flow 里创建并删除临时目录，不用 `useTempDir()` —— 保留旧脚本的语义：restart-policy 失败时保留 fixture，release 删除失败只记日志；清理由 helper 统一调度（2026-10-10）
 
 ## Acceptance
 - 成功路径：
@@ -95,8 +97,16 @@
       - helper 的三条路径用一次性测试验证过
       - Diff Review 与 Conformance Review：没有 high/medium。修了这些 low：Node ≥ 24 前置检查补回；检查失败后的清理问题现在会进入报告；超时时与正在进行的清理竞争；afterAll 时限 30 s → 90 s；配置文件名会被 VS Code 插件匹配到；提示文字和无效注释。复核又指出 2 条 low，已修：超时恰好发生在清理期间时，清理问题由 afterAll 输出；一处注释。归档链接留到 CP6
       ｜ commit：见 git log（`test: move the restart-policy smoke to Vitest`）
-- [ ] 3. release → `test/e2e/release.test.ts`（归档路径改由 `SQUASH_RELEASE_ARCHIVE` 指定），删除旧脚本
-      证据： ｜ commit：
+- [x] 3. release → `test/e2e/release.test.ts`（归档路径改由 `SQUASH_RELEASE_ARCHIVE` 指定），删除旧脚本
+      证据（以下都在提交状态上运行，用的是重新打的归档）：
+      - typecheck 通过；`npm test` 646 条通过
+      - `npm run smoke:release`：34 passed，12.6 s；清单缺失 0，PASS 顺序一致；无残留进程和临时目录
+      - 归档变异：
+        - M1（`start.sh` 去掉 `exec`）：新旧失败的是同样 5 条，旧的 28 条 PASS 全部通过
+        - M2（`/api/health` 永不响应）：旧脚本是 `smoke run` FAIL 加 LAN 可达 FAIL；新测试是 LAN 可达失败，加上 "the flow ends without an error" 报出同一个 TimeoutError，另有 17 条 not recorded，旧的 15 条 PASS 全部通过
+      - 归档不存在时报 "archive not found … run `npm run package` first"；`-t` 过滤不留目录
+      - 两份审查都没有 high/medium，已修复的 low：清理时对已处理进程补杀可能误杀（PID 复用）、清理开始后流程仍可能启动 launcher、错误栈重复打印、跳过的 label 带 "undefined"、token 的写法（`String(token)`）
+      ｜ commit：见 git log（`test: move the release smoke to Vitest`）
 - [ ] 4. `test/helpers/cdp.ts` + instance-form → `test/e2e/instance-form.test.ts`，删除旧脚本
       证据： ｜ commit：
 - [ ] 5. server-log-ui → `test/e2e/server-log-ui.test.ts`，删除旧脚本
