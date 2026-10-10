@@ -6,6 +6,8 @@
 
 - **Linux 上真实 `rwr_server`**：只在 Windows Server 上人工验证过，包括 stopCommand `quit` + 空行。systemd（README 写了 `KillMode=mixed`、`TimeoutStopSec`）和 `docker stop`（README 写了 `--stop-timeout 20`）也都没有实测。
 - **`quit` 是否自动保存 profiles**：未确认。如果不会，rwr 的 stopCommand 应改为 `save_profiles`、`quit`、空行。注意各行按固定时间表发送，保存很慢时后面的回车可能被提前消耗。
+- **Windows 上读取运行中的 `rwr_server.log`**（中）：rwr 写日志时的文件共享模式未知，日志页可能读不到（会显示 503 `SERVER_LOG_UNREADABLE`）。另外，Windows Server 上一边搜索大日志一边重启 rwr 时，如果 rwr 是先删再建日志文件，我们持有的读句柄可能让删除挂起。重启后的"日志已重置"提示也只在 macOS 上用假服务验证过。见 [归档](archive/2026-10-10-server-log-viewer.md)。
+- **iOS 真机上的换行日志视图**（低）：惯性滚动跨窗口滑动只在 Chrome 触摸模拟里测过（`smoke:server-log-ui`）。
 - **Windows PTY 残余句柄（上游结构性，低）**：squash 适配层已在真实 PTY exit 后终止 node-pty 从不释放的 conout worker 线程（`9513bbf` 之后的补充清理），supervisor 路径每次自然退出的句柄保留从约 15 降到约 5（Thread/Event/Semaphore/IO 完成端口每轮增长已消失）。剩余约 5/轮（conhost 进程句柄 + 未关闭伪控制台内的管道句柄 + type-50）在 JS 边界不可释放：node-pty 退出监视线程在 JS 回调前移除 pty 记录，事后原生 kill 为空操作（conpty.cc L101-108，A/B 已证）。需上游修改退出线程；`npm run smoke:pty-handles` 保持 exit 2 作为长期见证。真实 RWR bad allocation 根因、长时/并发仍未验证。入口 `smoke:pty-handles`、`smoke:pty-lifecycle`、`smoke:pty-cleanup`、`smoke:pty-exit-window`。见 [归档](archive/2026-10-01-pty-exit-cleanup.md)、[归因](archive/2026-10-01-pty-handle-attribution.md) 和 [输入资源修复](tasks/2026-10-01-pty-cleanup/TASK.md)。
 
 ## 界面 / API
@@ -13,6 +15,10 @@
 - **Restart 请求会挂到旧进程退出**（低）：最长 `stopTimeoutMs + 5s`，最长约 10 分钟。经反向代理或 Firefox（响应超时 300s）时，页面可能误报失败，但重启仍会完成（README 已说明）。长期可以改为立即返回，结果经 WebSocket 推送。
 - **Restart 被取消或 spawn 失败时审计里没有记录**（低）：审计只在成功后记录。
 - **`stopping` 期间网页终端的键盘输入被丢弃**（低，既有）：`sendRawInput` 要求状态是 `running`，所以停服卡住时无法在网页上手动按回车，只能用 Force stop。
+- **重启前没有保留上一轮的 `rwr_server.log`**（中）：rwr 每次启动都会清空它，崩溃后按 `always` 自动重启时，崩溃前的日志在 `restartDelayMs` 后就没了。可以在 supervisor 启动进程前把它复制或改名为 `rwr_server.<时间>.log`（注意磁盘占用上限，以及 Windows 上文件可能被占用）。
+- **日志搜索匹配超过 10,000 条时不能继续**（低）：只能看到前 10,000 条（显示 "+"）；可以改为从当前视野起分页搜索。入口 `src/core/log/line-index.ts` 的 `search` 和 `frontend/src/components/LogSearchBar.tsx`。
+- **超长行 16 KiB 之后的匹配没有高亮**（低，README 已说明）：接口每行只返回前 16 KiB，计数和跳转仍然正确。
+- **日志首次建索引不能中止；同一实例的并发搜索不限流**（低）：前端发起新搜索前会中止旧的，但直接调接口可以并发多个全文扫描。
 - **编辑实例后终端尺寸回到 120×40**（低）：编辑会 `dispose()` 旧 supervisor 并新建一个，新的没有记住尺寸；已打开的终端页仍连着旧对象，要重新进入页面。
 
 ## 安全

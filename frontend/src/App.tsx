@@ -4,6 +4,7 @@ import { Spin, message } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import InstanceListPage from './pages/InstanceListPage';
 import TerminalPage from './pages/TerminalPage';
+import ServerLogPage from './pages/ServerLogPage';
 import LoginPage from './pages/LoginPage';
 import { getAuthStatus, getToken, UNAUTHORIZED_EVENT } from './services/apiService';
 
@@ -53,6 +54,7 @@ function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/" element={<RequireAuth><InstanceListPage /></RequireAuth>} />
       <Route path="/terminal/:instanceId" element={<RequireAuth><TerminalPage /></RequireAuth>} />
+      <Route path="/server-log/:instanceId" element={<RequireAuth><ServerLogPage /></RequireAuth>} />
     </Routes>
   );
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Button, Tag, Space, message, Spin, Input, Grid, ConfigProvider, Popconfirm, theme } from 'antd';
-import { ArrowLeftOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, ExpandOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, ExpandOutlined, FileTextOutlined } from '@ant-design/icons';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -233,6 +233,7 @@ const TerminalPage = () => {
           </Popconfirm>
           <Button size="small" icon={<SyncOutlined />} disabled={(stopping && !restartPending) || stopPending} onClick={handleRestart} loading={restartPending} title="Restart">{isMobile ? null : 'Restart'}</Button>
           <Button size="small" icon={<ExpandOutlined />} onClick={handleResize} title="Fit">{isMobile ? null : 'Fit'}</Button>
+          <Button size="small" icon={<FileTextOutlined />} onClick={() => navigate(`/server-log/${encodeURIComponent(instanceId)}`)} title="View rwr_server.log">{isMobile ? null : 'Log'}</Button>
         </Space>
       </div>
 

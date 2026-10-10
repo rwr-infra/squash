@@ -167,6 +167,7 @@ const checkRoutes = async () => {
     terminalService: {} as ApiDeps['terminalService'],
     terminalGateway: {} as ApiDeps['terminalGateway'],
     auditService: { record: async () => {} } as unknown as ApiDeps['auditService'],
+    serverLogService: {} as ApiDeps['serverLogService'],
     templateService
   });
 

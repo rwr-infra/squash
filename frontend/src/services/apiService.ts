@@ -286,3 +286,40 @@ export const fetchAudit = async (limit = 100): Promise<AuditEntry[]> => {
   const res = await fetch(`${API_BASE}/audit?limit=${limit}`, { headers: authHeaders() });
   return unwrap(res);
 };
+
+// --- rwr_server.log ---
+
+// What the server's index covers. `generation` changes whenever the file was
+// emptied or replaced (rwr_server clears it on every start): line numbers
+// and search results from another generation describe other content. An
+// append can complete a partial last line: read it again when `size` grows.
+export type ServerLogSnapshot = {
+  exists: boolean;
+  size: number;
+  lineCount: number;
+  generation: string;
+  modifiedAt?: string;
+};
+
+export type ServerLogInfo = ServerLogSnapshot & { path: string };
+export type ServerLogLines = ServerLogSnapshot & { from: number; lines: string[] };
+export type ServerLogSearchResult = ServerLogSnapshot & { matches: number[]; truncated: boolean };
+
+const serverLogUrl = (id: string) => `${API_BASE}/instances/${encodeURIComponent(id)}/server-log`;
+
+export const fetchServerLogInfo = async (id: string): Promise<ServerLogInfo> => {
+  const res = await fetch(serverLogUrl(id), { headers: authHeaders() });
+  return unwrap(res);
+};
+
+export const fetchServerLogLines = async (id: string, from: number, count: number, signal?: AbortSignal): Promise<ServerLogLines> => {
+  const res = await fetch(`${serverLogUrl(id)}/lines?from=${from}&count=${count}`, { headers: authHeaders(), signal });
+  return unwrap(res);
+};
+
+// Matching line numbers (0-based) over the whole file, at most 10,000.
+export const searchServerLog = async (id: string, query: string, caseSensitive: boolean, signal?: AbortSignal): Promise<ServerLogSearchResult> => {
+  const params = new URLSearchParams({ q: query, caseSensitive: String(caseSensitive) });
+  const res = await fetch(`${serverLogUrl(id)}/search?${params}`, { headers: authHeaders(), signal });
+  return unwrap(res);
+};

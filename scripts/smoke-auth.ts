@@ -59,7 +59,8 @@ const deps = {
   terminalService: stub('terminalService'),
   terminalGateway: stub('terminalGateway'),
   auditService: stub('auditService'),
-  templateService: stub('templateService')
+  templateService: stub('templateService'),
+  serverLogService: stub('serverLogService')
 } as unknown as ApiDeps;
 const server = await createHttpServer(deps);
 
@@ -76,6 +77,9 @@ const PROTECTED_ROUTES: ReadonlyArray<readonly [string, string, unknown?]> = [
   ['POST', '/api/instances/:id/restart'],
   ['POST', '/api/instances/:id/command', { command: 'quit' }],
   ['GET', '/api/instances/:id/logs/tail'],
+  ['GET', '/api/instances/:id/server-log'],
+  ['GET', '/api/instances/:id/server-log/lines'],
+  ['GET', '/api/instances/:id/server-log/search'],
   ['GET', '/api/audit'],
   ['GET', '/api/auth/me'],
   ['POST', '/api/auth/logout'],

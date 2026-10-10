@@ -219,7 +219,9 @@ try {
   check('failed save retains editable dialog and values', await modalVisible() && await evaluate(`document.getElementById('name').value === 'beta edited'`));
   check('failed save does not persist', (await readBack(base, 'beta')).name === 'beta');
   await input('name', 'beta retry'); await clickSave(); await waitFor(() => pending.length, 'retry request'); await saved();
-  check('retry succeeds and updates list', (await readBack(base, 'beta')).name === 'beta retry' && await evaluate(`document.body.innerText.includes('beta retry')`));
+  // The list refetch can land after the dialog closes.
+  const listed = await waitFor(() => evaluate(`document.body.innerText.includes('beta retry')`), 'list shows the retry').then(() => true, () => false);
+  check('retry succeeds and updates list', (await readBack(base, 'beta')).name === 'beta retry' && listed);
 
   await evaluate(`Array.from(document.querySelectorAll('button')).find(el=>el.innerText==='Create Instance').click()`);
   await waitFor(modalVisible, 'create dialog');

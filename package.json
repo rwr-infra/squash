@@ -20,6 +20,8 @@
     "smoke:restart-policy": "node scripts/smoke-restart-policy.mjs",
     "smoke:instance-form": "node scripts/smoke-instance-form.mjs",
     "smoke:templates": "tsx scripts/smoke-templates.ts",
+    "smoke:server-log": "tsx scripts/smoke-server-log.ts",
+    "smoke:server-log-ui": "node scripts/smoke-server-log-ui.mjs",
     "smoke:pty-exit-window": "node scripts/smoke-pty-exit-window.mjs",
     "smoke:pty-lifecycle": "node scripts/smoke-pty-lifecycle.mjs",
     "smoke:pty-cleanup": "node scripts/smoke-pty-cleanup.mjs",

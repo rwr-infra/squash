@@ -5,7 +5,7 @@ import { RestartInfo } from '../components/RestartInfo';
 import { InstanceFormFields, ResetFormOnMount } from '../components/InstanceFormFields';
 import { TemplateModal, type TemplateTarget } from '../components/TemplateModal';
 import { TemplatesDrawer } from '../components/TemplatesDrawer';
-import { ReloadOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, DeleteOutlined, PlusOutlined, ApartmentOutlined, EditOutlined, HistoryOutlined, LogoutOutlined, SaveOutlined, SnippetsOutlined } from '@ant-design/icons';
+import { ReloadOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, DeleteOutlined, PlusOutlined, ApartmentOutlined, EditOutlined, HistoryOutlined, LogoutOutlined, SaveOutlined, SnippetsOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query';
 import type { InstanceStatus, CreateInstanceRequest, InstanceWithRuntime, AuditEntry, InstanceTemplate } from '../services/apiService';
 import { fetchInstances, createInstance, updateInstance, startInstance, stopInstance, restartInstance, deleteInstance, fetchAudit, fetchTemplates, getAuthStatus, logout } from '../services/apiService';
@@ -227,6 +227,7 @@ const InstanceListPage = () => {
     return (
       <Space wrap>
         <Button size={size} icon={<ApartmentOutlined />} onClick={() => navigate(`/terminal/${record.config.id}`)} title="Open Terminal" />
+        <Button size={size} icon={<FileTextOutlined />} onClick={() => navigate(`/server-log/${encodeURIComponent(record.config.id)}`)} title="View rwr_server.log" />
         <Button size={size} icon={<PlayCircleOutlined />} disabled={running || stopping} onClick={() => startMut.mutate(record.config.id)} title="Start" />
         {/* Force stop asks first: a double click on Stop would otherwise land
             on it once the first request has returned. */}

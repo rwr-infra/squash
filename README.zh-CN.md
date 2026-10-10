@@ -19,6 +19,7 @@
 - **多实例管理**——以独立工作目录运行多个游戏服务器实例
 - **实时终端流**——基于 WebSocket + xterm.js 的终端
 - **实例生命周期管理**——启动、停止、重启、删除实例
+- **rwr_server.log 查看器**——在浏览器里查看实例的 `rwr_server.log`,不论多大:虚拟滚动、跟随新行、Ctrl+F 全文件搜索(见[rwr_server.log 查看器](#rwr_serverlog-查看器))
 - **实例模板**——把常用设置(可执行文件、停止命令、重启策略等)存为模板,新建实例时一键预填;自带 RWR 与 SteamCMD 模板(见[实例模板](#实例模板))
 - **有上限的优雅停止**——按实例配置控制台停止命令(如 `quit`)、停止超时后强制结束、重启会等旧进程退出、squash 退出前先停掉所有实例(见[停止](#停止))
 - **崩溃自动重启**——按实例可选开启,带指数退避、最大重试次数上限,以及在稳定运行一段时间后重置计数器的冷却机制
@@ -184,6 +185,27 @@ cp .env.example .env
 删除后不会再生成。如果文件无效(JSON 错误、不是
 `{ id, name, values }` 的列表、id 重复),squash 会拒绝启动且不改动该文件——请修正或删除它。
 
+### rwr_server.log 查看器
+
+`rwr_server` 会在其工作目录写自己的日志 `rwr_server.log`,并在每次启动时清空它。实例行上的
+文件图标按钮(以及终端页的 **Log** 按钮)会打开 `/server-log/<实例 ID>`:
+
+- **不论多大。** 服务端按行建立索引,页面只取可见范围内的行,几百万行的日志也能流畅滚动。超过
+  16 KiB 的行会被截断并标注。
+- **Wrap**(手机上默认开启)让长行折行显示,不再横向滚动;此时照常用触摸滚动,日志下方的滑块可以
+  跳到文件任意位置。选择会按浏览器记住。
+- **跟随新行**:停在末尾时自动显示新内容(每 2 秒检查一次);向上翻时保持不动。**Follow**
+  开关和 **End** 按钮可恢复跟随。
+- **Ctrl+F**(macOS 上为 **⌘F**)或搜索按钮打开查找栏,在服务端搜索整个文件(浏览器自带的查找只能
+  看到屏幕上的行):纯文本匹配,默认不区分大小写,打开 **Aa** 后区分。**Search**(或回车)找到当前
+  位置之后的第一个匹配,之后 Enter / F3 / ↓ 跳到下一个,Shift+Enter / Shift+F3 跳到上一个,Esc 关闭。只列出前 10,000 条匹配(显示为
+  "10,000+"),超出部分查找栏会提示——请把搜索词写得更具体。有新行时 **Search again** 会把它们
+  也搜进来。被截断的长行里,16 KiB 之后的匹配能被找到,但截掉的部分不会显示。
+- `rwr_server` 重新启动并清空文件时,页面会提示并显示新文件。文件不存在(服务器还没运行过)时会
+  明确提示。
+
+路径固定为 `<工作目录>/rwr_server.log`;查看器只读取它。
+
 ### 便携发行包(无需 Node.js)
 
 每个 [GitHub Release](https://github.com/rwr-infra/squash/releases) 为每个平台提供一个归档。
@@ -325,6 +347,9 @@ curl http://localhost:3000/api/instances
 | POST | `/api/templates` | 是 | 创建模板:`{ name, values }`(名称不区分大小写重复时返回 409) |
 | PUT | `/api/templates/:id` | 是 | 整体替换模板:`{ name, values }`(改成已被占用的名称时返回 409,不存在时返回 404) |
 | DELETE | `/api/templates/:id` | 是 | 删除模板(不存在时返回 404) |
+| GET | `/api/instances/:id/server-log` | 是 | 实例的 `rwr_server.log`:`{ exists, size, lineCount, generation, modifiedAt, path }`(文件被清空或替换时 `generation` 会变) |
+| GET | `/api/instances/:id/server-log/lines` | 是 | 读取行:`?from=`(从 0 开始)`&count=`(1–1000,默认 200),附带同样的快照字段 |
+| GET | `/api/instances/:id/server-log/search` | 是 | 搜索 `?q=`(1–256 个字符,不能含换行)`&caseSensitive=true\|false` 的匹配行号;最多 10,000 条(更多时 `truncated` 为真) |
 
 「鉴权:是」的接口在配置了登录(或 `AUTH_TOKEN`)时,需要 `Authorization: Bearer <token>`。
 
