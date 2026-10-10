@@ -70,9 +70,10 @@ jobs:
       # `stopped` with no auto-restart, a crash is still `crashed` and
       # restarted, stops, restarts and force-kills. A few minutes at most,
       # before Package so a regression fails before a 20-minute build — and,
-      # on a tag, blocks the release.
+      # on a tag, blocks the release. Measures coverage of src/ as it goes.
       - name: Test
-        run: npm test
+        id: test
+        run: npm run test:coverage
         timeout-minutes: 10
 
       # build (server + frontend) + assemble the portable bundle for THIS OS.
@@ -82,16 +83,18 @@ jobs:
         run: npm run package
         timeout-minutes: 20
 
-      # Requires the compiled server and frontend produced by Package. Exercises
-      # real HTTP/WS + PTY restart policies in isolated fixtures, including the
-      # full 60-second stable-run reset. Failure blocks artifact upload/release.
+      # Vitest (test/e2e/restart-policy.test.ts, test/e2e/e2e.config.ts). Requires
+      # the compiled server and frontend produced by Package. Exercises real
+      # HTTP/WS + PTY restart policies in isolated fixtures, including the full
+      # 60-second stable-run reset. Failure blocks artifact upload/release.
       - name: Smoke-test restart policies end to end
         run: npm run smoke:restart-policy
         timeout-minutes: 10
 
-      # Extracts release/<archive> for this OS into a temp dir, strips node from
-      # PATH and drives it through start.sh / start.bat: health, frontend, login,
-      # PTY round-trip, loopback-only default, weak-password refusal, clean exit.
+      # Vitest (test/e2e/release.test.ts). Extracts release/<archive> for this
+      # OS into a temp dir, strips node from PATH and drives it through
+      # start.sh / start.bat: health, frontend, login, PTY round-trip,
+      # loopback-only default, weak-password refusal, clean exit.
       - name: Smoke-test the release archive
         run: npm run smoke:release
         timeout-minutes: 10
@@ -104,6 +107,28 @@ jobs:
             release/*.zip
             release/*.tar.gz
           if-no-files-found: error
+
+      # The Test step's coverage of src/, flagged with the OS; Codecov merges
+      # the three (codecov.yml); also when a later step failed, so that each
+      # commit gets all three. Last, once the archive is built and uploaded:
+      # the action runs a downloaded CLI and puts the token in GITHUB_ENV, so
+      # no later step sees either. Branch pushes only — a tag's commit was
+      # uploaded when its branch was pushed. fail_ci_if_error stops the
+      # action's wrapper from running a CLI that failed its signature or
+      # checksum check; continue-on-error keeps a Codecov problem (no token,
+      # an outage) from failing the job. CODECOV_TOKEN is an organization
+      # secret. Pinned by commit: a third-party action handed a secret.
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() && steps.test.outcome == 'success' && github.ref_type == 'branch' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        continue-on-error: true
+        timeout-minutes: 5
+        with:
+          files: ./coverage/lcov.info
+          disable_search: true
+          flags: ${{ runner.os }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
 
   release:
     needs: package

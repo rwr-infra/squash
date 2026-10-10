@@ -5,6 +5,13 @@ export default defineConfig({
     // Child processes, not worker threads: node-pty is a native addon, and the
     // supervisor tests spawn and signal real processes.
     pool: 'forks',
+    // `npm run test:coverage`: the backend source, also the files no test
+    // imports. lcov (coverage/lcov.info) is what CI uploads to Codecov.
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      reporter: ['text', 'lcov']
+    },
     projects: [
       {
         extends: true,

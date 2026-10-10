@@ -36,20 +36,21 @@
 
 - **日志体验**（低）：`src/api/http/auth.ts` 的 `pino({ name: 'auth' })` 没有设 ISO 时间戳，和 `src/index.ts` 的格式不一致；便携包控制台输出的是原始 JSON，对双击运行的用户不友好。注意三点：
   - `pino-pretty` 是 devDependency，而打包用的是 `npm ci --omit=dev`；
-  - `scripts/smoke-release.mjs` 按 JSON 解析启动日志；
+  - `test/e2e/release.test.ts` 按 JSON 解析启动日志；
   - `src/index.ts` 的 logger 必须保留显式的容错 destination（见 CLAUDE.md），改成美化输出时不能丢掉这一点。
 - **Dockerfile 的 `FROM node:24-slim` 不跟随 `.node-version`**（低-中）：一共 4 处。
 - **`start.sh` 经符号链接调用时找不到 `runtime/`**（低）。
 - **CI 只在 `push` 时触发**（低）：没有 `pull_request` 触发，外部 fork 的 PR 不会跑检查（目前没有外部贡献者）。
-- **测试迁移的后续**（低）：
-  - `smoke-restart-policy`、`smoke-release` 迁入 Vitest 的 e2e project（依赖构建产物，在 Package 之后跑）；
-  - 浏览器 smoke（`smoke-instance-form`、`smoke-server-log-ui`）改用 Playwright Test（使用系统 Chrome），替换两份手写的 CDP；
-  - 前端单测（jsdom）。
+- **测试的后续**（低）：
+  - 浏览器测试（`smoke:instance-form`、`smoke:server-log-ui`）只在本地跑。CI 的三个 runner 上都有 Chrome，可以接入，但要先看计时类检查在 runner 上的余量，比如首屏 2 s。手写的 CDP 客户端（`test/helpers/cdp.ts`）也可以换成 Playwright；这次迁移有意 1:1 保留了它；
+  - 前端单测（jsdom）和前端覆盖率；
+  - Codecov 的覆盖率只来自 `npm test`。e2e 在子进程里跑 `dist/`，所以 `src/index.ts`（0%）这类入口代码不计入。可以用 `NODE_V8_COVERAGE` 加 sourcemap 收集子进程的覆盖率。
 
-  约定见 CLAUDE.md 的 Tests 小节和 [归档](archive/2026-10-10-vitest-migration.md)。
+  约定见 CLAUDE.md 的 Tests 小节，以及归档 [Vitest 迁移](archive/2026-10-10-vitest-migration.md)、[e2e 迁移与覆盖率](archive/2026-10-10-vitest-e2e-coverage.md)。
 - **测试盲点**（低）：
   - `src/index.ts` 里闸门的接线（`resolveBindHost(process.env.HOST, isWeaklyProtected)`）只有 `smoke:release` 覆盖；
-  - supervisor 的 stop/dispose 场景看不到不发通知的状态回写（继承自旧 smoke）。
+  - supervisor 的 stop/dispose 场景看不到不发通知的状态回写（继承自旧 smoke）；
+  - release 的 "terminal WebSocket connects" 只看 `onopen`，而服务端对无效 token 是先升级、再关闭连接，所以这条对坏 token 也会通过。后面的 PTY round-trip 能兜住（继承自旧 smoke）。
   - "large: reading at the end is fast (< 100 ms)" 抓不到读取退化：在 Mac 上，正常读取末尾不到 1 ms，从头扫描约 65 ms，仍在阈值以内（继承自旧 smoke）。可以改为与建索引耗时或读开头的耗时相比较。
 - **`tsc` 不清理 `dist/`**（低）：在旧工作区直接 `npm run package`，可能把过期文件（例如以前构建的 `dist/smoke/`）打进包。可以让 `build:server` 先清空 dist。CI 是全新 checkout，不受影响。
 
