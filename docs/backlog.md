@@ -8,7 +8,7 @@
 - **`quit` 是否自动保存 profiles**：未确认。如果不会，rwr 的 stopCommand 应改为 `save_profiles`、`quit`、空行。注意各行按固定时间表发送，保存很慢时后面的回车可能被提前消耗。
 - **Windows 上读取运行中的 `rwr_server.log`**（中）：rwr 写日志时的文件共享模式未知，日志页可能读不到（会显示 503 `SERVER_LOG_UNREADABLE`）。另外，Windows Server 上一边搜索大日志一边重启 rwr 时，如果 rwr 是先删再建日志文件，我们持有的读句柄可能让删除挂起。重启后的"日志已重置"提示也只在 macOS 上用假服务验证过。见 [归档](archive/2026-10-10-server-log-viewer.md)。
 - **iOS 真机上的换行日志视图**（低）：惯性滚动跨窗口滑动只在 Chrome 触摸模拟里测过（`smoke:server-log-ui`）。
-- **Windows PTY 残余句柄（上游结构性，低）**：squash 适配层已在真实 PTY exit 后终止 node-pty 从不释放的 conout worker 线程（`9513bbf` 之后的补充清理），supervisor 路径每次自然退出的句柄保留从约 15 降到约 5（Thread/Event/Semaphore/IO 完成端口每轮增长已消失）。剩余约 5/轮（conhost 进程句柄 + 未关闭伪控制台内的管道句柄 + type-50）在 JS 边界不可释放：node-pty 退出监视线程在 JS 回调前移除 pty 记录，事后原生 kill 为空操作（conpty.cc L101-108，A/B 已证）。需上游修改退出线程；`npm run smoke:pty-handles` 保持 exit 2 作为长期见证。真实 RWR bad allocation 根因、长时/并发仍未验证。入口 `smoke:pty-handles`、`smoke:pty-lifecycle`、`smoke:pty-cleanup`、`smoke:pty-exit-window`。见 [归档](archive/2026-10-01-pty-exit-cleanup.md)、[归因](archive/2026-10-01-pty-handle-attribution.md) 和 [输入资源修复](tasks/2026-10-01-pty-cleanup/TASK.md)。
+- **Windows PTY 残余句柄（上游结构性，低）**：squash 适配层已在真实 PTY exit 后终止 node-pty 从不释放的 conout worker 线程（`9513bbf` 之后的补充清理），supervisor 路径每次自然退出的句柄保留从约 15 降到约 5（Thread/Event/Semaphore/IO 完成端口每轮增长已消失）。剩余约 5/轮（conhost 进程句柄 + 未关闭伪控制台内的管道句柄 + type-50）在 JS 边界不可释放：node-pty 退出监视线程在 JS 回调前移除 pty 记录，事后原生 kill 为空操作（conpty.cc L101-108，A/B 已证）。需上游修改退出线程；`npm run smoke:pty-handles` 保持 exit 2 作为长期见证。真实 RWR bad allocation 根因、长时/并发仍未验证。入口 `smoke:pty-handles`、`smoke:pty-lifecycle`、`smoke:pty-cleanup`、`smoke:pty-exit-window`。见 [归档](archive/2026-10-01-pty-exit-cleanup.md)、[归因](archive/2026-10-01-pty-handle-attribution.md) 和 [输入资源修复](archive/2026-10-01-pty-cleanup.md)。
 
 ## 界面 / API
 
