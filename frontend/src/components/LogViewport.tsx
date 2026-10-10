@@ -12,10 +12,13 @@ export const ROW_HEIGHT = 18;
 const MAX_SPACER_PX = 8_000_000;
 const OVERSCAN_ROWS = 20;
 
+// Where scrollToLine puts the line: a third from the top (a search match,
+// with context above it), or at the top (a position picked by the reader).
+export type ScrollAlign = 'third' | 'top';
+
 export type LogViewportHandle = {
-  // Scrolls `line` (0-based) into view, a third from the top, and stops
-  // following.
-  scrollToLine: (line: number) => void;
+  // Scrolls `line` (0-based) into view and stops following.
+  scrollToLine: (line: number, align?: ScrollAlign) => void;
   // Keeps the view at the end once following stops (else it would return to
   // where the user last scrolled).
   holdEnd: () => void;
@@ -23,7 +26,8 @@ export type LogViewportHandle = {
   focus: () => void;
 };
 
-type Props = {
+// Shared with WrappedLogViewport, which takes the same props.
+export type LogViewportProps = {
   ref?: Ref<LogViewportHandle>;
   lineCount: number;
   // A line's text, or undefined while it loads.
@@ -37,6 +41,9 @@ type Props = {
   renderLine?: (text: string) => ReactNode;
   // Highlighted row, e.g. the current search match.
   activeLine?: number;
+  // The line to show at the top on mounting, unless following (the
+  // reader's place when switching between wrapped and unwrapped lines).
+  initialLine?: number;
 };
 
 type InputHandlers = {
@@ -47,13 +54,13 @@ type InputHandlers = {
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-export const LogViewport = ({ ref, lineCount, getLine, onRangeChange, follow, onFollowChange, renderLine, activeLine }: Props) => {
+export const LogViewport = ({ ref, lineCount, getLine, onRangeChange, follow, onFollowChange, renderLine, activeLine, initialLine }: LogViewportProps) => {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [viewportHeight, setViewportHeight] = useState(0);
   // Where the user put the view (first visible line, fractional). Following
   // overrides it with the end; the native scroll position only maps onto
   // what is shown.
-  const [topLine, setTopLine] = useState(0);
+  const [topLine, setTopLine] = useState(initialLine ?? 0);
   // The shown top line as of the latest move, for input handlers that run
   // several times before the next render (wheel, touch).
   const topRef = useRef(0);
@@ -91,8 +98,8 @@ export const LogViewport = ({ ref, lineCount, getLine, onRangeChange, follow, on
   const moveBy = (lines: number) => moveTo(topRef.current + lines);
 
   useImperativeHandle(ref, () => ({
-    scrollToLine: (line) => {
-      const next = clamp(line - visibleRows / 3, 0, maxTop);
+    scrollToLine: (line, align = 'third') => {
+      const next = clamp(align === 'top' ? line : line - visibleRows / 3, 0, maxTop);
       topRef.current = next;
       setTopLine(next);
       onFollowChange(false);
@@ -222,7 +229,7 @@ export const LogViewport = ({ ref, lineCount, getLine, onRangeChange, follow, on
     onRangeChange(from, to, first);
   }, [from, to, first, onRangeChange]);
 
-  const gutterWidth = `${String(Math.max(1, lineCount)).length + 1}ch`;
+  const gutterWidth = `${String(Math.max(1, lineCount)).length}ch`;
   // The rows sit at the scroll position, shifted by the top line's fraction
   // and by the overscan rows above it.
   const offset = scrollTopFor(shownTop) - (shownTop - from) * ROW_HEIGHT;

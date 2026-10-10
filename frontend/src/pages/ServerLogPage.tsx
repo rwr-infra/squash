@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ApiError, fetchServerLogInfo, fetchServerLogLines } from '../services/apiService';
 import type { ServerLogInfo } from '../services/apiService';
 import { LogViewport } from '../components/LogViewport';
+import { WrappedLogViewport } from '../components/WrappedLogViewport';
 import type { LogViewportHandle } from '../components/LogViewport';
 import { LogSearchBar } from '../components/LogSearchBar';
 import type { LogSearchHandle } from '../components/LogSearchBar';
@@ -30,6 +31,34 @@ type Block = {
   readonly lineCount: number;
 };
 
+// The reader's choice to wrap lines, if they made one (else: wrap on narrow
+// screens). Browser storage can be unavailable; then nothing is remembered.
+const WRAP_KEY = 'squash.serverLog.wrap';
+const readWrap = (): boolean | undefined => {
+  try {
+    const value = localStorage.getItem(WRAP_KEY);
+    return value === null ? undefined : value === 'true';
+  } catch {
+    return undefined;
+  }
+};
+const saveWrap = (wrap: boolean) => {
+  try {
+    localStorage.setItem(WRAP_KEY, String(wrap));
+  } catch {
+    // Not remembered.
+  }
+};
+
+// A touch screen (a phone in either orientation, a tablet): wrap by default.
+const isTouchScreen = () => {
+  try {
+    return window.matchMedia('(pointer: coarse)').matches;
+  } catch {
+    return false;
+  }
+};
+
 const isNotFound = (error: unknown) => error instanceof ApiError && error.code === 'INSTANCE_NOT_FOUND';
 
 // Whether a block can stand for the file as `info` describes it. A block
@@ -52,6 +81,12 @@ const ServerLogPage = () => {
   const viewportRef = useRef<LogViewportHandle>(null);
   const searchRef = useRef<LogSearchHandle>(null);
   const [follow, setFollow] = useState(true);
+  const [wrapChoice, setWrapChoice] = useState(readWrap);
+  // Wrapped lines on phones and narrow windows: no sideways scrolling there.
+  const wrap = wrapChoice ?? (isMobile || isTouchScreen());
+  // The line in view when the reader switched Wrap, for the other viewport
+  // to open at (undefined while following: it opens at the end).
+  const [switchedAt, setSwitchedAt] = useState<number | undefined>();
   // When this page saw the log emptied or replaced (rwr_server restarted).
   const [resetAt, setResetAt] = useState<Date | undefined>();
   const [blocks, setBlocks] = useState<ReadonlyMap<number, Block>>(new Map());
@@ -198,6 +233,21 @@ const ServerLogPage = () => {
             <Tooltip title="Find (Ctrl+F / ⌘F)">
               <Button size="small" icon={<SearchOutlined />} disabled={!info?.exists} onClick={() => searchRef.current?.open()} aria-label="Find in rwr_server.log" />
             </Tooltip>
+            <Tooltip title="Wrap long lines (no sideways scrolling)">
+              <Space size={4}>
+                <Switch
+                  size="small"
+                  checked={wrap}
+                  onChange={(on) => {
+                    setSwitchedAt(follow ? undefined : rangeRef.current.first);
+                    setWrapChoice(on);
+                    saveWrap(on);
+                  }}
+                  aria-label="Wrap long lines"
+                />
+                <span style={{ fontSize: 12 }}>Wrap</span>
+              </Space>
+            </Tooltip>
             <Tooltip title="Keep showing the newest lines">
               <Space size={4}>
                 <Switch size="small" checked={follow} onChange={(on) => { if (!on) viewportRef.current?.holdEnd(); setFollow(on); }} aria-label="Follow new lines" />
@@ -251,18 +301,20 @@ const ServerLogPage = () => {
             onJump={(line) => viewportRef.current?.scrollToLine(line)}
             onClose={() => viewportRef.current?.focus()}
           >
-            {(search) => (
-              <LogViewport
-                ref={viewportRef}
-                lineCount={info.lineCount}
-                getLine={getLine}
-                onRangeChange={onRangeChange}
-                follow={follow}
-                onFollowChange={setFollow}
-                renderLine={search.renderLine}
-                activeLine={search.activeLine}
-              />
-            )}
+            {(search) => {
+              const props = {
+                ref: viewportRef,
+                lineCount: info.lineCount,
+                getLine,
+                onRangeChange,
+                follow,
+                onFollowChange: setFollow,
+                renderLine: search.renderLine,
+                activeLine: search.activeLine,
+                initialLine: switchedAt
+              };
+              return wrap ? <WrappedLogViewport {...props} /> : <LogViewport {...props} />;
+            }}
           </LogSearchBar>
         )}
       </div>

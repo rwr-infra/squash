@@ -212,6 +212,9 @@ terminal page) opens it at `/server-log/<instance-id>`:
 - **Any size.** The server indexes the file by line and the page fetches only the
   lines in view, so logs of millions of lines scroll smoothly. Lines longer than
   16 KiB are cut and marked.
+- **Wrap** (on by default on phones) wraps long lines instead of scrolling sideways;
+  you then scroll by touch as usual, and a slider under the log jumps anywhere in the
+  file. The choice is remembered per browser.
 - **Follows new lines** while you are at the end (checked every 2 seconds); scroll up
   and it stays put. The **Follow** switch and **End** button bring it back.
 - **Ctrl+F** (**⌘F** on macOS) or the search button opens a find bar that searches the

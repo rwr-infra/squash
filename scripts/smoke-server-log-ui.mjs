@@ -22,6 +22,10 @@
 //     far match on a long line scrolls into view sideways; new lines offer
 //     "Search again"; Esc closes from anywhere in the bar and returns the
 //     keyboard to the log
+//   - on a phone-sized touch screen lines wrap by default (no sideways
+//     scrolling); the view follows the end, keeps still while its window of
+//     lines slides, and the position slider, search and Home/End reach any
+//     line; the Wrap switch is remembered
 //   - the file emptied and rewritten: a notice, the new content, following
 //     its end; deleted: "No rwr_server.log yet"; re-created: back, without a
 //     notice; unknown instance: an error
@@ -76,7 +80,12 @@ const { ServerLogService } = await import('../dist/services/server-log-service.j
 const smallDir = path.join(work, 'small');
 fs.mkdirSync(smallDir);
 fs.writeFileSync(path.join(smallDir, 'rwr_server.log'), Array.from({ length: 3000 }, (_, i) => `small ${i}`).join('\n') + '\n');
-const dirs = { demo: instanceDir, small: smallDir };
+// A third, with long lines (~400 characters) that wrap on a phone.
+const wideDir = path.join(work, 'wide');
+fs.mkdirSync(wideDir);
+const wideText = i => `wide ${i} ${'lorem ipsum dolor sit amet '.repeat(15)}${i === 1500 ? `${'z'.repeat(15000)} deep-needle` : ''}`;
+fs.writeFileSync(path.join(wideDir, 'rwr_server.log'), Array.from({ length: 40000 }, (_, i) => wideText(i)).join('\n') + '\n');
+const dirs = { demo: instanceDir, small: smallDir, wide: wideDir };
 const registry = { getConfig: id => (dirs[id] ? { id, name: id, cwd: dirs[id], executable: 'x', args: [], env: {}, logDir: 'logs' } : undefined) };
 const serverLogService = new ServerLogService(registry);
 // Faults on demand: a failing line read, or one answered late (read first,
@@ -408,6 +417,153 @@ try {
   for (const type of ['keyDown', 'keyUp']) await command('Input.dispatchKeyEvent', { type, key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
   state = await waitFor(async () => { const s = await view(); return s.first !== smallBefore ? s : false; }, 'small: Space');
   check('below the cap Space moves a page', Math.abs(state.first - (smallBefore + rowsInView - 1)) <= 1, `${state.first} vs ${smallBefore + rowsInView - 1}`);
+
+  // A phone: wrapped lines, no sideways scrolling.
+  await command('Page.navigate', { url: 'about:blank' });
+  fs.writeFileSync(logFile, Array.from({ length: 200_000 }, (_, i) => lineText(i)).join('\n') + '\n');
+  lineCount = 200_000;
+  await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+  await command('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  await command('Page.navigate', { url: `${base}/server-log/demo` });
+  state = await waitFor(async () => { const s = await loaded('phone rows'); return s.last === lineCount - 1 ? s : false; }, 'phone: following the end');
+  const phone = () => evaluate(`(() => { const s = document.querySelector('.log-viewport'); return { wrap: s.classList.contains('log-wrap'), switch: document.querySelector('[aria-label="Wrap long lines"]').getAttribute('aria-checked'), sideways: s.scrollWidth - s.clientWidth, page: document.documentElement.scrollWidth - window.innerWidth, rows: document.querySelectorAll('.log-row').length }; })()`);
+  let p = await phone();
+  check('on a phone lines wrap by default', p.wrap && p.switch === 'true');
+  check('on a phone nothing scrolls sideways', p.sideways <= 1 && p.page <= 1, JSON.stringify(p));
+  check('wrapped: a window of lines, not the whole file, is in the DOM', p.rows <= 400 && p.rows < lineCount, String(p.rows));
+  check('wrapped: rows show their lines while following', rowsRight(state, lineText) && state.follow === 'true');
+  await evaluate(`document.querySelector('.log-viewport').focus()`);
+  await key('Home', 'Home', 36);
+  state = await waitFor(async () => { const s = await loaded('phone top'); return s.first === 0 ? s : false; }, 'phone: Home');
+  const longHeight = await evaluate(`document.querySelector('.log-row[data-line="${LONG_LINE}"]').getBoundingClientRect().height`);
+  check('wrapped: a long line wraps onto several rows', longHeight > 18 * 5, String(longHeight));
+  await evaluate(`document.querySelector('.log-viewport').scrollTop = 0`);
+  await key('End', 'End', 35);
+  await waitFor(async () => (await view()).last === lineCount - 1, 'phone: End key');
+  check('wrapped: six-digit line numbers stay on one row', await evaluate(`[...document.querySelectorAll('.log-row .log-gutter')].filter(g => g.innerText.length === 6).every(g => g.getBoundingClientRect().height <= 18.5)`));
+  // Follow off at the end, lines arrive: they can be scrolled to.
+  await evaluate(`document.querySelector('[aria-label="Follow new lines"]').click()`);
+  await waitFor(async () => (await view()).follow === 'false', 'phone: follow off');
+  appendLines(60);
+  await waitFor(async () => (await view()).text.includes(`${lineCount.toLocaleString('en-US')} lines`), 'phone: appended lines counted');
+  await sleep(500);
+  for (let i = 0; i < 6; i++) { await evaluate(`document.querySelector('.log-viewport').scrollBy(0, 2000)`); await sleep(150); }
+  state = await waitFor(async () => { const s = await loaded('phone: new lines'); return s.last === lineCount - 1 ? s : false; }, 'phone: scroll down to the new lines', 10000);
+  check('wrapped: lines appended while not following can be scrolled to', rowsRight(state, lineText));
+  await key('Home', 'Home', 36);
+  state = await waitFor(async () => { const s = await loaded('phone top again'); return s.first === 0 ? s : false; }, 'phone: Home again');
+  // Scroll down through several window slides: the line at the top never jumps.
+  let jumps = 0;
+  let previous = state.first;
+  for (let i = 0; i < 25; i++) {
+    const before = await evaluate(`(() => { const s = document.querySelector('.log-viewport'); const top = s.getBoundingClientRect().top; const row = [...document.querySelectorAll('.log-row')].find(r => r.getBoundingClientRect().bottom > top + 1); return { line: Number(row.dataset.line), offset: row.getBoundingClientRect().top - top }; })()`);
+    await evaluate(`document.querySelector('.log-viewport').scrollBy(0, 600)`);
+    await sleep(120);
+    const after = await evaluate(`(() => { const s = document.querySelector('.log-viewport'); const top = s.getBoundingClientRect().top; const row = document.querySelector('.log-row[data-line="${'${'}line}"]'); return row ? row.getBoundingClientRect().top - top : null; })()`.replace('${line}', String(before.line)));
+    if (after !== null && Math.abs(after - (before.offset - 600)) > 30) jumps += 1;
+    const now = (await view()).first;
+    if (now < previous) jumps += 1;
+    previous = now;
+  }
+  state = await loaded('phone after scrolling');
+  check('wrapped: scrolling through window slides keeps the view still', jumps === 0 && state.first > 300, `${jumps} jumps, at line ${state.first}`);
+  check('wrapped: rows still show their lines', rowsRight(state, lineText));
+  // The slider: tap the middle of its rail.
+  await clickAt(`document.querySelector('.log-position .ant-slider-rail')`);
+  state = await waitFor(async () => { const s = await loaded('slider jump'); return Math.abs(s.first - lineCount / 2) < lineCount * 0.05 ? s : false; }, 'slider jump to the middle');
+  check('wrapped: the position slider jumps anywhere in the file', rowsRight(state, lineText) && state.follow === 'false', String(state.first));
+  // Search jumps to a far line.
+  await evaluate(`document.querySelector('[aria-label="Find in rwr_server.log"]').click()`);
+  await waitFor(async () => evaluate(`!!${findInput}`), 'phone: find bar');
+  await typeQuery('line 177777 other');
+  await clickAt(`[...document.querySelectorAll('.log-search-bar button')].find(b => b.innerText.trim() === 'Search')`);
+  active = await waitFor(async () => { const row = await activeRow(); return row && row[0] === 177777 ? row : false; }, 'phone: search jump');
+  check('wrapped: a search jumps to its match', await evaluate(`(() => { const s = document.querySelector('.log-viewport').getBoundingClientRect(); const r = document.querySelector('.log-row-active').getBoundingClientRect(); return r.top >= s.top && r.bottom <= s.bottom; })()`));
+  await key('Escape', 'Escape', 27);
+  // End follows again.
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b => b.title === 'Jump to the end and follow').click()`);
+  state = await waitFor(async () => { const s = await loaded('phone end'); return s.last === lineCount - 1 && s.follow === 'true' ? s : false; }, 'phone: End');
+  check('wrapped: End follows the end again', true);
+  // The slider all the way right follows the end.
+  await evaluate(`document.querySelector('[aria-label="Follow new lines"]').click()`);
+  await waitFor(async () => (await view()).follow === 'false', 'phone: follow off again');
+  await evaluate(`document.querySelector('.log-position .ant-slider-handle').focus()`);
+  await key('End', 'End', 35);
+  await waitFor(async () => (await view()).follow === 'true', 'slider at the end follows');
+  check('wrapped: the slider at its end follows the end again', true);
+
+  // Switching Wrap keeps the reader's place.
+  await clickAt(`document.querySelector('.log-position .ant-slider-rail')`);
+  state = await waitFor(async () => { const s = await loaded('phone: middle'); return s.follow === 'false' && Math.abs(s.first - lineCount / 2) < lineCount * 0.05 ? s : false; }, 'phone: middle again');
+  const placeBefore = state.first;
+  check('wrapped: the slider shows the line it jumped to', await evaluate(`document.querySelector('.log-position-label').innerText.startsWith(${JSON.stringify((placeBefore + 1).toLocaleString('en-US'))})`), await evaluate(`document.querySelector('.log-position-label').innerText`));
+  await evaluate(`document.querySelector('[aria-label="Wrap long lines"]').click()`);
+  await waitFor(async () => !(await phone()).wrap, 'wrap off');
+  state = await loaded('unwrapped place');
+  check('switching Wrap off keeps the place', Math.abs(state.first - placeBefore) <= 1, `${state.first} vs ${placeBefore}`);
+  await evaluate(`document.querySelector('[aria-label="Wrap long lines"]').click()`);
+  await waitFor(async () => (await phone()).wrap, 'wrap on');
+  state = await loaded('wrapped place');
+  check('switching Wrap on keeps the place', Math.abs(state.first - placeBefore) <= 1, `${state.first} vs ${placeBefore}`);
+
+  // Long wrapped lines: a far search match stays in view as the lines
+  // around it load and grow; a match deep in a long line too.
+  await command('Page.navigate', { url: `${base}/server-log/wide` });
+  await waitFor(async () => { const s = await view(); return s && s.texts.length > 0; }, 'wide log');
+  const markVisible = () => evaluate(`(() => { const s = document.querySelector('.log-viewport').getBoundingClientRect(); const target = document.querySelector('.log-row-active mark.log-match') ?? document.querySelector('.log-row-active'); if (!target) return false; const r = target.getBoundingClientRect(); return r.top >= s.top && r.top < s.bottom; })()`);
+  await evaluate(`document.querySelector('[aria-label="Find in rwr_server.log"]').click()`);
+  await waitFor(async () => evaluate(`!!${findInput}`), 'wide: find bar');
+  await typeQuery('wide 30000 ');
+  await clickAt(`[...document.querySelectorAll('.log-search-bar button')].find(b => b.innerText.trim() === 'Search')`);
+  await waitFor(async () => (await activeRow())?.[0] === 30000, 'wide: far match').catch(async (error) => {
+    console.error('[log-ui] find bar:', JSON.stringify({ status: await findStatus(), active: await activeRow(), query: await evaluate(`${findInput}?.value`), buttons: await evaluate(`[...document.querySelectorAll('.log-search-bar button')].map(b => b.innerText.trim() + (b.disabled ? ' (disabled)' : ''))`), rows: (await view())?.texts?.slice(0, 2) }));
+    throw error;
+  });
+  await sleep(1500); // the lines around it load and wrap
+  check('wrapped: a far match stays in view once the lines around it load', await markVisible());
+  await typeQuery('deep-needle');
+  await key('Enter', 'Enter', 13);
+  await waitFor(async () => (await activeRow())?.[0] === 1500, 'wide: deep match');
+  await sleep(1000);
+  check('wrapped: a match deep in a long line is brought into view', await markVisible());
+  await key('Escape', 'Escape', 27);
+
+  // Landscape on a touch screen still wraps.
+  await command('Emulation.setDeviceMetricsOverride', { width: 844, height: 390, deviceScaleFactor: 2, mobile: true });
+  await evaluate(`localStorage.removeItem('squash.serverLog.wrap')`);
+  await command('Page.reload');
+  await waitFor(async () => { const s = await view(); return s && s.texts.length > 0; }, 'landscape');
+  check('a touch screen in landscape wraps by default', (await phone()).wrap);
+
+  // A tall desktop window with Wrap on: scrolling down keeps going.
+  await command('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await command('Emulation.setDeviceMetricsOverride', { width: 1280, height: 2400, deviceScaleFactor: 1, mobile: false });
+  await command('Page.navigate', { url: `${base}/server-log/small` });
+  await waitFor(async () => { const s = await view(); return s && s.texts.length > 0; }, 'tall: small log');
+  if (!(await phone()).wrap) await evaluate(`document.querySelector('[aria-label="Wrap long lines"]').click()`);
+  await waitFor(async () => (await phone()).wrap, 'tall: wrap on');
+  await evaluate(`document.querySelector('.log-viewport').focus()`);
+  await key('Home', 'Home', 36);
+  await waitFor(async () => (await view()).first === 0, 'tall: top');
+  for (let i = 0; i < 12; i++) { await evaluate(`document.querySelector('.log-viewport').scrollBy(0, 1500)`); await sleep(150); }
+  state = await loaded('tall: scrolled');
+  check('a tall window with Wrap on keeps scrolling down', state.first > 900 && rowsRight(state, (i) => `small ${i}`), String(state.first));
+  await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+  await command('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  await command('Page.navigate', { url: `${base}/server-log/demo` });
+  await waitFor(async () => { const s = await view(); return s && s.texts.length > 0; }, 'phone again');
+
+  // The Wrap switch: off gives fixed rows, and the choice is remembered.
+  if (!(await phone()).wrap) await evaluate(`document.querySelector('[aria-label="Wrap long lines"]').click()`);
+  await evaluate(`document.querySelector('[aria-label="Wrap long lines"]').click()`);
+  await waitFor(async () => !(await phone()).wrap, 'wrap off');
+  await command('Page.reload');
+  await waitFor(async () => { const s = await view(); return s && s.texts.length > 0; }, 'reloaded');
+  check('the Wrap choice is remembered', !(await phone()).wrap && (await phone()).switch === 'false');
+  await evaluate(`document.querySelector('[aria-label="Wrap long lines"]').click()`);
+  await waitFor(async () => (await phone()).wrap, 'wrap on again');
+  await command('Emulation.clearDeviceMetricsOverride');
+  await command('Emulation.setTouchEmulationEnabled', { enabled: false });
 
   await command('Page.navigate', { url: `${base}/server-log/ghost` });
   await waitFor(async () => (await evaluate('document.body.innerText')).includes('Instance ghost not found'), 'unknown instance');
