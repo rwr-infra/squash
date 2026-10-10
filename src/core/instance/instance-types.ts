@@ -22,6 +22,10 @@ export type InstanceConfig = {
   // How long a stop waits for the process to exit before force-killing it,
   // counted from the first stop command line.
   readonly stopTimeoutMs?: number;
+  // The log file the log viewer shows, relative to cwd (rwr_server:
+  // rwr_server.log); '' = no log viewer. Missing in configs saved before it
+  // existed: inferred from the executable (see core/log/server-log-file.ts).
+  readonly serverLogFile?: string;
 };
 
 export type InstanceRuntime = {

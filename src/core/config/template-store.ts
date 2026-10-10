@@ -1,6 +1,7 @@
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import type { InstanceTemplate } from '../template/template-types.js';
+import { RWR_SERVER_LOG_FILE } from '../log/server-log-file.js';
 
 export type TemplateStore = {
   list: () => readonly InstanceTemplate[];
@@ -27,7 +28,8 @@ export const createDefaultTemplates = (): InstanceTemplate[] => [
       // `quit`, then an empty line: rwr_server answers `quit` with `Exit
       // requested` and exits only on one more Enter.
       stopCommand: 'quit\n',
-      stopTimeoutMs: 15000
+      stopTimeoutMs: 15000,
+      serverLogFile: RWR_SERVER_LOG_FILE
     }
   },
   {
@@ -37,7 +39,8 @@ export const createDefaultTemplates = (): InstanceTemplate[] => [
       executable: './steamcmd',
       // A one-off run (installing or updating a server), not a service.
       restartPolicy: 'never',
-      // steamcmd exits on `quit` alone.
+      // steamcmd exits on `quit` alone. No serverLogFile: left out, the
+      // executable decides — no log viewer for steamcmd.
       stopCommand: 'quit'
     }
   }
