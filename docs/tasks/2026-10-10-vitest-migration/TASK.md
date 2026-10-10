@@ -43,6 +43,9 @@
 - 迁移时 `JSON.stringify(a) === JSON.stringify(b)` 的检查保持逐字节比较，不改成 `toEqual`（后者忽略键顺序和 `undefined` 键，属于放宽）；字符串/数字数组之间的比较改成 `toEqual` 等价（CP2 Diff Review，2026-10-10）
 - "a new file with the old content as its start is a new generation" 改为与 rename 前的 generation 比较（同时保留旧的比较）：旧脚本比较的是更早的 generation，前面的 header 步骤已换过，检查恒真，去掉 dev/ino 比较后新旧都全过（已实验证实）。属于加强，不是放宽（CP3 Conformance，2026-10-10）
 - 1M 行块用"记录后断言"（`beforeAll` 里计时，it 里断言），与步骤式并存；文件头注明（CP3 Conformance，2026-10-10）
+- supervisor 的"记录后断言"细则：label 预先声明且全文件唯一；检查按 label 记到声明它的场景（超时后晚到的检查不会串到下一个场景）；声明了但没运行的 label 以 "not reached" 失败——所以变异下新测试的失败数可以多于旧脚本（多出的只能是 not reached），判定"旧失败 ⊆ 新失败、其余皆 not reached"；未声明、声明为 skip 却被记录、同一 label 记录两次，都让场景失败。这种写法下 `-t` 单跑一条也会运行整个场景（CP4，2026-10-10）
+- 旧脚本的全局 240 s 失败时限保留为文件末尾的一条测试（"the scenarios finish within 240 s"），另加每个场景 beforeAll 的超时（默认 60 s，restart policies 120 s）防挂起；不放在 afterAll 里抛错，因为 afterAll 抛错会跳过其后的 hook（临时目录就没删，已复现）（CP4 Conformance，2026-10-10）
+- 清理顺序：开始清理即禁止新建 harness → 强制停止未结束的 supervisor → 杀残留 PID → `dispose()` 最多等 10 s → 再杀一次 → 删临时目录（删除重试 10 次，失败则报错，不再像旧脚本那样静默忽略）；进程正常退出时再兜底杀一次残留（CP4，2026-10-10）
 - 不测 `describeListenError`、不测 `src/index.ts` 里闸门的接线 —— 前者不是闸门；后者由 `smoke-release`（B 类，CI 中）覆盖，记为剩余风险
 
 ## Acceptance
@@ -78,8 +81,8 @@
       证据（最终版本）：typecheck ✓；`npm test` → 4 files / 383 passed；清单 auth 277/277、templates 52/52，缺失 0，例外（`expect.soft`）无；变异"按原始 URL 判断鉴权" → 旧 exit 1（119 FAIL）/ 新 119 failed；变异"`[]` 当作文件缺失" → 旧/新失败同样 2 条；撤销后 329 passed；`-t` 全过滤与单步运行后无临时目录残留。CI：`npm test` 步骤替换 auth/templates 两步。审查：Diff Review（`toEqual` 放宽 2 处 → 改回逐字节；收集阶段副作用 → `beforeAll` + `createApiServer`）、Conformance（无确认缺陷；BOM 改回转义；`-t` 注释改正） ｜ commit：见 git log
 - [x] 3. 迁移 server-log（索引 + 路由 + 1M 行性能阈值）；清单比对 + 变异；删除旧脚本
       证据（最终版本）：typecheck ✓；`npm test` → 5 files / 514 passed；清单 131/131，缺失 0，例外无；1M 行信息行与基线相同（31 ms / 0 ms 卡顿）；变异"指纹只比尾部" → 旧/新失败集合相同（2）；"不去掉行尾 \r" → 相同（15）；"不比较 dev/ino" → 旧 0 失败、新 2 失败（见 Decisions：加强一条空检查）；`-t` 全过滤后无残留。CI 删 server-log 步骤。审查：Diff Review（注释不准、计数失败后不读 ranges）、Conformance（继承的空检查、上游失败导致下游空过 → 先赋值后断言、`readMs` 初值 NaN） ｜ commit：见 git log
-- [ ] 4. 迁移 supervisor（node-pty、假子进程、时序、残留进程清理）；清单比对 + 变异 + 失败后无残留；删除旧脚本
-      证据： ｜ commit：
+- [x] 4. 迁移 supervisor（node-pty、假子进程、时序、残留进程清理）；清单比对 + 变异 + 失败后无残留；删除旧脚本
+      证据（最终版本）：typecheck ✓；`npm test` → 6 files / 646 passed，50 s（基线四个 smoke 合计约 52 s）；清单 131/131 + 1 条新增（240 s 总时限）；场景函数体与旧脚本 diff 只有 `workRoot()`、`supervisors.add`、`closing` 守卫三处；变异"`onData` 写回 running" → 旧 exit 1（7 FAIL）/ 新 28 失败 = 旧 7 条 + 21 条 "not reached"（旧脚本提前 return 后不运行的检查）；"`start()` 不查 disposed" → 新旧同 1 条；以上变异与正常运行、`-t` 全过滤后：`pgrep -f 'child ready'` 与孙进程 marker 均 0，无临时目录；超时实验（restart policies 超时设 1 s）：只有该场景 17 条失败，其余 114 条通过，无残留；总时限实验（上限设 100 ms）：该测试失败、无残留。CI 删 supervisor 步骤。审查：Diff Review（exit 兜底、晚到检查串场景、定时器）、Conformance（240 s 时限被删 → 恢复为测试；"not reached" 语义登记；清理先杀后等） ｜ commit：见 git log
 - [ ] 5. 清理：删除 E 类，D 类移到 `scripts/diagnostics/` 并修正路径
       证据： ｜ commit：
 - [ ] 6. CLAUDE.md + 跨平台：CLAUDE.md diff 经用户确认（CP2–CP5 期间 CLAUDE.md 仍指向已删除的 smoke 脚本）；用户阅读 `vitest.config.ts` 与 `release.yml` 的 diff；push（需授权）后 CI 三平台全绿。CI 改动本身已随 CP2–CP4 逐步完成
@@ -103,6 +106,11 @@
 - 已否决：依赖编辑器显示来检查（看不见）
 - 来源：`perl -ne 'print if /\x{EF}\x{BB}\x{BF}|\x{EF}\x{BF}\x{BD}/'`
 - 下一步：写含 \u 转义的测试后，统计新旧文件里 `\r`、`\n`、`\u` 的数量并扫描原始字节
+
+### Pitfall: Vitest 的 afterAll 抛错会跳过其后的 afterAll
+- 现象：在清理 hook 里做总时限判定并抛错后，临时目录没被删除
+- 状态：CONFIRMED（CP4 实验）
+- 下一步：判定写成 it，hook 只做清理且不抛错
 
 ### Pitfall: 1:1 迁移会把旧脚本的空检查一起搬过来
 - 现象：标签对得上、变异也对得上，但某条检查恒真（server-log 的 rename 身份检测）

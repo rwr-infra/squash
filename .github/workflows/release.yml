@@ -65,19 +65,15 @@ jobs:
       # template store and /api/templates; the rwr_server.log line index
       # against generated files (CRLF, UTF-8 across reads, long lines,
       # truncation and replacement) and its routes — the one place the index
-      # runs on Windows and Linux before a real rwr_server does. Seconds;
-      # blocks the build and, on a tag, the release.
+      # runs on Windows and Linux before a real rwr_server does; the real
+      # supervisor + node-pty against a fake child: a user stop ends in
+      # `stopped` with no auto-restart, a crash is still `crashed` and
+      # restarted, stops, restarts and force-kills. A few minutes at most,
+      # before Package so a regression fails before a 20-minute build — and,
+      # on a tag, blocks the release.
       - name: Test
         run: npm test
         timeout-minutes: 10
-
-      # Drives the real supervisor + node-pty against a fake child: a user stop
-      # ends in `stopped` with no auto-restart, a crash is still `crashed` and
-      # restarted. Runs before Package so a status regression fails in seconds,
-      # not after a 20-minute build — and, on a tag, blocks the release.
-      - name: Smoke-test the supervisor state machine
-        run: npm run smoke:supervisor
-        timeout-minutes: 5
 
       # build (server + frontend) + assemble the portable bundle for THIS OS.
       # node-pty is native, so each runner produces its own platform binary —

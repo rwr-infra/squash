@@ -17,7 +17,8 @@ export const useTempDir = (prefix: string): (() => string) => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   });
   afterAll(() => {
-    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    // Retried: on Windows a child that has just exited can hold its cwd briefly.
+    if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
   });
   return () => {
     if (!dir) throw new Error(`${prefix} temp dir used outside a hook or test`);
