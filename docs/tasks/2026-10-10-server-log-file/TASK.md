@@ -66,9 +66,9 @@
       证据（commit `4147b13`）：`npm run typecheck` 过；`npm test` 881/881（新 `instance-config.test.ts` 走真 registry + InstanceService + 路由；单测对前后端两份规则跑同一张表，变异前端规则被抓住）；frontend lint + `tsc -b` 过；`smoke:instance-form` 56/56、`smoke:server-log-ui` 73/73；Diff Review + Conformance + 复核的发现已修（Windows 中段盘符逃逸、新建时日志文件跟随 Executable、禁用后停止加载与重试）；用户在 127.0.0.1:4747 人工验证 5 步全部通过（steamcmd 无入口、新建表单推断与跟随、`logs/console_log.txt` 自定义文件、打开中被关闭、模板表单） ｜ commit：`4147b13`
       用户确认：只更新代码种子，不迁移已有 `templates.json`。
 - [x] 3. API 日志：注入容错 logger、分级 onResponse、`/api` 统一错误处理器；集成测试（级别映射、无 token、错误格式）。
-      证据：`npm run typecheck` 过；`npm test` 919/919（新 `request-log.test.ts` 单测 + 集成，含 WS 升级）；变异（错误处理器挪回插件之后 / 打开 Fastify 自带请求日志 / 去掉 serializer）均被抓住；`npm run package && npm run smoke:release` 37/37（新增：打包进程默认级别下 start 为 info 行、无读请求行、无 token）；Diff Review + Conformance + 复核的发现已修（503 记 warn、方法规则与 Decision 一致、`path`/`url`/`req`/`err.rawPacket` serializer）；用户人工验证：默认级别登录/PUT 为 info 行、轮询静默、无 `token=`，`LOG_LEVEL=debug` 时轮询出现 ｜ commit：见下一条
-- [ ] 4. 文档：README（中英）、backlog 删已完成项；package + smoke:release。
-      证据： ｜ commit：
+      证据：`npm run typecheck` 过；`npm test` 919/919（新 `request-log.test.ts` 单测 + 集成，含 WS 升级）；变异（错误处理器挪回插件之后 / 打开 Fastify 自带请求日志 / 去掉 serializer）均被抓住；`npm run package && npm run smoke:release` 37/37（新增：打包进程默认级别下 start 为 info 行、无读请求行、无 token）；Diff Review + Conformance + 复核的发现已修（503 记 warn、方法规则与 Decision 一致、`path`/`url`/`req`/`err.rawPacket` serializer）；用户人工验证：默认级别登录/PUT 为 info 行、轮询静默、无 `token=`，`LOG_LEVEL=debug` 时轮询出现 ｜ commit：`78b67cd`
+- [x] 4. 文档：README（中英）、backlog 删已完成项；package + smoke:release。
+      证据：README 中英（功能列表、`LOG_LEVEL`、模板种子、"服务器日志查看器"一节、API 表）；backlog 删"Fastify 错误处理器"，加 Windows 规则未实跑、重复 send 警告、终端 WS 无请求行、终端页状态不重置；最终代码上 `npm run typecheck` 过、`npm test` 919/919、`npm run package && npm run smoke:release` 37/37、`smoke:restart-policy` 48 过 / 4 跳过（Windows 专用） ｜ commit：见 git log
 
 ## Pitfalls
 

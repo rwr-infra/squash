@@ -21,7 +21,7 @@
 - **多实例管理**——以独立工作目录运行多个游戏服务器实例
 - **实时终端流**——基于 WebSocket + xterm.js 的终端
 - **实例生命周期管理**——启动、停止、重启、删除实例
-- **rwr_server.log 查看器**——在浏览器里查看实例的 `rwr_server.log`,不论多大:虚拟滚动、跟随新行、Ctrl+F 全文件搜索(见[rwr_server.log 查看器](#rwr_serverlog-查看器))
+- **服务器日志查看器**——在浏览器里查看实例写的日志文件(RWR 是 `rwr_server.log`,也可以设成任意文件;SteamCMD 没有),不论多大:虚拟滚动、跟随新行、Ctrl+F 全文件搜索(见[服务器日志查看器](#服务器日志查看器))
 - **实例模板**——把常用设置(可执行文件、停止命令、重启策略等)存为模板,新建实例时一键预填;自带 RWR 与 SteamCMD 模板(见[实例模板](#实例模板))
 - **有上限的优雅停止**——按实例配置控制台停止命令(如 `quit`)、停止超时后强制结束、重启会等旧进程退出、squash 退出前先停掉所有实例(见[停止](#停止))
 - **崩溃自动重启**——按实例可选开启,带指数退避、最大重试次数上限,以及在稳定运行一段时间后重置计数器的冷却机制
@@ -128,7 +128,7 @@ cp .env.example .env
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP 服务器端口 |
 | `HOST` | _(自动)_ | 绑定地址。未设置时:面板处于**弱保护**(密码为默认值 `admin`(不区分大小写)、为空白,或完全没有鉴权)则绑定 `127.0.0.1`,否则绑定 `0.0.0.0`。弱保护下显式设置非回环 `HOST`(如 `0.0.0.0`)会使服务器**拒绝启动**——请先设置强 `AUTH_PASSWORD`。回环地址(`127.x.x.x`、`localhost`、`::1`)始终允许。 |
-| `LOG_LEVEL` | `info` | Pino 日志级别 |
+| `LOG_LEVEL` | `info` | Pino 日志级别。`info` 时每个 API 操作记一行(方法、路径、状态码、耗时),失败的请求都会记录;`debug` 再加上读请求,比如页面的轮询。查询串、token 和请求体永远不会写进日志。 |
 | `AUTH_USERNAME` | `admin` | 登录用户名。登录**默认开启**(admin/admin);暴露服务器前请修改。 |
 | `AUTH_PASSWORD` | `admin` | 登录密码。 |
 | `AUTH_TOKEN` | _(无)_ | 可选的静态 bearer token(与登录并存;遗留方式) |
@@ -183,15 +183,21 @@ cp .env.example .env
 不可重复。
 
 模板保存在 `config/templates.json`。首次启动(该文件尚不存在)时,squash 会写入两个模板:
-**RWR dedicated server**(`./rwr_server`、停止命令 `quit` 加一个空行、Keep running)和
-**SteamCMD**(`./steamcmd`、停止命令 `quit`、不自动重启)。它们可以像其他模板一样删除,
-删除后不会再生成。如果文件无效(JSON 错误、不是
+**RWR dedicated server**(`./rwr_server`、停止命令 `quit` 加一个空行、Keep running、服务器日志文件
+`rwr_server.log`)和 **SteamCMD**(`./steamcmd`、停止命令 `quit`、不自动重启)。它们可以像其他模板一样
+删除,删除后不会再生成。没有设置服务器日志文件的模板(比如旧版本写入的),选用时按可执行文件推断(见下文)。如果文件无效(JSON 错误、不是
 `{ id, name, values }` 的列表、id 重复),squash 会拒绝启动且不改动该文件——请修正或删除它。
 
-### rwr_server.log 查看器
+### 服务器日志查看器
 
-`rwr_server` 会在其工作目录写自己的日志 `rwr_server.log`,并在每次启动时清空它。实例行上的
-文件图标按钮(以及终端页的 **Log** 按钮)会打开 `/server-log/<实例 ID>`:
+实例设置里的 **Server Log File** 指定它的服务器写的日志文件,相对于工作目录:`rwr_server` 会在工作目录写
+`rwr_server.log`,并在每次启动时清空它。实例行上的文件图标按钮(以及终端页的 **Log** 按钮)会打开
+`/server-log/<实例 ID>`;这一项留空的实例(比如 SteamCMD)两个按钮都没有。
+
+- **读哪个文件。** 文件名,或工作目录下的路径,`/` 和 `\` 都可以(如 `logs/console_log.txt`)。绝对路径、
+  盘符、`..`、`:` 和 Windows 设备名会被拒绝。新建实例时,这一项跟随可执行文件——`rwr_server` 为
+  `rwr_server.log`,其他为空——直到你手动填写或模板设置了它。旧版本保存的实例按同样规则取默认值
+  (`config/` 里的文件保持原样,直到下次保存)。
 
 - **不论多大。** 服务端按行建立索引,页面只取可见范围内的行,几百万行的日志也能流畅滚动。超过
   16 KiB 的行会被截断并标注。
@@ -204,10 +210,10 @@ cp .env.example .env
   位置之后的第一个匹配,之后 Enter / F3 / ↓ 跳到下一个,Shift+Enter / Shift+F3 跳到上一个,Esc 关闭。只列出前 10,000 条匹配(显示为
   "10,000+"),超出部分查找栏会提示——请把搜索词写得更具体。有新行时 **Search again** 会把它们
   也搜进来。被截断的长行里,16 KiB 之后的匹配能被找到,但截掉的部分不会显示。
-- `rwr_server` 重新启动并清空文件时,页面会提示并显示新文件。文件不存在(服务器还没运行过)时会
+- 服务器重新启动并清空文件(或文件被替换)时,页面会提示并显示新文件。文件不存在(服务器还没运行过)时会
   明确提示。
 
-路径固定为 `<工作目录>/rwr_server.log`;查看器只读取它。
+查看器只读取文件,而且只读实例设置里的那一个:没有任何请求能指定路径。
 
 ### 便携发行包(无需 Node.js)
 
@@ -350,7 +356,7 @@ curl http://localhost:3000/api/instances
 | POST | `/api/templates` | 是 | 创建模板:`{ name, values }`(名称不区分大小写重复时返回 409) |
 | PUT | `/api/templates/:id` | 是 | 整体替换模板:`{ name, values }`(改成已被占用的名称时返回 409,不存在时返回 404) |
 | DELETE | `/api/templates/:id` | 是 | 删除模板(不存在时返回 404) |
-| GET | `/api/instances/:id/server-log` | 是 | 实例的 `rwr_server.log`:`{ exists, size, lineCount, generation, modifiedAt, path }`(文件被清空或替换时 `generation` 会变) |
+| GET | `/api/instances/:id/server-log` | 是 | 实例的服务器日志文件(`serverLogFile`):`{ exists, size, lineCount, generation, modifiedAt, path, file }`(文件被清空或替换时 `generation` 会变;实例没有日志文件时返回 404 `SERVER_LOG_DISABLED`) |
 | GET | `/api/instances/:id/server-log/lines` | 是 | 读取行:`?from=`(从 0 开始)`&count=`(1–1000,默认 200),附带同样的快照字段 |
 | GET | `/api/instances/:id/server-log/search` | 是 | 搜索 `?q=`(1–256 个字符,不能含换行)`&caseSensitive=true\|false` 的匹配行号;最多 10,000 条(更多时 `truncated` 为真) |
 
