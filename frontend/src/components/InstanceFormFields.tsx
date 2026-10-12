@@ -1,6 +1,6 @@
 import { useLayoutEffect } from 'react';
 import { Form, Input, InputNumber, Select, Switch } from 'antd';
-import { stopCommandKeys } from '../services/instanceForm';
+import { isValidServerLogFile, stopCommandKeys } from '../services/instanceForm';
 
 // The form instance outlives the modal's content, and a remounted <Form> lets
 // the values left in its store win over new initialValues — editing B right
@@ -46,6 +46,22 @@ export const InstanceFormFields = ({ template = false }: { template?: boolean })
       </Form.Item>
       <Form.Item name="args" label="Arguments (comma-separated)">
         <Input placeholder="--config server.cfg, --port 27015" />
+      </Form.Item>
+      <Form.Item
+        name="serverLogFile"
+        label="Server Log File"
+        tooltip="The log file the server writes, relative to the Working Directory, shown on the Log page (rwr_server: rwr_server.log)."
+        extra={template ? 'Not set: the executable decides when an instance is created (rwr_server → rwr_server.log).' : 'Blank: no Log page for this instance (e.g. SteamCMD).'}
+        rules={[
+          {
+            validator: (_, value: string | undefined) =>
+              !value?.trim() || isValidServerLogFile(value.trim())
+                ? Promise.resolve()
+                : Promise.reject(new Error('A file inside the Working Directory: no absolute path, drive or ".."'))
+          }
+        ]}
+      >
+        <Input placeholder={template ? 'Not set' : 'rwr_server.log'} />
       </Form.Item>
       <Form.Item name="autoStart" label="Auto Start" valuePropName="checked" tooltip="Start this instance automatically when squash launches">
         <Switch />

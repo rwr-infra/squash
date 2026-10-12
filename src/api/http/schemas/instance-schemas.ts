@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { inferServerLogFile, isValidServerLogFile } from '../../../core/log/server-log-file.js';
+
+export const SERVER_LOG_FILE_MESSAGE = 'serverLogFile must be a file path inside the working directory (no absolute path, drive or "..")';
 
 export const CreateInstanceSchema = z.object({
   id: z.string().min(1).max(64),
@@ -17,8 +20,11 @@ export const CreateInstanceSchema = z.object({
   // No schema defaults: an omitted value follows the supervisor's default, so
   // old and new configs alike pick up a change to it.
   stopCommand: z.string().optional(),
-  stopTimeoutMs: z.number().int().min(1000).max(600_000).optional()
-}).strict();
+  stopTimeoutMs: z.number().int().min(1000).max(600_000).optional(),
+  // Relative to cwd; '' = no log viewer. Left out: inferred from the
+  // executable, so a client that predates the field keeps rwr_server's log.
+  serverLogFile: z.string().refine(value => value === '' || isValidServerLogFile(value), SERVER_LOG_FILE_MESSAGE).optional()
+}).strict().transform(config => ({ ...config, serverLogFile: config.serverLogFile ?? inferServerLogFile(config.executable) }));
 
 export type CreateInstanceRequest = z.infer<typeof CreateInstanceSchema>;
 

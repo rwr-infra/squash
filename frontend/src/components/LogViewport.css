@@ -1,4 +1,4 @@
-/* The rwr_server.log viewer: terminal colours, like the terminal page. */
+/* The server log viewer: terminal colours, like the terminal page. */
 .log-viewport {
   flex: 1;
   min-height: 0;

@@ -10,6 +10,8 @@
 //   - a shell instance round-trips PTY input/output in both directions:
 //     WebSocket input → WebSocket output, and the command-capture endpoint
 //   - stopping the instance ends in `stopped` (not `crashed`)
+//   - the console logs the start as an info request line, no reads at the
+//     default level, and never the token
 //   - terminating the LAUNCHER stops the server and frees the port; on POSIX
 //     (SIGTERM, sent twice as a terminal or npm often does) squash first stops
 //     its instances — one that ignores SIGHUP is force-killed after its
@@ -78,6 +80,9 @@ const { check: record, run } = recordedChecks([
   'command output also streams to WebSocket viewers',
   'stop shell instance',
   'stopped instance ends in `stopped` (not `crashed`)',
+  'the console logs an action as an info request line',
+  'the console leaves reads out at the default level',
+  'the console never shows the token',
   posixOnly('create a SIGHUP-ignoring instance'),
   posixOnly('start it'),
   'terminating the launcher stops the server',
@@ -456,6 +461,12 @@ const flow = async () => {
 
     const stopped = await api(port, 'POST', `/api/instances/${instanceId}/stop`, { token });
     check('stop shell instance', stopped.status === 200, `status=${stopped.status} ${stopped.text.slice(0, 300)}`);
+    // The console, at the default level: a line per action, none for reads,
+    // never the token (the WebSocket carried it in its query).
+    const output = server.output();
+    check('the console logs an action as an info request line', Boolean(findLogLine(output, (j) => j.component === 'http' && j.level === 30 && j.msg === `POST /api/instances/${instanceId}/start 200`)), tail(output, 1500));
+    check('the console leaves reads out at the default level', !findLogLine(output, (j) => j.component === 'http' && j.url === '/api/health'));
+    check('the console never shows the token', !output.includes(String(token)));
     let finalStatus: string | undefined;
     await waitFor(async () => {
       const got = await api(port, 'GET', `/api/instances/${instanceId}`, { token });

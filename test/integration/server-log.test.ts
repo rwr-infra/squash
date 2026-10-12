@@ -1,4 +1,4 @@
-// The rwr_server.log viewer's line index and its routes. Every check compares
+// The server log viewer's line index and its routes. Every check compares
 // against a ground truth computed from the same bytes in memory.
 //   - line count and random line ranges match, for LF and CRLF lines, empty
 //     lines, multi-byte characters across read-chunk boundaries, lines over
@@ -31,7 +31,10 @@
 //     from the instance's working directory only), a missing file is
 //     exists=false, lines/search answers carry the generation, query limits
 //     (400), case sensitivity, the 10,000-match cap, a moved working
-//     directory, and an unreadable file (503)
+//     directory, an unreadable file (503, naming the file), a configured
+//     file below the working directory, no log file or one outside the
+//     working directory (404 SERVER_LOG_DISABLED), and a config without the
+//     field (inferred from the executable)
 // Uses a temp directory only.
 //
 // Tests in a file run in order and share state: each step acts, then checks,
@@ -584,11 +587,17 @@ describe('a 1M-line file', () => {
 // fail or, worse, pass for the wrong reason.
 describe('routes', () => {
   const PASSWORD = 'smoke-password';
-  // One instance, whose working directory the test can move.
+  // One instance, whose working directory, executable and log file the test
+  // can change (undefined: a config saved before the field existed).
   let cwd = '';
   let instanceCwd = '';
+  let instanceExecutable = 'x';
+  let instanceLogFile: unknown = 'rwr_server.log';
   const registry = {
-    getConfig: (id: string) => (id === 'a' ? { id: 'a', name: 'a', cwd: instanceCwd, executable: 'x', args: [], env: {}, logDir: 'logs' } : undefined)
+    getConfig: (id: string) =>
+      id === 'a'
+        ? { id: 'a', name: 'a', cwd: instanceCwd, executable: instanceExecutable, args: [], env: {}, logDir: 'logs', ...(instanceLogFile === undefined ? {} : { serverLogFile: instanceLogFile }) }
+        : undefined
   };
   let server: ApiServer;
   beforeAll(async () => {
@@ -627,7 +636,7 @@ describe('routes', () => {
   it('routes: no file yet → exists=false with the path looked at (query parameters ignored)', async () => {
     const missing = await get(`/api/instances/a/server-log?path=${encodeURIComponent('/etc/passwd')}&file=x&cwd=%2F`);
     expect(missing.statusCode).toBe(200);
-    expect(body(missing).data).toMatchObject({ exists: false, lineCount: 0, path: path.join(cwd, 'rwr_server.log') });
+    expect(body(missing).data).toMatchObject({ exists: false, lineCount: 0, path: path.join(cwd, 'rwr_server.log'), file: 'rwr_server.log' });
   });
   it('routes: lines and search on a missing file are empty, not errors', async () => {
     const missingLines = body(await get('/api/instances/a/server-log/lines?from=0')).data;
@@ -721,5 +730,55 @@ describe('routes', () => {
     const unreadable = await get('/api/instances/a/server-log');
     expect(unreadable.statusCode).toBe(503);
     expect(body(unreadable).error?.code).toBe('SERVER_LOG_UNREADABLE');
+    expect(body(unreadable).error?.message).toContain('rwr_server.log');
+  });
+
+  // The configured file, below the working directory, is what's read.
+  it('routes: a log file in a subdirectory, as configured', async () => {
+    instanceCwd = path.join(workRoot(), 'instance-custom-log');
+    fs.mkdirSync(path.join(instanceCwd, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(instanceCwd, 'rwr_server.log'), 'not this one\n');
+    fs.writeFileSync(path.join(instanceCwd, 'logs', 'server.log'), 'one\ntwo hit\n');
+    instanceLogFile = 'logs/server.log';
+    expect(body(await get('/api/instances/a/server-log')).data).toMatchObject({
+      exists: true,
+      lineCount: 2,
+      path: path.join(instanceCwd, 'logs', 'server.log'),
+      file: 'logs/server.log'
+    });
+    expect(body(await get('/api/instances/a/server-log/lines?from=0')).data.lines).toEqual(['one', 'two hit']);
+    expect(body(await get('/api/instances/a/server-log/search?q=hit')).data.matches).toEqual([1]);
+  });
+  it('routes: a backslash separates directories on every platform', async () => {
+    instanceLogFile = 'logs\\server.log';
+    expect(body(await get('/api/instances/a/server-log')).data).toMatchObject({ lineCount: 2, path: path.join(instanceCwd, 'logs', 'server.log'), file: 'logs\\server.log' });
+    instanceLogFile = 'logs/server.log';
+  });
+  it('routes: errors name the configured file', async () => {
+    fs.rmSync(path.join(instanceCwd, 'logs', 'server.log'));
+    fs.mkdirSync(path.join(instanceCwd, 'logs', 'server.log'));
+    const unreadable = await get('/api/instances/a/server-log');
+    expect([unreadable.statusCode, body(unreadable).error?.message]).toEqual([503, expect.stringContaining('logs/server.log')]);
+  });
+
+  const disabled = async () =>
+    (await Promise.all(urls.map(url => get(url)))).map(res => [res.statusCode, body(res).error?.code]);
+  it('routes: no log file → every route is 404 SERVER_LOG_DISABLED', async () => {
+    instanceLogFile = '';
+    expect(await disabled()).toEqual(urls.map(() => [404, 'SERVER_LOG_DISABLED']));
+  });
+  // A hand-edited config: the service checks the path again.
+  it('routes: a log file outside the working directory is refused the same way', async () => {
+    for (const file of ['../rwr_server.log', '.. /rwr_server.log', '/etc/passwd', 'logs/', 42]) {
+      instanceLogFile = file;
+      expect([file, await disabled()]).toEqual([file, urls.map(() => [404, 'SERVER_LOG_DISABLED'])]);
+    }
+  });
+  it('routes: a config without the field follows the executable', async () => {
+    instanceLogFile = undefined;
+    instanceExecutable = path.join('bin', 'rwr_server.exe');
+    expect(body(await get('/api/instances/a/server-log')).data).toMatchObject({ path: path.join(instanceCwd, 'rwr_server.log'), file: 'rwr_server.log', lineCount: 1 });
+    instanceExecutable = './steamcmd';
+    expect(await disabled()).toEqual(urls.map(() => [404, 'SERVER_LOG_DISABLED']));
   });
 });

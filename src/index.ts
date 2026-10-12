@@ -107,7 +107,10 @@ const main = async () => {
   const templateService = new TemplateService(await createTemplateStore(app.paths.templateConfigFile));
   const serverLogService = new ServerLogService(registry);
 
-  const httpServer = await createHttpServer({ instanceService, logService, terminalService, terminalGateway, auditService, templateService, serverLogService });
+  const httpServer = await createHttpServer({
+    instanceService, logService, terminalService, terminalGateway, auditService, templateService, serverLogService,
+    logger: logger.child({ component: 'http' })
+  });
 
   let shutdownStartedAt: number | undefined;
   // Force-kills every instance still stopping; returns their ids.

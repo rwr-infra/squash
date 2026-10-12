@@ -13,6 +13,7 @@
   见 [归档](archive/2026-10-10-server-log-viewer.md)。
 - **iOS 真机上的换行日志视图**（低）：惯性滚动跨窗口滑动只在 Chrome 触摸模拟里测过（`smoke:server-log-ui`）。
 - **Windows PTY 残余句柄（上游结构性，低）**：squash 适配层已在真实 PTY exit 后终止 node-pty 从不释放的 conout worker 线程（`9513bbf` 之后的补充清理），supervisor 路径每次自然退出的句柄保留从约 15 降到约 5（Thread/Event/Semaphore/IO 完成端口每轮增长已消失）。剩余约 5/轮（conhost 进程句柄 + 未关闭伪控制台内的管道句柄 + type-50）在 JS 边界不可释放：node-pty 退出监视线程在 JS 回调前移除 pty 记录，事后原生 kill 为空操作（conpty.cc L101-108，A/B 已证）。需上游修改退出线程；`npm run smoke:pty-handles` 保持 exit 2 作为长期见证。真实 RWR bad allocation 根因、长时/并发仍未验证。入口 `smoke:pty-handles`、`smoke:pty-lifecycle`、`smoke:pty-cleanup`、`smoke:pty-exit-window`。见 [归档](archive/2026-10-01-pty-exit-cleanup.md)、[归因](archive/2026-10-01-pty-handle-attribution.md) 和 [输入资源修复](archive/2026-10-01-pty-cleanup.md)。
+- **Windows 上的 `serverLogFile` 规则**（低）：盘符段（`x/C:..`）、设备名、`\` 分隔符、resolve 后的越界检查，只在 macOS 上用 `path.win32` 推导和单测验证过，没在 Windows 上实跑。用户 2026-10-10 在 macOS 上人工验证了 UI 和自定义文件（`logs/console_log.txt`）。见 [归档](archive/2026-10-10-server-log-file.md)。
 - **移到 `scripts/diagnostics/` 的 PTY 探针没有在 Windows 上实跑**（低）：只改了 root 和 `dist` 的相对路径，做过静态解析验证。下次在 Windows 上跑 `npm run build:server && npm run smoke:pty-cleanup` 即可确认。见 [归档](archive/2026-10-10-vitest-migration.md)。
 
 ## 界面 / API
@@ -24,17 +25,19 @@
 - **日志搜索匹配超过 10,000 条时不能继续**（低）：只能看到前 10,000 条（显示 "+"）；可以改为从当前视野起分页搜索。入口 `src/core/log/line-index.ts` 的 `search` 和 `frontend/src/components/LogSearchBar.tsx`。
 - **超长行 16 KiB 之后的匹配没有高亮**（低，README 已说明）：接口每行只返回前 16 KiB，计数和跳转仍然正确。
 - **日志首次建索引不能中止；同一实例的并发搜索不限流**（低）：前端发起新搜索前会中止旧的，但直接调接口可以并发多个全文扫描。
+- **终端 WebSocket 连接没有请求日志行**（低）：升级后 reply 被 hijack，`onResponse` 不触发，所以打开终端不会出现在控制台里（也就不会泄露 `?token=`）。想看到"谁连了终端"，可以在 `terminal-gateway` 里记连接/断开。
+- **终端页切换实例时状态不重置**（低，既有）：`TerminalPage` 的 effect 不清空上一个实例的 status/pid，从 `/terminal/a` 直接到 `/terminal/b` 且 b 的请求失败或 a 的请求迟到时会沿用 a 的值。Log 按钮已经修好：状态带实例 id，渲染时比对。其余状态可以照同样的办法改（react-compiler 的 lint 不允许在 effect 里同步 setState）。
 - **编辑实例后终端尺寸回到 120×40**（低）：编辑会 `dispose()` 旧 supervisor 并新建一个，新的没有记住尺寸；已打开的终端页仍连着旧对象，要重新进入页面。
 
 ## 安全
 
 - **静态 `AUTH_TOKEN` 用 `===` 比较**（低）：`src/api/http/auth.ts` 的 `validateBearerToken`/`currentUser` 不是常量时间比较，理论上可做时序探测。会话 token 走 `Map` 查找，不受影响。修复用 `crypto.timingSafeEqual`（先比长度）。
-- **Fastify 错误处理器记不下任何东西**（低）：`createHttpServer` 里 `fastify({...})` 没配 logger（`server.log` 是 noop，同文件的 pino `logger` 没用上）；`setErrorHandler` 注册在 `/api` 插件之后，插件内路由可能走 Fastify 默认处理器而不是统一的 `INTERNAL_ERROR` 格式。500 时无迹可查。
+- **Fastify 重复 send 时的警告带完整 URL**（低）：`reply.send` 被调用两次时，Fastify 自己记一条 warn，`FST_ERR_REP_ALREADY_SENT` 的消息里有 `request.url`（含查询串，如终端 WebSocket 的 `?token=`）。我们的 serializer 只处理 `path`/`url`/`req` 字段和 `err.rawPacket`，不改错误消息。目前没有会重复 send 的路径。见 `src/api/http/request-log.ts`。
 - **依赖有既有 npm audit 告警**（中，未评估）：fastify、@fastify/static、find-my-way、ws、fast-uri 等共 8 条，其中 6 条 high，引入 vitest 之前就有。需要逐条看是否影响运行时，再升级。
 
 ## 部署 / 构建 / CI
 
-- **日志体验**（低）：`src/api/http/auth.ts` 的 `pino({ name: 'auth' })` 没有设 ISO 时间戳，和 `src/index.ts` 的格式不一致；便携包控制台输出的是原始 JSON，对双击运行的用户不友好。注意三点：
+- **日志体验**（低）：`src/api/http/auth.ts` 的 `pino({ name: 'auth' })` 没有设 ISO 时间戳，也没走 `src/index.ts` 的容错 destination（请求日志已经走了）；便携包控制台输出的是原始 JSON，对双击运行的用户不友好；Fastify 自带的 "Server listening at …" 和我们的 "HTTP server running" 重复。注意三点：
   - `pino-pretty` 是 devDependency，而打包用的是 `npm ci --omit=dev`；
   - `test/e2e/release.test.ts` 按 JSON 解析启动日志；
   - `src/index.ts` 的 logger 必须保留显式的容错 destination（见 CLAUDE.md），改成美化输出时不能丢掉这一点。

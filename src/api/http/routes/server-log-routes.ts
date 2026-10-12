@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { StaleIndexError } from '../../../core/log/line-index.js';
-import type { ServerLogService } from '../../../services/server-log-service.js';
+import { ServerLogDisabledError, type ServerLogService } from '../../../services/server-log-service.js';
 import type { InstanceIdParam } from '../schemas/instance-schemas.js';
 import { ServerLogLinesQuerySchema, ServerLogSearchQuerySchema, SERVER_LOG_SEARCH_LIMIT } from '../schemas/server-log-schemas.js';
 
@@ -20,22 +20,29 @@ const invalidRequest = (reply: FastifyReply, message: string) =>
     error: { code: 'INVALID_REQUEST', message }
   });
 
+// No log file configured: 404 with its own code, so the page can say so.
 // The file exists but can't be read right now (locked, permissions, not a
 // regular file, rewritten on every attempt): say which and why, instead of
 // the generic 500. Anything else — including Node's own ERR_* errors, which
 // mean a bug rather than a file problem — goes to the error handler.
-const unreadable = (reply: FastifyReply, err: unknown) => {
+const readFailed = (reply: FastifyReply, err: unknown, file = 'the server log') => {
+  if (err instanceof ServerLogDisabledError) {
+    return reply.status(404).send({
+      success: false,
+      error: { code: 'SERVER_LOG_DISABLED', message: err.message }
+    });
+  }
   if (err instanceof StaleIndexError) {
     return reply.status(503).send({
       success: false,
-      error: { code: 'SERVER_LOG_CHANGING', message: 'rwr_server.log kept changing while it was read; try again' }
+      error: { code: 'SERVER_LOG_CHANGING', message: `${file} kept changing while it was read; try again` }
     });
   }
   const code = (err as NodeJS.ErrnoException).code;
   if (typeof code !== 'string' || code.startsWith('ERR_')) throw err;
   return reply.status(503).send({
     success: false,
-    error: { code: 'SERVER_LOG_UNREADABLE', message: `Cannot read rwr_server.log (${code})` }
+    error: { code: 'SERVER_LOG_UNREADABLE', message: `Cannot read ${file} (${code})` }
   });
 };
 
@@ -48,7 +55,7 @@ export const registerServerLogRoutes = async (fastify: FastifyInstance, deps: Ro
       if (!info) return notFound(reply, id);
       return reply.status(200).send({ success: true, data: info });
     } catch (err) {
-      return unreadable(reply, err);
+      return readFailed(reply, err, deps.serverLogService.fileOf(id));
     }
   });
 
@@ -61,7 +68,7 @@ export const registerServerLogRoutes = async (fastify: FastifyInstance, deps: Ro
       if (!range) return notFound(reply, id);
       return reply.status(200).send({ success: true, data: { ...range.snapshot, from: range.from, lines: range.lines } });
     } catch (err) {
-      return unreadable(reply, err);
+      return readFailed(reply, err, deps.serverLogService.fileOf(id));
     }
   });
 
@@ -87,7 +94,7 @@ export const registerServerLogRoutes = async (fastify: FastifyInstance, deps: Ro
       if ((err as Error).name === 'AbortError') {
         return reply.status(499).send({ success: false, error: { code: 'CLIENT_CLOSED_REQUEST', message: 'Search aborted' } });
       }
-      return unreadable(reply, err);
+      return readFailed(reply, err, deps.serverLogService.fileOf(id));
     }
   });
 };

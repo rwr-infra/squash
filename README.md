@@ -21,7 +21,7 @@ All **Running With Rifles** related content, assets, and trademarks—including 
 - **Multi-instance management** — run multiple game server instances with separate working directories
 - **Real-time terminal streaming** — WebSocket-based terminal with xterm.js
 - **Instance lifecycle management** — start, stop, restart, delete instances
-- **rwr_server.log viewer** — browse an instance's `rwr_server.log` in the browser, however large: virtual scrolling, follows new lines, Ctrl+F search over the whole file (see [rwr_server.log viewer](#rwr_serverlog-viewer))
+- **Server log viewer** — browse the log file an instance writes (`rwr_server.log` for RWR, any file you set; none for SteamCMD) in the browser, however large: virtual scrolling, follows new lines, Ctrl+F search over the whole file (see [Server log viewer](#server-log-viewer))
 - **Instance templates** — save common settings (executable, stop command, restart policy, …) as templates and prefill the create form from one; RWR and SteamCMD templates are included (see [Instance templates](#instance-templates))
 - **Bounded, graceful stops** — a per-instance console stop command (e.g. `quit`), a force-kill after a stop timeout, restarts that wait for the old process, and squash stopping every instance before it exits (see [Stopping](#stopping))
 - **Crash auto-restart** — opt-in per instance, with exponential backoff, a max-attempt cap, and a cooldown that resets the counter after stable uptime
@@ -132,7 +132,7 @@ Environment variables (all optional; settable via `.env` or the real environment
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP server port |
 | `HOST` | _(auto)_ | Bind address. Unset: `127.0.0.1` while the panel is **weakly protected** (password is the default `admin` in any case, blank, or no auth at all), `0.0.0.0` otherwise. An explicit non-loopback `HOST` (e.g. `0.0.0.0`) while weakly protected makes the server **refuse to start** — set a strong `AUTH_PASSWORD` first. Loopback values (`127.x.x.x`, `localhost`, `::1`) are always allowed. |
-| `LOG_LEVEL` | `info` | Pino log level |
+| `LOG_LEVEL` | `info` | Pino log level. At `info` squash logs one line per API action (method, path, status, time) and every failed request; `debug` adds the reads, such as the page's polling. Query strings, tokens and request bodies are never logged. |
 | `AUTH_USERNAME` | `admin` | Login username. Login is enabled **by default** with `admin/admin`; change before exposing the server. |
 | `AUTH_PASSWORD` | `admin` | Login password. |
 | `AUTH_TOKEN` | _(none)_ | Optional static bearer token (accepted alongside login; legacy) |
@@ -201,16 +201,28 @@ instances created from it alone. Template names are unique, ignoring case.
 
 Templates live in `config/templates.json`. On first launch (no such file yet) squash
 writes two: **RWR dedicated server** (`./rwr_server`, stop command `quit` plus an empty
-line, keep running) and **SteamCMD** (`./steamcmd`, stop command `quit`, no restart).
-Delete them like any other template and they do not come back. squash
+line, keep running, server log file `rwr_server.log`) and **SteamCMD** (`./steamcmd`,
+stop command `quit`, no restart). Delete them like any other template and they do not
+come back. A template that sets no server log file (such as one written by an older
+version) gets the one its executable implies when you pick it (see below). squash
 refuses to start if the file is not valid (bad JSON, not a list of `{ id, name, values }`,
 a repeated id) and leaves it untouched — fix or delete it.
 
-### rwr_server.log viewer
+### Server log viewer
 
-`rwr_server` writes its own log, `rwr_server.log`, in its working directory and empties
-it every time it starts. The file-icon button on an instance (and **Log** on the
-terminal page) opens it at `/server-log/<instance-id>`:
+An instance's **Server Log File** setting names the log file its server writes, relative
+to its working directory: `rwr_server` writes `rwr_server.log` there and empties it every
+time it starts. The file-icon button on an instance (and **Log** on the terminal page)
+opens it at `/server-log/<instance-id>`; an instance whose setting is blank (SteamCMD,
+say) has neither button.
+
+- **Which file.** A file name or a path below the working directory, with `/` or `\`
+  (`logs/console_log.txt`). Absolute paths, drives, `..`, `:` and Windows device names
+  are refused; symbolic links inside the working directory are followed. When you
+  create an instance, the field follows the executable —
+  `rwr_server.log` for `rwr_server`, blank otherwise — until you type in it or a
+  template sets it. Instances saved by an older version get the same default (the file
+  in `config/` keeps them as they were until the next save).
 
 - **Any size.** The server indexes the file by line and the page fetches only the
   lines in view, so logs of millions of lines scroll smoothly. Lines longer than
@@ -228,10 +240,12 @@ terminal page) opens it at `/server-log/<instance-id>`:
   are listed ("10,000+"): past them the bar says so — make the search more specific.
   When new lines arrive, **Search again** includes them. A match beyond the first
   16 KiB of a cut line is found, but the cut part is not shown.
-- When `rwr_server` starts again and empties the file, the page says so and shows
-  the new file. A missing file (the server has not run yet) is shown as such.
+- When the server starts again and empties the file (or it is replaced), the page says
+  so and shows the new file. A missing file (the server has not run yet) is shown as
+  such.
 
-The path is always `<working directory>/rwr_server.log`; the viewer only reads it.
+The viewer only reads the file, and only the one in the instance's settings: no request
+names a path.
 
 ### Portable distribution (no Node.js required)
 
@@ -391,7 +405,7 @@ All backend endpoints are served under the `/api` prefix; every other path is th
 | POST | `/api/templates` | yes | Create a template: `{ name, values }` (409 if the name is taken, ignoring case) |
 | PUT | `/api/templates/:id` | yes | Replace a template: `{ name, values }` (409 if renamed to a taken name, 404 if unknown) |
 | DELETE | `/api/templates/:id` | yes | Delete a template (404 if unknown) |
-| GET | `/api/instances/:id/server-log` | yes | The instance's `rwr_server.log`: `{ exists, size, lineCount, generation, modifiedAt, path }` (`generation` changes when the file is emptied or replaced) |
+| GET | `/api/instances/:id/server-log` | yes | The instance's server log file (`serverLogFile`): `{ exists, size, lineCount, generation, modifiedAt, path, file }` (`generation` changes when the file is emptied or replaced; 404 `SERVER_LOG_DISABLED` when the instance has none) |
 | GET | `/api/instances/:id/server-log/lines` | yes | Lines `?from=` (0-based) `&count=` (1–1000, default 200), with the same snapshot fields |
 | GET | `/api/instances/:id/server-log/search` | yes | Matching line numbers for `?q=` (1–256 characters, no line breaks) `&caseSensitive=true\|false`; at most 10,000 (`truncated` when there are more) |
 

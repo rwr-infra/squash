@@ -7,7 +7,7 @@ import type { InstanceConfig } from '../instance/instance-types.js';
 export type InstanceTemplateValues = Partial<
   Pick<
     InstanceConfig,
-    'name' | 'cwd' | 'executable' | 'args' | 'autoStart' | 'restartPolicy' | 'restartDelayMs' | 'stopCommand' | 'stopTimeoutMs'
+    'name' | 'cwd' | 'executable' | 'args' | 'autoStart' | 'restartPolicy' | 'restartDelayMs' | 'stopCommand' | 'stopTimeoutMs' | 'serverLogFile'
   >
 >;
 

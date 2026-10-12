@@ -76,6 +76,9 @@ export type InstanceConfig = {
   readonly restartDelayMs?: number;
   readonly stopCommand?: string;
   readonly stopTimeoutMs?: number;
+  // The log viewer's file, relative to cwd; '' = no log viewer (no Log
+  // buttons). The server fills it in for configs saved without it.
+  readonly serverLogFile?: string;
 };
 
 export type InstanceRuntime = {
@@ -108,6 +111,9 @@ export type CreateInstanceRequest = {
   restartDelayMs?: number;
   stopCommand?: string;
   stopTimeoutMs?: number;
+  // Left out: the server infers it from the executable. The form always
+  // sends it, '' included, so an edit keeps what the user chose.
+  serverLogFile?: string;
 };
 
 export type InstanceWithRuntime = { config: InstanceConfig; runtime: InstanceRuntime };
@@ -233,7 +239,7 @@ export const logout = async (): Promise<void> => {
 // The instance settings a template prefills: the instance form's fields
 // except the ID, each optional.
 export type InstanceTemplateValues = Partial<
-  Pick<CreateInstanceRequest, 'name' | 'cwd' | 'executable' | 'args' | 'autoStart' | 'restartPolicy' | 'restartDelayMs' | 'stopCommand' | 'stopTimeoutMs'>
+  Pick<CreateInstanceRequest, 'name' | 'cwd' | 'executable' | 'args' | 'autoStart' | 'restartPolicy' | 'restartDelayMs' | 'stopCommand' | 'stopTimeoutMs' | 'serverLogFile'>
 >;
 
 export type InstanceTemplate = {
@@ -287,7 +293,7 @@ export const fetchAudit = async (limit = 100): Promise<AuditEntry[]> => {
   return unwrap(res);
 };
 
-// --- rwr_server.log ---
+// --- server log (the instance's serverLogFile) ---
 
 // What the server's index covers. `generation` changes whenever the file was
 // emptied or replaced (rwr_server clears it on every start): line numbers
@@ -301,7 +307,8 @@ export type ServerLogSnapshot = {
   modifiedAt?: string;
 };
 
-export type ServerLogInfo = ServerLogSnapshot & { path: string };
+// `file` as configured (relative to the working directory), `path` resolved.
+export type ServerLogInfo = ServerLogSnapshot & { path: string; file: string };
 export type ServerLogLines = ServerLogSnapshot & { from: number; lines: string[] };
 export type ServerLogSearchResult = ServerLogSnapshot & { matches: number[]; truncated: boolean };
 

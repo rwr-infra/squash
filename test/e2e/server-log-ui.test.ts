@@ -30,6 +30,9 @@
 //   - the file emptied and rewritten: a notice, the new content, following
 //     its end; deleted: "No rwr_server.log yet"; re-created: back, without a
 //     notice; unknown instance: an error
+//   - a configured log file in a subdirectory: its lines, its name in the
+//     header and the find box; no log file set: a notice, also when it is
+//     unset while the page is open (no stale name, Find disabled)
 //
 // Usage: VITE_API_URL= npm --prefix frontend run build && npm run smoke:server-log-ui
 // (SQUASH_FORM_WEB_ROOT=<dir> tests another build; SQUASH_BROWSER_PATH=<path>
@@ -122,6 +125,9 @@ const { check: record, run } = recordedChecks([
   'a touch screen in landscape wraps by default',
   'a tall window with Wrap on keeps scrolling down',
   'the Wrap choice is remembered',
+  'a configured log file is read and named in the header and find box',
+  'an instance without a log file says so',
+  'a log file unset while the page is open: the notice, no stale name',
   'an unknown instance shows an error',
   'no page errors'
 ]);
@@ -197,8 +203,13 @@ const flow = async () => {
   fs.mkdirSync(wideDir);
   const wideText = (i: number) => `wide ${i} ${'lorem ipsum dolor sit amet '.repeat(15)}${i === 1500 ? `${'z'.repeat(15000)} deep-needle` : ''}`;
   fs.writeFileSync(path.join(wideDir, 'rwr_server.log'), Array.from({ length: 40000 }, (_, i) => wideText(i)).join('\n') + '\n');
-  const dirs: Record<string, string> = { demo: instanceDir, small: smallDir, wide: wideDir };
-  const registry = { getConfig: (id: string) => (dirs[id] ? { id, name: id, cwd: dirs[id], executable: 'x', args: [], env: {}, logDir: 'logs' } : undefined) };
+  // A fourth reads logs/custom.log; a fifth has no log file.
+  const customDir = path.join(work, 'custom');
+  fs.mkdirSync(path.join(customDir, 'logs'), { recursive: true });
+  fs.writeFileSync(path.join(customDir, 'logs', 'custom.log'), 'custom one\ncustom two\n');
+  const dirs: Record<string, string> = { demo: instanceDir, small: smallDir, wide: wideDir, custom: customDir, off: instanceDir };
+  const logFiles: Record<string, string> = { custom: 'logs/custom.log', off: '' };
+  const registry = { getConfig: (id: string) => (dirs[id] ? { id, name: id, cwd: dirs[id], executable: 'x', args: [], env: {}, logDir: 'logs', serverLogFile: logFiles[id] ?? 'rwr_server.log' } : undefined) };
   const serverLogService = new ServerLogService(registry as unknown as ConstructorParameters<typeof ServerLogService>[0]);
   // Faults on demand: a failing line read, or one answered late (read first,
   // then held back, like a slow network).
@@ -627,6 +638,24 @@ const flow = async () => {
   await waitFor(async () => (await phone()).wrap, 'wrap on again');
   await command('Emulation.clearDeviceMetricsOverride');
   await command('Emulation.setTouchEmulationEnabled', { enabled: false });
+
+  await command('Page.navigate', { url: `${base}/server-log/custom` });
+  await waitFor(async () => (await evaluate('document.body.innerText')).includes('custom two'), 'custom log file');
+  check('a configured log file is read and named in the header and find box', await evaluate(`(() => {
+    const text = document.body.innerText;
+    return text.includes('2 lines') && Array.from(document.querySelectorAll('strong')).some(el => el.innerText === 'logs/custom.log') && !!document.querySelector('[aria-label="Find in logs/custom.log"]');
+  })()`));
+  await command('Page.navigate', { url: `${base}/server-log/off` });
+  await waitFor(async () => (await evaluate('document.body.innerText')).includes('No log to show for this instance'), 'no log file');
+  check('an instance without a log file says so', await evaluate(`!document.querySelector('.log-viewport')`));
+  await command('Page.navigate', { url: `${base}/server-log/custom` });
+  await waitFor(async () => (await evaluate('document.body.innerText')).includes('custom two'), 'custom log file again');
+  logFiles.custom = '';
+  await waitFor(async () => (await evaluate('document.body.innerText')).includes('No log to show for this instance'), 'unset while open');
+  check('a log file unset while the page is open: the notice, no stale name', await evaluate(`(() => {
+    const text = document.body.innerText;
+    return !text.includes('logs/custom.log') && !text.includes('2 lines') && document.querySelector('[aria-label="Find in Server log"]')?.disabled === true;
+  })()`));
 
   await command('Page.navigate', { url: `${base}/server-log/ghost` });
   await waitFor(async () => (await evaluate('document.body.innerText')).includes('Instance ghost not found'), 'unknown instance');

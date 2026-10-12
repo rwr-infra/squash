@@ -60,6 +60,11 @@ const isTouchScreen = () => {
 };
 
 const isNotFound = (error: unknown) => error instanceof ApiError && error.code === 'INSTANCE_NOT_FOUND';
+// The instance has no log file set (or a hand-edited one outside its
+// working directory).
+const isDisabled = (error: unknown) => error instanceof ApiError && error.code === 'SERVER_LOG_DISABLED';
+// Answers that won't change by asking again.
+const isFinal = (error: unknown) => isNotFound(error) || isDisabled(error);
 
 // Whether a block can stand for the file as `info` describes it. A block
 // that ended before the last line of its read is final; one holding that
@@ -114,10 +119,13 @@ const ServerLogPage = () => {
       return next;
     },
     gcTime: 0,
-    refetchInterval: (query) => (isNotFound(query.state.error) ? false : POLL_MS),
-    // A 404 (no such instance) won't fix itself.
-    retry: (count, err) => !isNotFound(err) && count < 3
+    refetchInterval: (query) => (isFinal(query.state.error) ? false : POLL_MS),
+    // A 404 (no such instance, no log file) won't fix itself.
+    retry: (count, err) => !isFinal(err) && count < 3
   });
+  // What an earlier poll saw no longer applies once the answer is final (the
+  // log file was unset while the page was open): nothing to show or load.
+  const shown = isFinal(error) ? undefined : info;
 
   // Mirrors for the loader, which runs from callbacks and timers.
   const infoRef = useRef<ServerLogInfo | undefined>(undefined);
@@ -126,7 +134,7 @@ const ServerLogPage = () => {
   const inFlight = useRef(new Map<number, { readonly generation: string; readonly controller: AbortController }>());
   const retryDelay = useRef(1000);
   useEffect(() => {
-    infoRef.current = info;
+    infoRef.current = shown;
     blocksRef.current = blocks;
   });
 
@@ -175,7 +183,8 @@ const ServerLogPage = () => {
         },
         (err: Error) => {
           if (inFlight.current.get(index)?.controller === controller) inFlight.current.delete(index);
-          if (controller.signal.aborted) return;
+          // Aborted, or the log file is gone for good (the next poll says so).
+          if (controller.signal.aborted || isFinal(err)) return;
           // Try again later, backing off; say why meanwhile.
           setLoadError(err.message);
           const delay = retryDelay.current;
@@ -190,7 +199,7 @@ const ServerLogPage = () => {
   // free slot) or a retry: load what the view needs.
   useEffect(() => {
     load();
-  }, [info, blocks, retryTick, load]);
+  }, [shown, blocks, retryTick, load]);
 
   // The view moved: load once it rests.
   const loadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -214,6 +223,9 @@ const ServerLogPage = () => {
   };
 
   const notFound = isNotFound(error);
+  const disabled = isDisabled(error);
+  const fileName = shown?.file ?? 'Server log';
+  const rwrLog = fileName === 'rwr_server.log';
   const muted = { color: '#888', fontSize: 12 };
 
   return (
@@ -222,16 +234,16 @@ const ServerLogPage = () => {
         <div style={{ padding: '8px 12px', background: '#252526', borderBottom: '1px solid #3c3c3c', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
           <Button icon={<ArrowLeftOutlined />} size="small" onClick={() => navigate('/')} type="text" style={{ color: '#fff' }} title="Back to instances" />
           <code style={{ color: '#fff', background: '#3c3c3c', padding: '2px 8px', borderRadius: 4, wordBreak: 'break-all', maxWidth: '40vw' }}>{instanceId}</code>
-          <strong style={{ color: '#fff' }}>rwr_server.log</strong>
-          {info?.exists && (
+          <strong style={{ color: '#fff', wordBreak: 'break-all' }}>{fileName}</strong>
+          {shown?.exists && (
             <span style={muted}>
-              {info.lineCount.toLocaleString()} lines · {formatBytes(info.size)}
-              {info.modifiedAt && !isMobile ? ` · updated ${new Date(info.modifiedAt).toLocaleTimeString()}` : ''}
+              {shown.lineCount.toLocaleString()} lines · {formatBytes(shown.size)}
+              {shown.modifiedAt && !isMobile ? ` · updated ${new Date(shown.modifiedAt).toLocaleTimeString()}` : ''}
             </span>
           )}
           <Space style={{ marginLeft: 'auto' }} wrap>
             <Tooltip title="Find (Ctrl+F / ⌘F)">
-              <Button size="small" icon={<SearchOutlined />} disabled={!info?.exists} onClick={() => searchRef.current?.open()} aria-label="Find in rwr_server.log" />
+              <Button size="small" icon={<SearchOutlined />} disabled={!shown?.exists} onClick={() => searchRef.current?.open()} aria-label={`Find in ${fileName}`} />
             </Tooltip>
             <Tooltip title="Wrap long lines (no sideways scrolling)">
               <Space size={4}>
@@ -260,8 +272,8 @@ const ServerLogPage = () => {
           </Space>
         </div>
 
-        {info && (
-          <div style={{ ...muted, padding: '4px 12px', background: '#252526', borderBottom: '1px solid #3c3c3c', wordBreak: 'break-all' }}>{info.path}</div>
+        {shown && (
+          <div style={{ ...muted, padding: '4px 12px', background: '#252526', borderBottom: '1px solid #3c3c3c', wordBreak: 'break-all' }}>{shown.path}</div>
         )}
 
         {resetAt && (
@@ -271,14 +283,22 @@ const ServerLogPage = () => {
             banner
             // antd only treats an object as closable when it names the icon.
             closable={{ closeIcon: <CloseOutlined />, onClose: () => setResetAt(undefined) }}
-            title={`The log was emptied or replaced at ${resetAt.toLocaleTimeString()} (rwr_server clears it when it starts). Showing the new file.`}
+            title={`The log was emptied or replaced at ${resetAt.toLocaleTimeString()}${rwrLog ? ' (rwr_server clears it whenever it starts)' : ''}. Showing the new file.`}
           />
         )}
-        {error && info && !notFound && <Alert type="warning" showIcon banner title={`Could not check for new lines: ${(error as Error).message}`} />}
-        {loadError && info?.exists && <Alert type="warning" showIcon banner title={`Could not load lines: ${loadError}. Retrying…`} />}
+        {error && info && !isFinal(error) && <Alert type="warning" showIcon banner title={`Could not check for new lines: ${(error as Error).message}`} />}
+        {loadError && shown?.exists && <Alert type="warning" showIcon banner title={`Could not load lines: ${loadError}. Retrying…`} />}
 
         {notFound ? (
           <Alert type="error" showIcon style={{ margin: 12 }} title={`Instance ${instanceId} not found`} />
+        ) : disabled ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ margin: 12 }}
+            title="No log to show for this instance"
+            description={`${(error as Error).message}. Set "Server Log File" in the instance's settings to read it here.`}
+          />
         ) : error && !info ? (
           <Alert type="error" showIcon style={{ margin: 12 }} title={(error as Error).message} action={<Button size="small" onClick={() => refetch()}>Retry</Button>} />
         ) : isLoading || !info ? (
@@ -288,13 +308,14 @@ const ServerLogPage = () => {
             type="warning"
             showIcon
             style={{ margin: 12 }}
-            title="No rwr_server.log yet"
-            description="rwr_server writes it in its working directory (the path above) once it starts. This page checks again every few seconds."
+            title={`No ${info.file} yet`}
+            description={`The server has not written it yet (the path above${rwrLog ? '; rwr_server writes it once it starts' : ''}). This page checks again every few seconds.`}
           />
         ) : (
           <LogSearchBar
             ref={searchRef}
             instanceId={instanceId}
+            fileName={info.file}
             generation={info.generation}
             size={info.size}
             firstVisibleLine={() => rangeRef.current.first}

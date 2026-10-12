@@ -54,7 +54,7 @@ describe('store', () => {
       expect(JSON.stringify(readJson(seededFile()))).toBe(JSON.stringify(store.list()));
     });
     it('seed values are the rwr_server defaults', () => {
-      expect(seed?.values).toMatchObject({ executable: './rwr_server', stopCommand: 'quit\n', restartPolicy: 'always', stopTimeoutMs: 15000 });
+      expect(seed?.values).toMatchObject({ executable: './rwr_server', stopCommand: 'quit\n', restartPolicy: 'always', stopTimeoutMs: 15000, serverLogFile: 'rwr_server.log' });
       expect(seed?.values.cwd).toBeUndefined();
     });
     it('SteamCMD seed values: ./steamcmd, no restart, quit without an extra Enter', () => {
@@ -221,7 +221,9 @@ describe('routes', () => {
     ['name over 128 chars', { name: 'n'.repeat(129) }],
     ['stopTimeoutMs below 1000', { name: 'X4', values: { stopTimeoutMs: 500 } }],
     ['unknown restartPolicy', { name: 'X5', values: { restartPolicy: 'sometimes' } }],
-    ['empty executable', { name: 'X6', values: { executable: '' } }]
+    ['empty executable', { name: 'X6', values: { executable: '' } }],
+    ['empty serverLogFile', { name: 'X7', values: { serverLogFile: '' } }],
+    ['serverLogFile outside the working directory', { name: 'X8', values: { serverLogFile: '../rwr_server.log' } }]
   ];
   for (const [label, payload] of invalidBodies) {
     it(`POST with ${label} is 400`, async () => {

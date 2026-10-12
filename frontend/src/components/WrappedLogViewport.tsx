@@ -242,7 +242,7 @@ export const WrappedLogViewport = ({ ref, lineCount, getLine, onRangeChange, fol
     <div className="log-wrap-frame">
       {/* role="log" implies aria-live=polite; rows swapped in by scrolling
           are not news to announce. */}
-      <div ref={scrollerRef} className="log-viewport log-wrap" tabIndex={0} onScroll={onScroll} onKeyDown={onKeyDown} role="log" aria-live="off" aria-label="rwr_server.log">
+      <div ref={scrollerRef} className="log-viewport log-wrap" tabIndex={0} onScroll={onScroll} onKeyDown={onKeyDown} role="log" aria-live="off" aria-label="Server log">
         {rows}
       </div>
       <div className="log-position">

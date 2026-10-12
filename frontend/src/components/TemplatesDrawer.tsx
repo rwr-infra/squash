@@ -20,7 +20,8 @@ const summarize = (template: InstanceTemplate): string => {
     values.restartPolicy && policyLabel[values.restartPolicy],
     values.restartDelayMs !== undefined && `restart delay ${values.restartDelayMs} ms`,
     stopKeys.length > 0 && `stop: ${stopKeys.join(' ')}`,
-    values.stopTimeoutMs !== undefined && `stop timeout ${values.stopTimeoutMs} ms`
+    values.stopTimeoutMs !== undefined && `stop timeout ${values.stopTimeoutMs} ms`,
+    values.serverLogFile && `log ${values.serverLogFile}`
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(' · ') : 'Sets nothing yet';
 };
