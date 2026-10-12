@@ -14,7 +14,8 @@
 //   - the log file: an edit sends it as set (blank too), a plain create
 //     sends rwr_server.log for the default executable, an invalid one is
 //     reported on its field and sends nothing; the list shows a Log button
-//     only for instances with one; in a new instance an implied log file
+//     only for instances with one, and so does the terminal page; in a new
+//     instance an implied log file
 //     follows the executable until typed in or set by a template
 //   - templates: picking fills the form (and switching resets what the new
 //     one does not set; a template without a log file gets the one its
@@ -69,6 +70,7 @@ const { check: record, run } = recordedChecks([
   'a plain create sends the log file implied by the default executable',
   'isolated persisted configs retain both original hidden values',
   'the list shows a Log button only for instances with a log file',
+  'the terminal page shows a Log button only for instances with a log file',
   'picking a template fills its fields and keeps the typed ID',
   'switching template resets what the new one does not set to the defaults',
   'applying a template clears the errors of the fields it refilled',
@@ -163,7 +165,10 @@ const handle = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const route = new URL(req.url!, 'http://localhost').pathname;
     if (route === '/api/auth/status') return send(res, { loginEnabled: false });
     if (route === '/api/instances' && req.method === 'GET') return send(res, [...configs.values()].map((config) => ({ config, runtime: { id: config.id, status: 'stopped', viewers: 0 } })));
-    if (route.startsWith('/api/instances/') && req.method === 'GET') return send(res, { config: configs.get(route.split('/').at(-1)!) });
+    if (route.startsWith('/api/instances/') && req.method === 'GET') {
+      const config = configs.get(route.split('/').at(-1)!);
+      return send(res, { config, runtime: { id: config?.id, status: 'stopped', viewers: 0 } });
+    }
     // Templates answer at once (no pending gate); validated with the real
     // schema, names unique ignoring case like the real service.
     if (route === '/api/templates' && req.method === 'GET') return send(res, [...templates.values()]);
@@ -314,6 +319,18 @@ const flow = async () => {
   const logButtons = `Object.fromEntries(Array.from(document.querySelectorAll('tr')).filter(row => row.querySelector('code')).map(row => [row.querySelector('code').innerText, Array.from(row.querySelectorAll('button[title^="View "]')).map(b => b.title)]))`;
   await waitFor(() => evaluate(`!!${logButtons}.created`), 'created listed');
   checkEqual('the list shows a Log button only for instances with a log file', await evaluate(logButtons), { alpha: [], beta: [], created: ['View rwr_server.log'] });
+  // The terminal page, opened from the list and left with Back as a user
+  // would (the fixture serves no SPA fallback for a reload there; its
+  // WebSocket finds no server, and the page loads anyway).
+  const terminalLogButtons = async (id: string) => {
+    await evaluate(`Array.from(document.querySelectorAll('tr')).find(row => row.querySelector('code')?.innerText === ${JSON.stringify(id)}).querySelector('button[title="Open Terminal"]').click()`);
+    await waitFor(() => evaluate(`location.pathname === ${JSON.stringify(`/terminal/${id}`)} && !!document.querySelector('.xterm')`), `terminal ${id}`);
+    const titles = await evaluate(`Array.from(document.querySelectorAll('button[title^="View "]')).map(b => b.title)`);
+    await evaluate('history.back()');
+    await waitFor(() => evaluate(`location.pathname === '/' && document.querySelectorAll('button[title="Edit"]').length === 3`), 'back to the list');
+    return titles;
+  };
+  checkEqual('the terminal page shows a Log button only for instances with a log file', { created: await terminalLogButtons('created'), alpha: await terminalLogButtons('alpha') }, { created: ['View rwr_server.log'], alpha: [] });
 
   // --- Templates --------------------------------------------------------------
   const visibleModals = `Array.from(document.querySelectorAll('.ant-modal')).filter(m => m.getBoundingClientRect().height > 0)`;

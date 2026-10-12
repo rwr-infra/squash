@@ -49,8 +49,11 @@ const TerminalPage = () => {
     setRuntimeInfo(runtime);
   };
   const [loading, setLoading] = useState(true);
-  // No Log button until the config says there is a log file.
-  const [serverLogFile, setServerLogFile] = useState('');
+  // No Log button until the config says there is a log file. Kept with the
+  // instance it belongs to: a late answer for the previous instance (the
+  // route changed while it was loading) must not give this one a Log button.
+  const [logFile, setLogFile] = useState<{ readonly instanceId: string; readonly file: string }>();
+  const serverLogFile = logFile?.instanceId === instanceId ? logFile.file : '';
   const [quickCmd, setQuickCmd] = useState('');
 
   const screens = Grid.useBreakpoint();
@@ -60,7 +63,7 @@ const TerminalPage = () => {
     if (!instanceId) return;
     fetchInstance(instanceId)
       .then(({ config, runtime }) => {
-        setServerLogFile(config.serverLogFile ?? '');
+        setLogFile({ instanceId, file: config.serverLogFile ?? '' });
         setStatus(runtime.status);
         setPid(runtime.pid);
         setRuntimeInfo(runtime);
