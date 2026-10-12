@@ -1,8 +1,8 @@
-import fastify, { FastifyInstance, FastifyError } from 'fastify';
+import fastify, { FastifyInstance, FastifyError, type FastifyBaseLogger } from 'fastify';
+import { stdSerializers } from 'pino';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
-import pino from 'pino';
 import type { InstanceService } from '../../services/instance-service.js';
 import type { LogService } from '../../services/log-service.js';
 import type { TerminalService } from '../../services/terminal-service.js';
@@ -15,6 +15,7 @@ import { registerTemplateRoutes } from './routes/template-routes.js';
 import { registerServerLogRoutes } from './routes/server-log-routes.js';
 import { isAuthEnabled, isLoginEnabled, validateBearerToken, login, logout, currentUser } from './auth.js';
 import { appPaths } from '../../app/paths.js';
+import { requestLogLevel, requestLogPath, requestLogSerializers } from './request-log.js';
 
 declare module 'fastify' {
   interface FastifyContextConfig {
@@ -31,17 +32,49 @@ export type ApiDeps = {
   auditService: AuditService;
   templateService: TemplateService;
   serverLogService: ServerLogService;
+  // Where request lines and request errors go: src/index.ts passes its own
+  // logger, whose destination survives a closed terminal. None: nothing is
+  // logged.
+  logger?: FastifyBaseLogger;
 };
 
 export const createHttpServer = async (deps: ApiDeps): Promise<FastifyInstance> => {
-  const logger = pino({
-    name: 'http-server',
-    level: process.env.LOG_LEVEL ?? 'info',
-    timestamp: pino.stdTimeFunctions.isoTime
+  const server = fastify({
+    ...(deps.logger ? { loggerInstance: deps.logger.child({}, { serializers: requestLogSerializers(stdSerializers.err) }) } : {}),
+    // Fastify's own request logging writes two lines per request, the query
+    // string included: the hook below writes one, without it.
+    disableRequestLogging: true
   });
 
-  const server = fastify({
-    disableRequestLogging: process.env.NODE_ENV === 'production'
+  // One line per request, at a level that keeps polling out of the default
+  // output (see requestLogLevel). Method, path, status and time only — no
+  // headers, query or body, so no token or password.
+  server.addHook('onResponse', async (request, reply) => {
+    const url = requestLogPath(request.url);
+    request.log[requestLogLevel(request.method, reply.statusCode)](
+      { method: request.method, url, statusCode: reply.statusCode, responseTimeMs: Math.round(reply.elapsedTime) },
+      `${request.method} ${url} ${reply.statusCode}`
+    );
+  });
+
+  // Set before any plugin is registered: a plugin keeps the error handler of
+  // when it was registered, and routes added earlier would answer with
+  // Fastify's default one. A thrown 4xx (a body that isn't JSON, too large)
+  // keeps its status and message; anything else is a 500, logged with its
+  // stack.
+  server.setErrorHandler((error: FastifyError, request, reply) => {
+    const statusCode = error.statusCode !== undefined && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 500;
+    if (statusCode < 500) {
+      return reply.status(statusCode).send({ success: false, error: { code: 'INVALID_REQUEST', message: error.message } });
+    }
+    request.log.error({ err: error }, 'Request failed');
+    return reply.status(statusCode).send({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message
+      }
+    });
   });
 
   await server.register(cors, {
@@ -130,17 +163,6 @@ export const createHttpServer = async (deps: ApiDeps): Promise<FastifyInstance> 
       return reply.sendFile('index.html');
     }
     return reply.status(404).send({ success: false, error: { code: 'NOT_FOUND', message: 'Not found' } });
-  });
-
-  server.setErrorHandler((error: FastifyError, request, reply) => {
-    server.log.error({ err: error, url: request.url }, 'Request error');
-    return reply.status(error.statusCode ?? 500).send({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message
-      }
-    });
   });
 
   return server;

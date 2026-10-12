@@ -30,6 +30,8 @@
 - 模板里该字段只存非空值（与其他模板字段一致"只存填写了的"）；模板无法显式表达"关"，靠推断。—— 极少有 rwr_server 却不要日志的场景。（2026-10-10）
 - 关闭时 server-log 接口返回 404 `SERVER_LOG_DISABLED` —— 不只藏按钮。（2026-10-10）
 - API 日志分级：≥500 error（带堆栈）；499（客户端中止搜索）debug；≥400 warn；POST/PUT/DELETE info；其余（轮询 GET、静态文件）debug。只记方法、去掉查询串的 URL、状态码、耗时 —— 不记 header/body/查询串，`?token=`、密码不会进日志。—— 用户选择"按重要性分级"。（2026-10-10）
+  - 审查后：503（日志文件被锁或读取中被改写，日志页每 2 s 轮询）记 warn 而非 error；info 只给 POST/PUT/DELETE/PATCH，其余方法 debug。交给 Fastify 的 logger 加 serializer：任何 `path`/`url` 字段去掉查询串（`@fastify/websocket` 拒绝升级时会记录带查询串的 `path`），`err` 去掉 `rawPacket`（HTTP 解析错误的原始字节，可能含 Authorization，仅 trace 级可见）。（2026-10-10）
+  - 用户确认（2026-10-10）：日志页轮询遇到 503 时记 warn，默认可见（失败要看得到，只有成功的轮询是 debug）。Acceptance"默认级别下轮询 GET 不出现"指成功的轮询。`req` 字段也只记方法和去掉查询串的路径。
 - 统一错误处理器：4xx 保留状态码与消息，code `INVALID_REQUEST`；5xx code `INTERNAL_ERROR`，生产环境隐藏消息。（2026-10-10）
 
 ## Acceptance
@@ -61,10 +63,10 @@
       证据：`npm run typecheck` 过；`npm test` 791/791；变异（去掉 service 路径复查）被 server-log.test 抓住；Diff Review + Conformance 发现已修（Windows `.. ` 段、非字符串值、设备名、`\` 分隔符、去掉 `.sh` 推断） ｜ commit：`9edb53f`
       留给 CP2：e2e 补 `GET /instances` 带推断值、`POST/PUT /instances` 非法 `serverLogFile` 400 且磁盘不变；手改非法非空值的实例入口会显示，日志页要显示"未启用"。
 - [x] 2. 前端：实例/模板表单字段与校验、套用模板时推断、隐藏列表与终端页入口、日志页标题/文案与"未启用"状态；浏览器 smoke 补检查。
-      证据：`npm run typecheck` 过；`npm test` 881/881（新 `instance-config.test.ts` 走真 registry + InstanceService + 路由；单测对前后端两份规则跑同一张表，变异前端规则被抓住）；frontend lint + `tsc -b` 过；`smoke:instance-form` 56/56、`smoke:server-log-ui` 73/73；Diff Review + Conformance + 复核的发现已修（Windows 中段盘符逃逸、新建时日志文件跟随 Executable、禁用后停止加载与重试）；用户在 127.0.0.1:4747 人工验证 5 步全部通过（steamcmd 无入口、新建表单推断与跟随、`logs/console_log.txt` 自定义文件、打开中被关闭、模板表单） ｜ commit：见下一条
+      证据（commit `4147b13`）：`npm run typecheck` 过；`npm test` 881/881（新 `instance-config.test.ts` 走真 registry + InstanceService + 路由；单测对前后端两份规则跑同一张表，变异前端规则被抓住）；frontend lint + `tsc -b` 过；`smoke:instance-form` 56/56、`smoke:server-log-ui` 73/73；Diff Review + Conformance + 复核的发现已修（Windows 中段盘符逃逸、新建时日志文件跟随 Executable、禁用后停止加载与重试）；用户在 127.0.0.1:4747 人工验证 5 步全部通过（steamcmd 无入口、新建表单推断与跟随、`logs/console_log.txt` 自定义文件、打开中被关闭、模板表单） ｜ commit：`4147b13`
       用户确认：只更新代码种子，不迁移已有 `templates.json`。
-- [ ] 3. API 日志：注入容错 logger、分级 onResponse、`/api` 统一错误处理器；集成测试（级别映射、无 token、错误格式）。
-      证据： ｜ commit：
+- [x] 3. API 日志：注入容错 logger、分级 onResponse、`/api` 统一错误处理器；集成测试（级别映射、无 token、错误格式）。
+      证据：`npm run typecheck` 过；`npm test` 919/919（新 `request-log.test.ts` 单测 + 集成，含 WS 升级）；变异（错误处理器挪回插件之后 / 打开 Fastify 自带请求日志 / 去掉 serializer）均被抓住；`npm run package && npm run smoke:release` 37/37（新增：打包进程默认级别下 start 为 info 行、无读请求行、无 token）；Diff Review + Conformance + 复核的发现已修（503 记 warn、方法规则与 Decision 一致、`path`/`url`/`req`/`err.rawPacket` serializer）；用户人工验证：默认级别登录/PUT 为 info 行、轮询静默、无 `token=`，`LOG_LEVEL=debug` 时轮询出现 ｜ commit：见下一条
 - [ ] 4. 文档：README（中英）、backlog 删已完成项；package + smoke:release。
       证据： ｜ commit：
 
