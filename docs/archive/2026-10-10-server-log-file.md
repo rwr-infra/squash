@@ -2,7 +2,7 @@
 
 - 日期：2026-10-10 – 2026-10-12
 - 风险：中（改实例/模板共享 schema 和接口行为；推翻"日志路径不可配置"的旧决定；日志接线挨着防 EIO 挂死的 destination）
-- Commits：`9edb53f`..`7cdd56d`（分支 `feat/server-log-file`）
+- Commits：`9edb53f`..（分支 `feat/server-log-file`，PR #16）
 - 相关 ADR：无
 
 ## 结果
@@ -24,6 +24,7 @@
 | 不迁移已有 `templates.json` | 用户确认；推断的结果相同；模板存储的原则是从不改动已有文件 | 启动时按名字补字段：按名字识别模板不可靠 |
 | 模板里该字段只存非空值，没法表达"不要日志" | 和其他模板字段一致："只存填了的" | 允许 `''`：模板语义会多一种状态 |
 | 新建实例时，推断出的值跟随用户修改的 Executable，直到用户手动改过该字段或模板设置了它；编辑实例时不跟随 | 改成 steamcmd 后还留着 `rwr_server.log` 是错的；只在表单的 `onValuesChange`（用户操作）里重新推断，套用模板时调用的 `setFieldsValue` 不会触发 | 只在打开表单时推断一次（审查发现的问题） |
+| 终端页的日志文件状态带上实例 id，渲染时只认当前 `instanceId` 对应的那条 | 路由切换时，上一个实例的迟到响应不能让当前实例显示 Log 按钮（CodeRabbit 指出）；不需要在 effect 里同步清空状态，那样会违反 react-compiler 的 lint 规则 | effect 开头同步 `setState('')`：违反 lint |
 | 关闭时 server-log 三个接口都返回 404 `SERVER_LOG_DISABLED`，前端停止轮询 | 不只是把按钮藏起来；和 `INSTANCE_NOT_FOUND` 区分开 | 只在前端隐藏 |
 | 请求日志用根上的 `onResponse` 钩子，关掉 Fastify 自带的请求日志 | Fastify 自带的每个请求两行，还带查询串（终端 WS 的 `?token=`） | `disableRequestLogging: false` |
 | 交给 Fastify 的 logger 加 serializer：`path`、`url`、`req` 去掉查询串，`err` 去掉 `rawPacket` | `@fastify/websocket` 拒绝升级时会记录带查询串的 `path`；Fastify 在写不出响应时会记录 `req`；HTTP 解析错误的原始字节可能含 Authorization | 只在自己的钩子里去掉查询串：第三方日志照样泄露 |
@@ -36,6 +37,7 @@
 - **HTTP 日志**：`createHttpServer` 只用注入的 `deps.logger`，也就是 `src/index.ts` 那个带容错 destination 的 logger，不能自己新建 pino。新加的日志字段里如果有 URL，要经过 `requestLogSerializers` 处理。
 - **错误处理器和根钩子**：要对所有路由生效，就必须在注册任何插件之前设置。
 - **表单**：要区分"用户改的"和"程序设置的"，用 `<Form onValuesChange>`，它不会被 `setFieldsValue` 触发。
+- **按路由参数异步加载的页面状态**：存成 `{ id, 值 }`，渲染时比对当前参数，不要在 effect 里同步清空（react-compiler 的 lint 规则不允许）。见 `TerminalPage` 的 `logFile`。
 - **测试 `appPaths`**：用 `vi.mock('../../src/app/paths.js')` 加 `vi.hoisted` 指到临时目录，见 `test/integration/instance-config.test.ts`。日志输出用内存流的 pino 抓取，见 `test/integration/request-log.test.ts`。
 
 ## Pitfalls
@@ -48,7 +50,12 @@
 ## 剩余风险 / 后续
 - Windows 上的路径规则（盘符段、设备名、`\` 分隔符、越界检查）没有实跑，只在 macOS 上用 `path.win32` 推导和单测验证过。已记入 backlog。
 - Fastify 重复 send 时会记一条 warn，消息里有完整 URL；目前没有会触发它的路径。已记入 backlog。
-- 打开终端（WS）不产生请求日志行；终端页切换实例时状态不重置。都已记入 backlog。
+- **跟随符号链接（已接受）**：边界检查只看字面路径，打开文件时会跟随 `cwd` 里的符号链接（CodeRabbit 在 PR #16 指出）。不改的原因：
+  - 能在 `cwd` 里建链接的人必须有该目录的写权限，持 token 的人本来就能运行任意程序；没有 token 的人建了链接，内容也只显示给登录的管理员。
+  - 日志索引每次刷新都会重新打开文件，先 realpath 再检查有 TOCTOU 窗口；Node 没有 `RESOLVE_BENEATH` 或逐级 `O_NOFOLLOW`，做不到真正的约束。
+  - 把 `logs/` 链接到别的磁盘是正常用法，会被误伤。
+  - 改前固定读 `rwr_server.log` 时同样会跟随链接。
+- 打开终端（WS）不产生请求日志行；终端页切换实例时 status/pid 不重置（Log 按钮已按实例 id 区分，见下）。都已记入 backlog。
 - `auth.ts` 的独立 pino 没有走容错 destination，便携包输出的还是 JSON。保留在 backlog 的"日志体验"条目里。
 - 模板没法表达"不要日志"（设计如此）：rwr_server 实例清空日志文件后再"存为模板"，用这个模板新建的实例又会推断出 `rwr_server.log`。
 

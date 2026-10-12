@@ -218,7 +218,8 @@ say) has neither button.
 
 - **Which file.** A file name or a path below the working directory, with `/` or `\`
   (`logs/console_log.txt`). Absolute paths, drives, `..`, `:` and Windows device names
-  are refused. When you create an instance, the field follows the executable —
+  are refused; symbolic links inside the working directory are followed. When you
+  create an instance, the field follows the executable —
   `rwr_server.log` for `rwr_server`, blank otherwise — until you type in it or a
   template sets it. Instances saved by an older version get the same default (the file
   in `config/` keeps them as they were until the next save).

@@ -26,7 +26,7 @@
 - **超长行 16 KiB 之后的匹配没有高亮**（低，README 已说明）：接口每行只返回前 16 KiB，计数和跳转仍然正确。
 - **日志首次建索引不能中止；同一实例的并发搜索不限流**（低）：前端发起新搜索前会中止旧的，但直接调接口可以并发多个全文扫描。
 - **终端 WebSocket 连接没有请求日志行**（低）：升级后 reply 被 hijack，`onResponse` 不触发，所以打开终端不会出现在控制台里（也就不会泄露 `?token=`）。想看到"谁连了终端"，可以在 `terminal-gateway` 里记连接/断开。
-- **终端页切换实例时状态不重置**（低，既有）：`TerminalPage` 的 effect 不清空上一个实例的 status/pid/`serverLogFile`，从 `/terminal/a` 直接到 `/terminal/b` 且 b 的请求失败时会沿用 a 的值。改的时候注意 react-compiler 的 lint 不允许在 effect 里同步 setState。
+- **终端页切换实例时状态不重置**（低，既有）：`TerminalPage` 的 effect 不清空上一个实例的 status/pid，从 `/terminal/a` 直接到 `/terminal/b` 且 b 的请求失败或 a 的请求迟到时会沿用 a 的值。Log 按钮已经修好：状态带实例 id，渲染时比对。其余状态可以照同样的办法改（react-compiler 的 lint 不允许在 effect 里同步 setState）。
 - **编辑实例后终端尺寸回到 120×40**（低）：编辑会 `dispose()` 旧 supervisor 并新建一个，新的没有记住尺寸；已打开的终端页仍连着旧对象，要重新进入页面。
 
 ## 安全
