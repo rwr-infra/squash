@@ -3,8 +3,9 @@
 //     its last write, contents and mtime unchanged, and leaves no log behind;
 //     no log, an empty one, or not a regular file (a symlink, a directory):
 //     nothing, not even the directory
-//   - a second backup last written in the same second gets -1; nothing is
-//     ever replaced, not even a dangling symlink
+//   - a second backup last written in the same second gets -1, the next one
+//     past the highest in use (a name the clean-up freed is not reused);
+//     nothing is ever replaced, not even a dangling symlink
 //   - when it can't — the directory's name is a file, or a symlink/junction
 //     to a directory elsewhere — it throws and leaves everything as it was
 //   - listing: this log's backups only (regular files with exactly its
@@ -96,6 +97,23 @@ describe('archiving', () => {
     });
     expect(names).toEqual(['rwr_server.2026-10-15_10-30-00.log', 'rwr_server.2026-10-15_10-30-00-1.log', 'rwr_server.2026-10-15_10-30-00-2.log']);
     expect(names.map(name => fs.readFileSync(path.join(historyDir, name!), 'utf8'))).toEqual(['first', 'second', 'third']);
+    // A name freed by the clean-up is not reused: the next is -3.
+    fs.rmSync(path.join(historyDir, names[0]!));
+    writeAt(logPath, 'fourth', lastWritten);
+    expect(archiveServerLog(logPath)).toBe('rwr_server.2026-10-15_10-30-00-3.log');
+    expect(names.slice(1).map(name => fs.readFileSync(path.join(historyDir, name!), 'utf8'))).toEqual(['second', 'third']);
+  });
+
+  it('past the last suffix (a name put there by hand): the first free one, nothing replaced', () => {
+    const lastWritten = new Date(2026, 9, 15, 10, 30, 0);
+    fs.mkdirSync(historyDir);
+    const last = path.join(historyDir, archiveName('rwr_server.log', lastWritten, 9999));
+    fs.writeFileSync(last, 'mine');
+    writeAt(logPath, 'run', lastWritten);
+    expect(archiveServerLog(logPath)).toBe('rwr_server.2026-10-15_10-30-00.log');
+    writeAt(logPath, 'run 2', lastWritten);
+    expect(archiveServerLog(logPath)).toBe('rwr_server.2026-10-15_10-30-00-1.log');
+    expect(fs.readFileSync(last, 'utf8')).toBe('mine');
   });
 
   it('a dangling symlink under the backup name is not replaced', ctx => {

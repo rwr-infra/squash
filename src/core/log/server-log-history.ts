@@ -64,14 +64,17 @@ const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&
 // Case-sensitive: a name squash did not write the way it writes them is not
 // one of its backups (so after the log file is renamed, case included, the
 // old backups are left alone). Compared in NFC: HFS+ lists names in NFD.
-const archiveKey = (logName: string, name: string): { readonly stamp: string; readonly suffix: number } | undefined => {
+const archiveMatcher = (logName: string): ((name: string) => { readonly stamp: string; readonly suffix: number } | undefined) => {
   const { stem, ext } = splitName(logName.normalize('NFC'));
-  const match = new RegExp(`^${escapeRegExp(stem)}\\.(\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2})(?:-([1-9]\\d{0,3}))?${escapeRegExp(ext)}$`).exec(name.normalize('NFC'));
-  return match ? { stamp: match[1]!, suffix: match[2] === undefined ? 0 : Number(match[2]) } : undefined;
+  const pattern = new RegExp(`^${escapeRegExp(stem)}\\.(\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2})(?:-([1-9]\\d{0,3}))?${escapeRegExp(ext)}$`);
+  return name => {
+    const match = pattern.exec(name.normalize('NFC'));
+    return match ? { stamp: match[1]!, suffix: match[2] === undefined ? 0 : Number(match[2]) } : undefined;
+  };
 };
 
 // Whether `name` has the format of a backup of the log named `logName`.
-export const isArchiveName = (logName: string, name: string): boolean => archiveKey(logName, name) !== undefined;
+export const isArchiveName = (logName: string, name: string): boolean => archiveMatcher(logName)(name) !== undefined;
 
 // Nothing at all at `target` — not even a dangling symlink.
 const isFree = (target: string): boolean => {
@@ -111,8 +114,19 @@ export const archiveServerLog = (logPath: string): string | undefined => {
   fs.mkdirSync(dir, { recursive: true });
   if (!isRealDirectory(dir)) throw new Error(`${path.basename(dir)} is not a directory (a symlink?)`);
   const logName = path.basename(logPath);
-  for (let suffix = 0; suffix <= MAX_SUFFIX; suffix++) {
-    const name = archiveName(logName, info.mtime, suffix);
+  const stamp = archiveStamp(info.mtime);
+  const keyOf = archiveMatcher(logName);
+  // From one past the highest suffix in use for this time, not the first
+  // free one: a name the limits freed is not given to a later run, so the
+  // names there keep the order their backups were made in (mtimes may be
+  // whole seconds). Past the last suffix (names put there by hand), round
+  // to the first free one.
+  const next = fs.readdirSync(dir).reduce((highest, name) => {
+    const key = keyOf(name);
+    return key?.stamp === stamp ? Math.max(highest, key.suffix) : highest;
+  }, -1) + 1;
+  for (let step = 0; step <= MAX_SUFFIX; step++) {
+    const name = archiveName(logName, info.mtime, (next + step) % (MAX_SUFFIX + 1));
     const target = path.join(dir, name);
     if (isFree(target)) {
       fs.renameSync(logPath, target);
@@ -133,7 +147,7 @@ export type ServerLogArchive = {
 // a file or a symlink. An entry that can't be looked at is left out.
 export const listServerLogArchives = async (logPath: string): Promise<ServerLogArchive[]> => {
   const dir = historyDirOf(logPath);
-  const logName = path.basename(logPath);
+  const keyOf = archiveMatcher(path.basename(logPath));
   let names: string[];
   try {
     if (!(await lstat(dir)).isDirectory()) return [];
@@ -145,7 +159,7 @@ export const listServerLogArchives = async (logPath: string): Promise<ServerLogA
   }
   const archives: Array<ServerLogArchive & { readonly key: { readonly stamp: string; readonly suffix: number } }> = [];
   for (const name of names) {
-    const key = archiveKey(logName, name);
+    const key = keyOf(name);
     if (!key) continue;
     let info: fs.Stats;
     try {

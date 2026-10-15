@@ -46,6 +46,7 @@
   - dispose 要等清理完成：网络盘卡住时，编辑或删除实例会跟着变慢。"dispose 等清理"这一点只有代码保证，没有能区分的测试。
   - Windows 上只改名一次，不重试。如果有程序一直开着日志、不共享删除（例如 `Get-Content -Wait`、BareTail），或杀毒软件短暂占用，就只记一行日志，那一轮的日志会被 rwr 清空。README 里说明，重试记入 backlog。
 - （审查后补充）清理在**执行时**读取本 supervisor 最后一次备份的文件名（`latestBackup`），不在入队时取值。否则队列积压时 `newest` 会过时，keepFiles=1 时可能删掉最近一轮的日志（cp2 审查，2026-10-15）
+- （cp3 期间修正）同一秒内的后缀取"该时间已用的最大后缀 + 1"，不取第一个空位；超过 9999 时回到第一个空位。这样被清理释放的名字不会再分给后来的那一轮，名字顺序就等于备份顺序（mtime 可能只精确到秒）。见 Pitfall（2026-10-15）
 - （审查后补充）`resolveServerLogPath` 在 `cwd` 不是字符串时返回 undefined。supervisor 构造时会调用它，手改的坏配置不能让整个注册表加载失败（cp2 审查，2026-10-15）
 
 ## Acceptance
@@ -97,7 +98,13 @@
       证据： ｜ commit：
 
 ## Pitfalls
-（出现时追加）
+### Pitfall: 同一秒内被清理释放的后缀会被复用
+- 现象：`supervisor.test.ts` 的 "each start logged its backup, by the name on disk" 偶发失败，大约 4 次失败 1 次。四轮运行落在同一秒内，run 0 的 `…45.log` 被清理之后，run 3 又拿到了 `…45.log`。
+- 状态：CONFIRMED（实例日志里能看到同一个名字被用了两次）
+- 原因：后缀按"第一个空闲"分配。Diff Review 在 cp1 已经提过（第 3 条 b），当时只为它加了 `newest` 保护，没有改命名规则。
+- 已否决：只改测试、允许名字重复。那样一个名字会先后指向两轮不同的日志；在 mtime 只精确到秒的文件系统上，名字顺序也不再等于备份顺序。
+- 来源：`src/core/log/server-log-history.ts` 的 `archiveServerLog`
+- 下一步：无，已修复。
 
 ## Sources
 - `src/core/instance/instance-supervisor.ts`（`start()` 约在 L365，spawn 在 `createPtyProcess`）
