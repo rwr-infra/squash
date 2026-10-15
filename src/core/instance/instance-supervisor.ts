@@ -1,5 +1,7 @@
 import { createInstanceLogWriter, toInstanceLogFile } from '../log/log-writer.js';
 import { createOutputParser } from '../log/output-parser.js';
+import { resolveServerLogPath, serverLogFileOf } from '../log/server-log-file.js';
+import { archiveServerLog, pruneServerLogArchives, serverLogHistoryOf } from '../log/server-log-history.js';
 import { createPtyProcess } from '../pty/pty-process-adapter.js';
 import { readCrashDumpMtime } from '../pty/rwr-crashdump.js';
 import type { PtyProcess } from '../pty/pty-types.js';
@@ -93,6 +95,10 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
   const watchdogEnabled = isWindows && restartPolicy !== 'never';
   const stopTimeoutMs = resolveStopTimeoutMs(config.stopTimeoutMs);
   const stopCommands = parseStopCommands(config.stopCommand);
+  // Keeping the previous run's server log: the log's path while that is on.
+  const serverLogFile = serverLogFileOf(config);
+  const serverLogPath = resolveServerLogPath(config);
+  const serverLogHistory = serverLogPath === undefined ? undefined : serverLogHistoryOf(config);
 
   let runtime = createRuntime(config.id, 'stopped');
   let processRef: PtyProcess | undefined;
@@ -145,6 +151,45 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       })
     );
     return logQueue;
+  };
+
+  const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+  // The last backup this supervisor made: whatever the mtimes say, it is the
+  // newest, and a clean-up never deletes it.
+  let latestBackup: string | undefined;
+
+  // Before a spawn: the server empties its log when it starts, so the previous
+  // run's goes into the history first. Synchronous, so nothing (a stop, say)
+  // happens between it and the spawn; and never in the way of the start — a
+  // failure only gets a line in the instance log.
+  const archivePreviousServerLog = () => {
+    if (serverLogPath === undefined || serverLogHistory === undefined) return;
+    try {
+      const name = archiveServerLog(serverLogPath);
+      if (name === undefined) return;
+      latestBackup = name;
+      void log(`kept the previous ${serverLogFile} as ${serverLogFile}.history/${name}`);
+    } catch (err) {
+      void log(`could not keep the previous ${serverLogFile}: ${errorText(err)}`);
+    }
+  };
+
+  // After a spawn: the backups past the limits go. One clean-up at a time;
+  // dispose() waits for the last. Each reads latestBackup when it runs, not
+  // when queued: a start may have made a newer backup meanwhile.
+  let historyQueue: Promise<void> = Promise.resolve();
+  const pruneServerLogHistory = () => {
+    if (serverLogPath === undefined || serverLogHistory === undefined) return;
+    historyQueue = historyQueue.then(async () => {
+      try {
+        const { deleted, failed } = await pruneServerLogArchives(serverLogPath, serverLogHistory, { newest: latestBackup });
+        if (deleted.length > 0) void log(`deleted ${deleted.length} old ${serverLogFile} backup(s): ${deleted.join(', ')}`);
+        if (failed.length > 0) void log(`could not delete old ${serverLogFile} backup(s): ${failed.join(', ')}`);
+      } catch (err) {
+        void log(`could not clean up ${serverLogFile}.history: ${errorText(err)}`);
+      }
+    });
   };
 
   const clearTimer = (timer: NodeJS.Timeout | undefined) => {
@@ -381,6 +426,8 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
       restartReason: undefined
     });
 
+    archivePreviousServerLog();
+
     let ptyProcess: PtyProcess;
     try {
       ptyProcess = createPtyProcess({
@@ -418,6 +465,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
     notifyStatus();
 
     startWatchdog();
+    pruneServerLogHistory();
 
     // Reset the crash-loop counter once the instance has run long enough.
     clearTimer(resetTimer);
@@ -600,6 +648,7 @@ export const createInstanceSupervisor = async (config: InstanceConfig): Promise<
         notifyStatus();
       }
       await waitForExit();
+      await historyQueue;
       await logQueue;
     }
   };

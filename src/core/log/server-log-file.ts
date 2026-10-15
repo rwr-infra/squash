@@ -51,11 +51,12 @@ export const serverLogFileOf = (config: { readonly executable?: unknown; readonl
 };
 
 // The config's log file as an absolute path; undefined when it has none, or
-// (a hand-edited config) one that is not a path inside its working directory.
-// The rules keep it inside; the check after resolving makes sure.
-export const resolveServerLogPath = (config: { readonly cwd: string; readonly executable?: unknown; readonly serverLogFile?: unknown }): string | undefined => {
+// (a hand-edited config) one that is not a path inside its working directory
+// or no working directory. The rules keep it inside; the check after
+// resolving makes sure.
+export const resolveServerLogPath = (config: { readonly cwd?: unknown; readonly executable?: unknown; readonly serverLogFile?: unknown }): string | undefined => {
   const file = serverLogFileOf(config);
-  if (!isValidServerLogFile(file)) return undefined;
+  if (!isValidServerLogFile(file) || typeof config.cwd !== 'string') return undefined;
   const cwd = path.resolve(config.cwd);
   const filePath = path.resolve(cwd, ...serverLogFileSegments(file));
   const relative = path.relative(cwd, filePath);

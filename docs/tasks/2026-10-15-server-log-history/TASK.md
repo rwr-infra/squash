@@ -42,6 +42,11 @@
   - 改日志文件名（包括只改大小写）后，旧备份不再列出，也不再清理。
   - 年份 ≥ 10000 的 mtime 不匹配格式。
   - 崩溃循环产生的短日志会占用个数名额，但每轮最多 5 次重试就暂停。
+  - spawn 失败时不做清理，最多多出 1 个文件，下次成功启动时会清掉。
+  - dispose 要等清理完成：网络盘卡住时，编辑或删除实例会跟着变慢。"dispose 等清理"这一点只有代码保证，没有能区分的测试。
+  - Windows 上只改名一次，不重试。如果有程序一直开着日志、不共享删除（例如 `Get-Content -Wait`、BareTail），或杀毒软件短暂占用，就只记一行日志，那一轮的日志会被 rwr 清空。README 里说明，重试记入 backlog。
+- （审查后补充）清理在**执行时**读取本 supervisor 最后一次备份的文件名（`latestBackup`），不在入队时取值。否则队列积压时 `newest` 会过时，keepFiles=1 时可能删掉最近一轮的日志（cp2 审查，2026-10-15）
+- （审查后补充）`resolveServerLogPath` 在 `cwd` 不是字符串时返回 undefined。supervisor 构造时会调用它，手改的坏配置不能让整个注册表加载失败（cp2 审查，2026-10-15）
 
 ## Acceptance
 - 成功路径：
@@ -79,9 +84,9 @@
 
 ## Checkpoints
 - [x] 1. 契约和核心：类型、实例和模板 schema、种子模板、`server-log-history.ts`（解析路径、生成和识别备份名、同步改名、异步清理、列出备份；和 ServerLogService 共用路径解析）；单测（名字和格式、清理选择）、集成测试（临时目录：改名、重名、目录名被文件占用、清理只删符合格式的文件、不跟随符号链接、保留最新的那个）
-      证据：`npm run typecheck` 通过；`npm test` 1007/1007；删除和改名逻辑的 13 个变异全部被抓到；Diff Review 和 Conformance Review 的发现已处理（见 Decisions）；用户已读 diff ｜ commit：（见 git log）
-- [ ] 2. supervisor 接入：spawn 前备份，spawn 后清理，dispose 等清理完成，失败不影响启动，写 `[squash]` 日志行；`supervisor.test.ts` 加场景（多次 restart 得到多个备份；备份失败时仍然启动）
-      证据： ｜ commit：
+      证据：`npm run typecheck` 通过；`npm test` 1007/1007；删除和改名逻辑的 13 个变异全部被抓到；Diff Review 和 Conformance Review 的发现已处理（见 Decisions）；用户已读 diff ｜ commit：e2176dc
+- [x] 2. supervisor 接入：spawn 前备份，spawn 后清理，dispose 等清理完成，失败不影响启动，写 `[squash]` 日志行；`supervisor.test.ts` 加场景（多次 restart 得到多个备份；备份失败时仍然启动）
+      证据：typecheck 通过；`npm test` 1025/1025；supervisor 新增 5 个场景共 17 项（spawn 那一刻日志已被移走，靠 onStatus 检查；首次 Start、自动重启、restart 三条路径；newest；失败；关闭/无日志文件）；6 个变异全部被抓到；两份审查的发现已处理；用户已读 diff ｜ commit：（见 git log）
 - [ ] 3. 查看接口：`/server-log/history`；三个接口支持 `?archive=`；按备份缓存索引（有上限）；PROTECTED_ROUTES；集成测试（排序、读和搜索备份、各种非法名字、被清理后返回 404、关闭日志的实例）
       证据： ｜ commit：
 - [ ] 4. 实例表单：Simple/Advanced 和 Keep previous logs（实例表单和模板表单）；`instanceForm.ts` 的映射和清洗；更新 `smoke:instance-form`

@@ -206,4 +206,8 @@ describe('the log file path', () => {
   it.each([[''], ['../x.log'], ['/etc/passwd'], ['a/../../x.log'], ['.'], [5]])('none for %j', serverLogFile => {
     expect(resolveServerLogPath({ cwd, serverLogFile })).toBeUndefined();
   });
+  it('none for a hand-edited config without a working directory', () => {
+    expect(resolveServerLogPath({ cwd: 42, serverLogFile: 'rwr_server.log' })).toBeUndefined();
+    expect(resolveServerLogPath({ serverLogFile: 'rwr_server.log' })).toBeUndefined();
+  });
 });
