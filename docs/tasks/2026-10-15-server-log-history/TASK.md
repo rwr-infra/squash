@@ -37,10 +37,14 @@
 - （审查后补充）history 目录本身必须是真实目录，用 lstat 判断：如果它是符号链接或 junction，不往里备份（抛错，记一行日志），列表和清理都当作没有备份处理。否则改名和删除会作用到 cwd 之外 —— cp1 审查（2026-10-15）
 - （审查后补充）清理时把刚备份的那份当作"最新"，由 `newest` 参数传入，不按 mtime 排序决定 —— 同一秒内后缀会被复用，时钟回拨时也会排错，刚备份的那份可能被个数规则删掉（cp1 审查，2026-10-15）
 - （审查后补充）`archiveServerLog` 遇到不是普通文件的日志时返回 undefined，不抛错；单个条目 lstat 失败只跳过这一个；备份名用 NFC 匹配 —— cp1 审查（2026-10-15）
+- （cp3）列表接口与保留功能当前是否开启无关：即使关了，之前的备份也照样列出、可读。列表里同时返回实例的设置（`keep`，关闭时为 null）。
+- （cp3 审查后）备份的索引缓存按路径作 key，最多 8 个，最近最少使用的先淘汰。备份索引使用 `stableGeneration`：generation 由路径、dev、ino、size、mtime 派生，淘汰后重建也不变，否则前端会把它当成"日志被重置"。备份在检查之后被删掉时返回 404，不返回空文件。`file` 按当前配置的写法返回（2026-10-15）
+- （cp5 要做）Log 页查看备份时不轮询：备份不会变化，而缓存没命中时每次轮询都要重新扫描整个文件。
 - 接受的风险：
   - `isFree` 检查和 rename 之间，如果另一个进程恰好建了同名文件，它会被覆盖。squash 内部全程同步，rwr 此时也没在运行。
   - 改日志文件名（包括只改大小写）后，旧备份不再列出，也不再清理。
   - 年份 ≥ 10000 的 mtime 不匹配格式。
+  - 读备份时对符号链接的检查（lstat）只代表检查那一刻：有 cwd 写权限的人可以在打开前把它换成链接，硬链接也查不出来。这与已接受的"当前日志跟随链接"风险同源（见 `docs/archive/2026-10-10-server-log-file.md`），不增加攻击者的能力。
   - 崩溃循环产生的短日志会占用个数名额，但每轮最多 5 次重试就暂停。
   - spawn 失败时不做清理，最多多出 1 个文件，下次成功启动时会清掉。
   - dispose 要等清理完成：网络盘卡住时，编辑或删除实例会跟着变慢。"dispose 等清理"这一点只有代码保证，没有能区分的测试。
@@ -87,9 +91,9 @@
 - [x] 1. 契约和核心：类型、实例和模板 schema、种子模板、`server-log-history.ts`（解析路径、生成和识别备份名、同步改名、异步清理、列出备份；和 ServerLogService 共用路径解析）；单测（名字和格式、清理选择）、集成测试（临时目录：改名、重名、目录名被文件占用、清理只删符合格式的文件、不跟随符号链接、保留最新的那个）
       证据：`npm run typecheck` 通过；`npm test` 1007/1007；删除和改名逻辑的 13 个变异全部被抓到；Diff Review 和 Conformance Review 的发现已处理（见 Decisions）；用户已读 diff ｜ commit：e2176dc
 - [x] 2. supervisor 接入：spawn 前备份，spawn 后清理，dispose 等清理完成，失败不影响启动，写 `[squash]` 日志行；`supervisor.test.ts` 加场景（多次 restart 得到多个备份；备份失败时仍然启动）
-      证据：typecheck 通过；`npm test` 1025/1025；supervisor 新增 5 个场景共 17 项（spawn 那一刻日志已被移走，靠 onStatus 检查；首次 Start、自动重启、restart 三条路径；newest；失败；关闭/无日志文件）；6 个变异全部被抓到；两份审查的发现已处理；用户已读 diff ｜ commit：（见 git log）
-- [ ] 3. 查看接口：`/server-log/history`；三个接口支持 `?archive=`；按备份缓存索引（有上限）；PROTECTED_ROUTES；集成测试（排序、读和搜索备份、各种非法名字、被清理后返回 404、关闭日志的实例）
-      证据： ｜ commit：
+      证据：typecheck 通过；`npm test` 1025/1025；supervisor 新增 5 个场景共 17 项（spawn 那一刻日志已被移走，靠 onStatus 检查；首次 Start、自动重启、restart 三条路径；newest；失败；关闭/无日志文件）；6 个变异全部被抓到；两份审查的发现已处理；用户已读 diff ｜ commit：e1d7488（另有修复 4f66587：被清理释放的名字不再复用）
+- [x] 3. 查看接口：`/server-log/history`；三个接口支持 `?archive=`；按备份缓存索引（有上限）；PROTECTED_ROUTES；集成测试（排序、读和搜索备份、各种非法名字、被清理后返回 404、关闭日志的实例）
+      证据：typecheck 通过；`npm test` 13 个文件 1068/1068；新增 `server-log-service.test.ts`（缓存上限和 LRU、generation 稳定、检查后被删、file 写法）；路由的 400/404/鉴权都有用例；13 个变异全部被抓到；两份审查的发现已处理 ｜ commit：（见 git log）
 - [ ] 4. 实例表单：Simple/Advanced 和 Keep previous logs（实例表单和模板表单）；`instanceForm.ts` 的映射和清洗；更新 `smoke:instance-form`
       证据： ｜ commit：
 - [ ] 5. Log 页：选择并查看备份；更新 `smoke:server-log-ui`

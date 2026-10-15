@@ -175,6 +175,25 @@ export const listServerLogArchives = async (logPath: string): Promise<ServerLogA
   return archives.map(({ name, size, mtimeMs }) => ({ name, size, mtimeMs }));
 };
 
+// One backup to read, by name: its path, or undefined unless the name has
+// the log's backup format and is a regular file in the history directory
+// (itself no symlink) — as listServerLogArchives would list it. The name
+// has no separator, so the path stays in the history directory. The checks
+// are as of now: whoever can write there can swap in a link before the
+// file is opened (as with the log itself, which may be a link).
+export const resolveServerLogArchive = async (logPath: string, name: string): Promise<string | undefined> => {
+  if (!isArchiveName(path.basename(logPath), name)) return undefined;
+  const dir = historyDirOf(logPath);
+  const archivePath = path.join(dir, name);
+  try {
+    return (await lstat(dir)).isDirectory() && (await lstat(archivePath)).isFile() ? archivePath : undefined;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
+    throw err;
+  }
+};
+
 // The backups the limits remove, from a newest-first list: the ones last
 // written more than keepDays ago, and all past the newest keepFiles. Never
 // the newest: the log of a run that ended long ago must survive its own

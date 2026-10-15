@@ -11,7 +11,16 @@ const decimal = z
   .transform(Number)
   .pipe(z.number().max(Number.MAX_SAFE_INTEGER));
 
+// A backup to read instead of the log: a name from the history listing.
+// Whether it is one is up to the service, which knows the log's name.
+const archive = z.string().min(1).max(512).optional();
+
+export const ServerLogInfoQuerySchema = z.object({ archive });
+
+export type ServerLogInfoQuery = z.infer<typeof ServerLogInfoQuerySchema>;
+
 export const ServerLogLinesQuerySchema = z.object({
+  archive,
   from: decimal,
   count: decimal.pipe(z.number().min(1).max(1000)).default(200)
 });
@@ -22,7 +31,8 @@ export const ServerLogSearchQuerySchema = z.object({
   // A match never spans lines, so a line break could only match nothing.
   // Length in UTF-16 code units, like a JS string or an input's maxLength.
   q: z.string().min(1).max(256).refine(value => !/[\r\n]/.test(value), 'A search cannot contain a line break'),
-  caseSensitive: z.enum(['true', 'false']).default('false').transform(value => value === 'true')
+  caseSensitive: z.enum(['true', 'false']).default('false').transform(value => value === 'true'),
+  archive
 });
 
 export type ServerLogSearchQuery = z.infer<typeof ServerLogSearchQuerySchema>;

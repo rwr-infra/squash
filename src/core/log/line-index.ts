@@ -1,7 +1,7 @@
 import { open } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 // A line index over a text file that only grows — until it is replaced or
 // truncated (rwr_server empties rwr_server.log whenever it starts). It records
@@ -72,6 +72,12 @@ export type LineIndexOptions = {
   // A longer line is cut to this many bytes in readLines (marked at the end).
   readonly maxLineBytes?: number;
   readonly chunkBytes?: number;
+  // For a file that is never rewritten (a server log backup): the generation
+  // of content found in the file comes from the file's identity (path,
+  // device, inode, size and mtime when first indexed) instead of chance, so
+  // a new index of the same file — the old one dropped from a cache — keeps
+  // its generation. A rewrite still changes it.
+  readonly stableGeneration?: boolean;
 };
 
 // The file no longer starts with the indexed bytes.
@@ -120,8 +126,8 @@ type Opened = {
   readonly mtimeMs: number;
 };
 
-const emptyState = (exists: boolean, dev = 0n, ino = 0n): State => ({
-  generation: randomUUID(),
+const emptyState = (exists: boolean, dev = 0n, ino = 0n, generation: string = randomUUID()): State => ({
+  generation,
   exists,
   dev,
   ino,
@@ -218,6 +224,11 @@ export const createLineIndex = (filePath: string, options: LineIndexOptions = {}
   const stride = options.stride ?? 1024;
   const maxLineBytes = options.maxLineBytes ?? 16 * 1024;
   const chunkBytes = options.chunkBytes ?? 1024 * 1024;
+  // The generation of content found in the file (see stableGeneration).
+  const generationOf = (opened: Opened): string =>
+    options.stableGeneration
+      ? createHash('sha256').update(JSON.stringify([filePath, String(opened.dev), String(opened.ino), opened.size, opened.mtimeMs])).digest('hex').slice(0, 32)
+      : randomUUID();
 
   let state = emptyState(false);
   let refreshing: Promise<LineIndexSnapshot> | undefined;
@@ -260,7 +271,7 @@ export const createLineIndex = (filePath: string, options: LineIndexOptions = {}
       const { handle, dev, ino, size, mtimeMs } = opened;
       let base = state;
       if (!base.exists || !(await holdsPrefix(opened, base))) {
-        base = emptyState(true, dev, ino);
+        base = emptyState(true, dev, ino, generationOf(opened));
       } else if (size === base.size) {
         state = { ...base, mtimeMs };
         return snapshotOf(state);
@@ -268,7 +279,7 @@ export const createLineIndex = (filePath: string, options: LineIndexOptions = {}
       let next = await extend(handle, base, size, mtimeMs);
       // Emptied and regrown while we read the new bytes: start over.
       if (base.size > 0 && !(await sameBytes(handle, base))) {
-        next = await extend(handle, emptyState(true, dev, ino), size, mtimeMs);
+        next = await extend(handle, emptyState(true, dev, ino, generationOf(opened)), size, mtimeMs);
       }
       state = next;
       return snapshotOf(state);
