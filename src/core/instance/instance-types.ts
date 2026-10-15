@@ -26,6 +26,17 @@ export type InstanceConfig = {
   // rwr_server.log); '' = no log viewer. Missing in configs saved before it
   // existed: inferred from the executable (see core/log/server-log-file.ts).
   readonly serverLogFile?: string;
+  // Keep the previous run's server log: before every start a non-empty
+  // serverLogFile is moved into <its name>.history/ next to it, named after
+  // its last write, and backups past either limit are deleted (the newest one
+  // is always kept). Missing = off; ignored without a serverLogFile. See
+  // core/log/server-log-history.ts.
+  readonly serverLogHistory?: ServerLogHistory;
+};
+
+export type ServerLogHistory = {
+  readonly keepDays: number;
+  readonly keepFiles: number;
 };
 
 export type InstanceRuntime = {

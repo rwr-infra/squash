@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 // The file an instance's log viewer reads: InstanceConfig.serverLogFile, a
 // path relative to the instance's working directory ('' = no log viewer).
 // It comes from the instance's config only — no request names a file.
@@ -46,4 +48,16 @@ export const inferServerLogFile = (executable: unknown): string => {
 export const serverLogFileOf = (config: { readonly executable?: unknown; readonly serverLogFile?: unknown }): string => {
   if (config.serverLogFile === undefined) return inferServerLogFile(config.executable);
   return typeof config.serverLogFile === 'string' ? config.serverLogFile : '';
+};
+
+// The config's log file as an absolute path; undefined when it has none, or
+// (a hand-edited config) one that is not a path inside its working directory.
+// The rules keep it inside; the check after resolving makes sure.
+export const resolveServerLogPath = (config: { readonly cwd: string; readonly executable?: unknown; readonly serverLogFile?: unknown }): string | undefined => {
+  const file = serverLogFileOf(config);
+  if (!isValidServerLogFile(file)) return undefined;
+  const cwd = path.resolve(config.cwd);
+  const filePath = path.resolve(cwd, ...serverLogFileSegments(file));
+  const relative = path.relative(cwd, filePath);
+  return relative === '' || path.isAbsolute(relative) || relative.split(path.sep)[0] === '..' ? undefined : filePath;
 };

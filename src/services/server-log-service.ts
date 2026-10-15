@@ -1,8 +1,7 @@
-import path from 'node:path';
 import type { InstanceRegistry } from '../core/instance/instance-registry.js';
 import { createLineIndex, StaleIndexError } from '../core/log/line-index.js';
 import type { LineIndex, LineIndexSnapshot, LineRange, SearchResult } from '../core/log/line-index.js';
-import { isValidServerLogFile, serverLogFileOf, serverLogFileSegments } from '../core/log/server-log-file.js';
+import { resolveServerLogPath, serverLogFileOf } from '../core/log/server-log-file.js';
 
 // Reads that found the file rewritten since the refresh before them are
 // retried this many times (after another refresh) before giving up.
@@ -46,11 +45,8 @@ export class ServerLogService {
     const config = this.registry.getConfig(instanceId);
     if (!config) return undefined;
     const file = serverLogFileOf(config);
-    const cwd = path.resolve(config.cwd);
-    const filePath = path.resolve(cwd, ...serverLogFileSegments(file));
-    // The rules keep it inside; the check after resolving makes sure.
-    const relative = path.relative(cwd, filePath);
-    if (!isValidServerLogFile(file) || relative === '' || path.isAbsolute(relative) || relative.split(path.sep)[0] === '..') {
+    const filePath = resolveServerLogPath(config);
+    if (filePath === undefined) {
       this.indexes.delete(instanceId);
       throw new ServerLogDisabledError(instanceId, file);
     }
