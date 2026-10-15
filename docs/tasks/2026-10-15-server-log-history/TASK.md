@@ -39,6 +39,8 @@
 - （审查后补充）`archiveServerLog` 遇到不是普通文件的日志时返回 undefined，不抛错；单个条目 lstat 失败只跳过这一个；备份名用 NFC 匹配 —— cp1 审查（2026-10-15）
 - （cp3）列表接口与保留功能当前是否开启无关：即使关了，之前的备份也照样列出、可读。列表里同时返回实例的设置（`keep`，关闭时为 null）。
 - （cp3 审查后）备份的索引缓存按路径作 key，最多 8 个，最近最少使用的先淘汰。备份索引使用 `stableGeneration`：generation 由路径、dev、ino、size、mtime 派生，淘汰后重建也不变，否则前端会把它当成"日志被重置"。备份在检查之后被删掉时返回 404，不返回空文件。`file` 按当前配置的写法返回（2026-10-15）
+- （cp4）表单里两个数字框始终挂载，开关关闭时只是隐藏，值里始终是默认值或已保存的值。是否发送、是否校验，都在提交那一刻从表单 store 读取，不看 watch。原因：最初数字框是按 watch 条件挂载的，e2e 发现套用模板后立即提交会把设置悄悄丢掉（2026-10-15）
+- （cp4 审查后）校验失败自动切到 Advanced 时只影响这一次打开的弹窗，不改写记住的选择，并滚动、聚焦到出错的字段；每次打开弹窗都从记住的选择开始。"Save as template" 和提交用同一个条件：没有日志文件时不带保留设置（2026-10-15）
 - （cp5 要做）Log 页查看备份时不轮询：备份不会变化，而缓存没命中时每次轮询都要重新扫描整个文件。
 - 接受的风险：
   - `isFree` 检查和 rename 之间，如果另一个进程恰好建了同名文件，它会被覆盖。squash 内部全程同步，rwr 此时也没在运行。
@@ -48,6 +50,7 @@
   - 崩溃循环产生的短日志会占用个数名额，但每轮最多 5 次重试就暂停。
   - spawn 失败时不做清理，最多多出 1 个文件，下次成功启动时会清掉。
   - dispose 要等清理完成：网络盘卡住时，编辑或删除实例会跟着变慢。"dispose 等清理"这一点只有代码保证，没有能区分的测试。
+  - 手改出的非法 `serverLogHistory`，在编辑表单里显示为关闭；保存后会从配置中删掉。服务端本来就把它当作关闭，运行行为不变。
   - Windows 上只改名一次，不重试。如果有程序一直开着日志、不共享删除（例如 `Get-Content -Wait`、BareTail），或杀毒软件短暂占用，就只记一行日志，那一轮的日志会被 rwr 清空。README 里说明，重试记入 backlog。
 - （审查后补充）清理在**执行时**读取本 supervisor 最后一次备份的文件名（`latestBackup`），不在入队时取值。否则队列积压时 `newest` 会过时，keepFiles=1 时可能删掉最近一轮的日志（cp2 审查，2026-10-15）
 - （cp3 期间修正）同一秒内的后缀取"该时间已用的最大后缀 + 1"，不取第一个空位；超过 9999 时回到第一个空位。这样被清理释放的名字不会再分给后来的那一轮，名字顺序就等于备份顺序（mtime 可能只精确到秒）。见 Pitfall（2026-10-15）
@@ -93,9 +96,9 @@
 - [x] 2. supervisor 接入：spawn 前备份，spawn 后清理，dispose 等清理完成，失败不影响启动，写 `[squash]` 日志行；`supervisor.test.ts` 加场景（多次 restart 得到多个备份；备份失败时仍然启动）
       证据：typecheck 通过；`npm test` 1025/1025；supervisor 新增 5 个场景共 17 项（spawn 那一刻日志已被移走，靠 onStatus 检查；首次 Start、自动重启、restart 三条路径；newest；失败；关闭/无日志文件）；6 个变异全部被抓到；两份审查的发现已处理；用户已读 diff ｜ commit：e1d7488（另有修复 4f66587：被清理释放的名字不再复用）
 - [x] 3. 查看接口：`/server-log/history`；三个接口支持 `?archive=`；按备份缓存索引（有上限）；PROTECTED_ROUTES；集成测试（排序、读和搜索备份、各种非法名字、被清理后返回 404、关闭日志的实例）
-      证据：typecheck 通过；`npm test` 13 个文件 1068/1068；新增 `server-log-service.test.ts`（缓存上限和 LRU、generation 稳定、检查后被删、file 写法）；路由的 400/404/鉴权都有用例；13 个变异全部被抓到；两份审查的发现已处理 ｜ commit：（见 git log）
-- [ ] 4. 实例表单：Simple/Advanced 和 Keep previous logs（实例表单和模板表单）；`instanceForm.ts` 的映射和清洗；更新 `smoke:instance-form`
-      证据： ｜ commit：
+      证据：typecheck 通过；`npm test` 13 个文件 1068/1068；新增 `server-log-service.test.ts`（缓存上限和 LRU、generation 稳定、检查后被删、file 写法）；路由的 400/404/鉴权都有用例；13 个变异全部被抓到；两份审查的发现已处理 ｜ commit：47732ed
+- [x] 4. 实例表单：Simple/Advanced 和 Keep previous logs（实例表单和模板表单）；`instanceForm.ts` 的映射和清洗；更新 `smoke:instance-form`
+      证据：后端 typecheck 通过；`npm test` 1073/1073（前端映射和后端规则跑同一张用例表）；前端 lint 通过；`smoke:instance-form` 72/72（新增 15 项）；`smoke:server-log-ui` 73/73；4 个前端变异全部被抓到；两份审查的发现已处理；人工验证与 cp5 合并进行（见 cp6） ｜ commit：（见 git log）
 - [ ] 5. Log 页：选择并查看备份；更新 `smoke:server-log-ui`
       证据： ｜ commit：
 - [ ] 6. 文档：README 中英文、backlog 删掉已完成的条目、新增后续条目；人工验证

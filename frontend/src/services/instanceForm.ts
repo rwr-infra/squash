@@ -1,8 +1,63 @@
-import type { CreateInstanceRequest, InstanceTemplateValues, RestartPolicy } from './apiService';
+import type { CreateInstanceRequest, InstanceTemplateValues, RestartPolicy, ServerLogHistory } from './apiService';
 
 // What the instance and template forms hold: the request's fields, with the
-// arguments as the comma-separated text the user types.
-export type InstanceFormValues = Omit<CreateInstanceRequest, 'args'> & { args?: string };
+// arguments as the comma-separated text the user types, and keeping previous
+// logs as a switch (form only, never sent) plus its limits (blank while
+// being typed; only sent with the switch on).
+export type InstanceFormValues = Omit<CreateInstanceRequest, 'args' | 'serverLogHistory'> & {
+  args?: string;
+  keepPreviousLogs?: boolean;
+  serverLogHistory?: { keepDays?: number | null; keepFiles?: number | null };
+};
+
+// The server's limits for keeping previous logs (src/core/log/
+// server-log-history.ts; test/unit/server-log-history.test.ts runs both
+// readings against the same cases).
+export const SERVER_LOG_HISTORY_LIMITS = {
+  keepDays: { min: 1, max: 3650 },
+  keepFiles: { min: 1, max: 1000 }
+} as const;
+
+// What turning keeping previous logs on fills in: the RWR template's.
+export const DEFAULT_SERVER_LOG_HISTORY: ServerLogHistory = { keepDays: 7, keepFiles: 50 };
+
+// One limit: a whole number in its range.
+export const isHistoryLimit = (value: unknown, limits: { readonly min: number; readonly max: number }): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value >= limits.min && value <= limits.max;
+
+// A stored setting as the server reads it (serverLogHistoryOf): both limits
+// whole numbers in range, or off.
+export const sanitizeServerLogHistory = (value: unknown): ServerLogHistory | undefined => {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { keepDays, keepFiles } = value as Record<string, unknown>;
+  return isHistoryLimit(keepDays, SERVER_LOG_HISTORY_LIMITS.keepDays) && isHistoryLimit(keepFiles, SERVER_LOG_HISTORY_LIMITS.keepFiles)
+    ? { keepDays, keepFiles }
+    : undefined;
+};
+
+// A stored setting as form values: the switch, and the limits — the
+// defaults while off, ready for when it is turned on.
+export const historyFormValues = (value: unknown): { keepPreviousLogs: boolean; serverLogHistory: ServerLogHistory } => {
+  const history = sanitizeServerLogHistory(value);
+  return { keepPreviousLogs: history !== undefined, serverLogHistory: history ?? { ...DEFAULT_SERVER_LOG_HISTORY } };
+};
+
+// The form's setting: its limits while the switch is on (and both are
+// filled in), else none.
+export const formToServerLogHistory = (values: Partial<InstanceFormValues>): ServerLogHistory | undefined => {
+  const keepDays = values.serverLogHistory?.keepDays;
+  const keepFiles = values.serverLogHistory?.keepFiles;
+  return values.keepPreviousLogs && typeof keepDays === 'number' && typeof keepFiles === 'number' ? { keepDays, keepFiles } : undefined;
+};
+
+// The form values without the fields that are the form's own (the switch)
+// or sent in another shape (the limits).
+export const withoutHistoryFields = <T extends Partial<InstanceFormValues>>(values: T): Omit<T, 'keepPreviousLogs' | 'serverLogHistory'> => {
+  const fields = { ...values };
+  delete fields.keepPreviousLogs;
+  delete fields.serverLogHistory;
+  return fields;
+};
 
 const CREATE_DEFAULTS: Partial<InstanceFormValues> = {
   cwd: '.',
@@ -25,10 +80,17 @@ const CLEARED_TEMPLATE_FIELDS: Record<keyof InstanceTemplateValues, undefined> =
   restartDelayMs: undefined,
   stopCommand: undefined,
   stopTimeoutMs: undefined,
-  serverLogFile: undefined
+  serverLogFile: undefined,
+  serverLogHistory: undefined
 };
 
-export const TEMPLATE_FIELD_NAMES = Object.keys(CLEARED_TEMPLATE_FIELDS) as Array<keyof InstanceTemplateValues>;
+// The form fields a template fills (the limits are two, behind a switch).
+export const TEMPLATE_FIELD_PATHS: Array<keyof InstanceFormValues | ['serverLogHistory', 'keepDays' | 'keepFiles']> = [
+  ...(Object.keys(CLEARED_TEMPLATE_FIELDS) as Array<keyof InstanceTemplateValues>).filter((name) => name !== 'serverLogHistory'),
+  'keepPreviousLogs',
+  ['serverLogHistory', 'keepDays'],
+  ['serverLogHistory', 'keepFiles']
+];
 
 // The server's rules for serverLogFile (src/core/log/server-log-file.ts;
 // test/unit/server-log-file.test.ts runs both against the same cases). A file
@@ -81,7 +143,8 @@ export const sanitizeTemplateValues = (values: unknown): InstanceTemplateValues 
     restartDelayMs: integer(raw.restartDelayMs, 0),
     stopCommand: typeof raw.stopCommand === 'string' ? raw.stopCommand : undefined,
     stopTimeoutMs: integer(raw.stopTimeoutMs, 1000, 600_000),
-    serverLogFile: typeof raw.serverLogFile === 'string' && isValidServerLogFile(raw.serverLogFile) ? raw.serverLogFile : undefined
+    serverLogFile: typeof raw.serverLogFile === 'string' && isValidServerLogFile(raw.serverLogFile) ? raw.serverLogFile : undefined,
+    serverLogHistory: sanitizeServerLogHistory(raw.serverLogHistory)
   });
 };
 
@@ -92,17 +155,26 @@ export const templateSetsServerLogFile = (values: InstanceTemplateValues | undef
 
 // A template's values as form values: only the fields it sets.
 export const templateToFormValues = (values: InstanceTemplateValues): Partial<InstanceFormValues> => {
-  const { args, ...rest } = sanitizeTemplateValues(values);
-  return args ? { ...rest, args: args.join(', ') } : rest;
+  const { args, serverLogHistory, ...rest } = sanitizeTemplateValues(values);
+  return {
+    ...rest,
+    ...(args ? { args: args.join(', ') } : {}),
+    ...(serverLogHistory ? { keepPreviousLogs: true, serverLogHistory } : {})
+  };
 };
 
 // The create form after picking a template (or none): the defaults, overlaid
 // with what the template sets. The Instance ID is not part of it. A template
 // without a log file (one saved before the field existed, or SteamCMD's)
-// gets the one the server would infer from the executable.
+// gets the one the server would infer from the executable. Previous logs are
+// kept only when the template says so.
 export const createFormValues = (values?: InstanceTemplateValues): Partial<InstanceFormValues> => {
   const filled = { ...CLEARED_TEMPLATE_FIELDS, ...CREATE_DEFAULTS, ...(values ? templateToFormValues(values) : {}) };
-  return { ...filled, serverLogFile: filled.serverLogFile ?? inferServerLogFile(filled.executable) };
+  return {
+    ...filled,
+    serverLogFile: filled.serverLogFile ?? inferServerLogFile(filled.executable),
+    ...historyFormValues(values && sanitizeTemplateValues(values).serverLogHistory)
+  };
 };
 
 const nonBlank = (text: string | undefined) => (text?.trim() ? text : undefined);
@@ -122,7 +194,8 @@ export const formToTemplateValues = (values: Partial<InstanceFormValues>): Insta
     restartDelayMs: values.restartDelayMs ?? undefined,
     stopCommand: nonBlank(values.stopCommand),
     stopTimeoutMs: values.stopTimeoutMs ?? undefined,
-    serverLogFile: values.serverLogFile?.trim() || undefined
+    serverLogFile: values.serverLogFile?.trim() || undefined,
+    serverLogHistory: formToServerLogHistory(values)
   };
   return withoutUndefined(picked);
 };

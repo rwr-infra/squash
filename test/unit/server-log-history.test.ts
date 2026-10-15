@@ -2,7 +2,7 @@
 // that touch no file:
 //   - the setting: both limits required, whole numbers in range, in the
 //     instance and the template schemas alike; a hand-edited value outside
-//     them means off
+//     them means off — to the server and to the web form's copy of the rule
 //   - backup names: the log's name with the local time of its last write
 //     (and a suffix) before the extension; only exactly that format counts
 //     as a backup — nothing else in the directory is ever deleted; local
@@ -11,6 +11,7 @@
 //     keepFiles, never the newest — the one just made, when given
 //   - the log file's path is resolved inside the working directory or not at all
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   archiveName,
@@ -27,6 +28,20 @@ import { TemplateValuesSchema } from '../../src/api/http/schemas/template-schema
 
 const DAY = 24 * 60 * 60 * 1000;
 
+// The web form's reading of a stored setting (frontend/src/services/
+// instanceForm.ts), loaded by path as in server-log-file.test.ts.
+const frontendModule = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../frontend/src/services/instanceForm.ts');
+type FormValues = Record<string, unknown>;
+const webForm = (await import(frontendModule)) as {
+  readonly sanitizeServerLogHistory: (value: unknown) => unknown;
+  readonly historyFormValues: (value: unknown) => FormValues;
+  readonly formToServerLogHistory: (values: FormValues) => unknown;
+  readonly withoutHistoryFields: (values: FormValues) => FormValues;
+  readonly createFormValues: (values?: FormValues) => FormValues;
+  readonly templateToFormValues: (values: FormValues) => FormValues;
+  readonly formToTemplateValues: (values: FormValues) => FormValues;
+};
+
 describe('the setting', () => {
   const instance = (serverLogHistory: unknown) =>
     CreateInstanceSchema.safeParse({ id: 'a', name: 'a', cwd: '.', executable: './rwr_server', serverLogHistory });
@@ -40,6 +55,7 @@ describe('the setting', () => {
     expect(instance(value).data?.serverLogHistory).toEqual(value);
     expect(template(value).data?.serverLogHistory).toEqual(value);
     expect(serverLogHistoryOf({ serverLogHistory: value })).toEqual(value);
+    expect(webForm.sanitizeServerLogHistory(value)).toEqual(value);
   });
 
   it.each([
@@ -60,16 +76,50 @@ describe('the setting', () => {
     expect(template(value).success).toBe(false);
     if (!(typeof value === 'object' && value !== null && 'extra' in value)) {
       expect(serverLogHistoryOf({ serverLogHistory: value })).toBeUndefined();
+      expect(webForm.sanitizeServerLogHistory(value)).toBeUndefined();
     }
   });
 
-  it('a hand-edited value with an extra key: the limits, the rest ignored', () => {
-    expect(serverLogHistoryOf({ serverLogHistory: { keepDays: 7, keepFiles: 50, extra: 1 } })).toEqual({ keepDays: 7, keepFiles: 50 });
+  it('a hand-edited value with an extra key: the limits, the rest ignored (server and web form)', () => {
+    const value = { keepDays: 7, keepFiles: 50, extra: 1 };
+    expect(serverLogHistoryOf({ serverLogHistory: value })).toEqual({ keepDays: 7, keepFiles: 50 });
+    expect(webForm.sanitizeServerLogHistory(value)).toEqual({ keepDays: 7, keepFiles: 50 });
   });
 
   it('left out: off, for an rwr_server instance too (no inference)', () => {
     expect(instance(undefined).data?.serverLogHistory).toBeUndefined();
     expect(serverLogHistoryOf({})).toBeUndefined();
+    expect(webForm.sanitizeServerLogHistory(undefined)).toBeUndefined();
+  });
+});
+
+// The web form: a switch (never sent) and the two limits, which always hold
+// numbers — the defaults while off.
+describe('the web form', () => {
+  const DEFAULTS = { keepDays: 7, keepFiles: 50 };
+  it('a stored setting: on with its limits; missing or hand-edited out of range: off, the defaults ready', () => {
+    expect(webForm.historyFormValues({ keepDays: 3, keepFiles: 10 })).toEqual({ keepPreviousLogs: true, serverLogHistory: { keepDays: 3, keepFiles: 10 } });
+    expect(webForm.historyFormValues(undefined)).toEqual({ keepPreviousLogs: false, serverLogHistory: DEFAULTS });
+    expect(webForm.historyFormValues({ keepDays: 0, keepFiles: 10 })).toEqual({ keepPreviousLogs: false, serverLogHistory: DEFAULTS });
+  });
+  it('sent only with the switch on and both limits filled in', () => {
+    expect(webForm.formToServerLogHistory({ keepPreviousLogs: true, serverLogHistory: { keepDays: 3, keepFiles: 10 } })).toEqual({ keepDays: 3, keepFiles: 10 });
+    expect(webForm.formToServerLogHistory({ keepPreviousLogs: false, serverLogHistory: { keepDays: 3, keepFiles: 10 } })).toBeUndefined();
+    expect(webForm.formToServerLogHistory({ keepPreviousLogs: true, serverLogHistory: { keepDays: null, keepFiles: 10 } })).toBeUndefined();
+  });
+  it('the switch and the limits are taken out of the request fields', () => {
+    expect(webForm.withoutHistoryFields({ id: 'a', keepPreviousLogs: true, serverLogHistory: DEFAULTS })).toEqual({ id: 'a' });
+  });
+  it('a new instance keeps previous logs only when its template says so', () => {
+    expect(webForm.createFormValues()).toMatchObject({ keepPreviousLogs: false, serverLogHistory: DEFAULTS });
+    expect(webForm.createFormValues({ serverLogHistory: { keepDays: 3, keepFiles: 10 } })).toMatchObject({ keepPreviousLogs: true, serverLogHistory: { keepDays: 3, keepFiles: 10 } });
+    expect(webForm.createFormValues({ serverLogHistory: { keepDays: 0, keepFiles: 10 } })).toMatchObject({ keepPreviousLogs: false, serverLogHistory: DEFAULTS });
+  });
+  it('a template: the setting both ways; off, none', () => {
+    expect(webForm.templateToFormValues({ serverLogHistory: { keepDays: 3, keepFiles: 10 } })).toEqual({ keepPreviousLogs: true, serverLogHistory: { keepDays: 3, keepFiles: 10 } });
+    expect(webForm.templateToFormValues({ executable: './x' })).toEqual({ executable: './x' });
+    expect(webForm.formToTemplateValues({ keepPreviousLogs: true, serverLogHistory: { keepDays: 3, keepFiles: 10 } })).toEqual({ serverLogHistory: { keepDays: 3, keepFiles: 10 } });
+    expect(webForm.formToTemplateValues({ keepPreviousLogs: false, serverLogHistory: DEFAULTS })).toEqual({});
   });
 });
 

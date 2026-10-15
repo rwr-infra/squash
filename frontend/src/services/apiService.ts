@@ -79,7 +79,13 @@ export type InstanceConfig = {
   // The log viewer's file, relative to cwd; '' = no log viewer (no Log
   // buttons). The server fills it in for configs saved without it.
   readonly serverLogFile?: string;
+  // Keep the previous runs' logs (moved aside before every start); missing =
+  // off. Hand-edited configs may hold anything here.
+  readonly serverLogHistory?: unknown;
 };
+
+// How many previous logs to keep: those past either limit are deleted.
+export type ServerLogHistory = { keepDays: number; keepFiles: number };
 
 export type InstanceRuntime = {
   readonly id: string;
@@ -114,6 +120,8 @@ export type CreateInstanceRequest = {
   // Left out: the server infers it from the executable. The form always
   // sends it, '' included, so an edit keeps what the user chose.
   serverLogFile?: string;
+  // Left out: off.
+  serverLogHistory?: ServerLogHistory;
 };
 
 export type InstanceWithRuntime = { config: InstanceConfig; runtime: InstanceRuntime };
@@ -239,7 +247,10 @@ export const logout = async (): Promise<void> => {
 // The instance settings a template prefills: the instance form's fields
 // except the ID, each optional.
 export type InstanceTemplateValues = Partial<
-  Pick<CreateInstanceRequest, 'name' | 'cwd' | 'executable' | 'args' | 'autoStart' | 'restartPolicy' | 'restartDelayMs' | 'stopCommand' | 'stopTimeoutMs' | 'serverLogFile'>
+  Pick<
+    CreateInstanceRequest,
+    'name' | 'cwd' | 'executable' | 'args' | 'autoStart' | 'restartPolicy' | 'restartDelayMs' | 'stopCommand' | 'stopTimeoutMs' | 'serverLogFile' | 'serverLogHistory'
+  >
 >;
 
 export type InstanceTemplate = {

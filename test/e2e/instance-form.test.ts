@@ -17,6 +17,17 @@
 //     only for instances with one, and so does the terminal page; in a new
 //     instance an implied log file
 //     follows the executable until typed in or set by a template
+//   - Simple/Advanced: the dialog opens in Simple, which shows the ID, Name,
+//     Working Directory and Executable only — the other settings stay in
+//     the form and are sent (a template's included, also when submitted at
+//     once); an invalid hidden one opens Advanced at that field, for that
+//     dialog only; the choice is remembered across reloads
+//   - keeping previous logs: the switch fills in 7 days and 50 logs, a
+//     missing limit is reported, the limits are sent as set (the switch
+//     never), an edit shows and resends them, off (a limit blank) or
+//     without a log file nothing is sent or saved as a template; templates
+//     set and clear the switch, Save as template carries it; a template
+//     saves the setting, the drawer names it, an edit turns it off
 //   - templates: picking fills the form (and switching resets what the new
 //     one does not set; a template without a log file gets the one its
 //     executable implies), a malformed template fills only its well-typed
@@ -104,7 +115,22 @@ const { check: record, run } = recordedChecks([
   'a new template starts empty',
   'a template save in flight makes one request',
   'a template save in flight disables its fields and buttons',
-  'an empty template posts no values (name trimmed)'
+  'an empty template posts no values (name trimmed)',
+  'the dialog opens in Simple at first',
+  'the reloaded page opens the dialog as last chosen',
+  'Simple shows only the essentials',
+  "a create in Simple sends the template's settings, hidden ones included, even at once",
+  'an invalid hidden setting opens Advanced at the field and sends nothing',
+  'the choice is remembered, not the switch an error made',
+  'turning Keep Previous Logs on fills in 7 days and 50 logs',
+  'a missing limit is reported on its field and sends nothing',
+  'the create sends the limits as set, and no switch',
+  'editing shows the saved setting and sends it again',
+  'turned off (a limit blank), the setting is left out',
+  'without a log file the switch is off and disabled, and nothing is sent (nor saved as template)',
+  'a template sets the switch, another without the setting turns it off; Save as template carries it',
+  'a template saves the setting, and the drawer names it',
+  'editing a template shows the setting and can turn it off'
 ]);
 
 // Request bodies and page values, as the frontend sends and shows them.
@@ -126,6 +152,7 @@ const castlingValues = { name: 'Castling server', cwd: '/srv/castling', executab
 const templates = new Map<string, Json>([
   ['t-castling', { id: 't-castling', name: 'Castling', values: castlingValues }],
   ['t-minimal', { id: 't-minimal', name: 'Minimal', values: { executable: './other', serverLogFile: 'logs/other.log' } }],
+  ['t-rwr', { id: 't-rwr', name: 'RWR', values: { executable: './rwr_server', serverLogFile: 'rwr_server.log', serverLogHistory: { keepDays: 7, keepFiles: 50 } } }],
   // As if hand-edited: wrong types and foreign fields, which the UI must drop.
   ['t-broken', { id: 't-broken', name: 'Broken', values: { executable: './bad', args: '--a', stopCommand: ['quit', ''], id: 'evil', env: { A: '1' }, autoStart: 'yes', restartDelayMs: -1, stopTimeoutMs: 1.5, cwd: '', serverLogFile: '../evil.log' } }]
 ]);
@@ -259,6 +286,21 @@ const flow = async () => {
   await command('Page.navigate', { url: base });
   await waitFor(() => evaluate(`document.querySelectorAll('button[title="Edit"]').length === 2`), 'instances loaded');
 
+  // Which settings the dialog shows: the selected segment.
+  const formMode = () => evaluate(`document.querySelector('.form-mode .ant-segmented-item-selected')?.innerText.trim() ?? null`);
+  const pickFormMode = (mode: 'Simple' | 'Advanced') =>
+    evaluate(`Array.from(document.querySelectorAll('.form-mode .ant-segmented-item')).find(el => el.innerText.trim() === ${JSON.stringify(mode)}).click()`);
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(el=>el.innerText==='Create Instance').click()`);
+  await waitFor(modalVisible, 'first create dialog');
+  check('the dialog opens in Simple at first', await formMode() === 'Simple');
+  await evaluate(`${cancelButton}.click()`);
+  await waitFor(async () => !await modalVisible(), 'first create dialog closes');
+  // The flow below sets every field: in Advanced, remembered in this browser
+  // (Simple is checked at the end).
+  await evaluate(`localStorage.setItem('squash.instanceFormMode', 'advanced')`);
+  await command('Page.reload');
+  await waitFor(() => evaluate(`document.querySelectorAll('button[title="Edit"]').length === 2`), 'instances loaded again');
+
   // Baseline reproduction intentionally fails here if hidden values are lost.
   await edit('alpha');
   await input('name', 'alpha edited');
@@ -344,12 +386,16 @@ const flow = async () => {
     for (const type of ['keyDown', 'keyUp']) await command('Input.dispatchKeyEvent', { type, key, code, windowsVirtualKeyCode: keyCode });
   };
   const activeOption = `document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-active')?.innerText.trim()`;
-  const pickTemplate = async (name: string) => {
+  // Opens the template picker on `name`, without picking it.
+  const highlightTemplate = async (name: string) => {
     await evaluate(`document.querySelector('.template-picker input').focus()`);
     await key('ArrowDown', 'ArrowDown', 40);
     await waitFor(() => evaluate(`!!(${activeOption})`), 'template dropdown open');
     for (let step = 0; step < 10 && await evaluate(activeOption) !== name; step++) await key('ArrowDown', 'ArrowDown', 40);
     assert.equal(await evaluate(activeOption), name, `template option ${name}`);
+  };
+  const pickTemplate = async (name: string) => {
+    await highlightTemplate(name);
     await key('Enter', 'Enter', 13);
     await waitFor(() => evaluate(`document.querySelector('.template-picker .ant-select-content').innerText.trim() === ${JSON.stringify(name)}`), `picked ${name}`);
   };
@@ -559,6 +605,168 @@ const flow = async () => {
   templateGate.release();
   await waitFor(() => evaluate(`!${templateModal}`), 'new template closes');
   checkEqual('an empty template posts no values (name trimmed)', templateRequests.at(-1)!.payload, { name: 'Empty', values: {} });
+
+  // --- Simple / Advanced ------------------------------------------------------
+  const shown = (id: string) => `document.getElementById(${JSON.stringify(id)}).closest('.ant-form-item').offsetParent !== null`;
+  const ADVANCED_IDS = ['args', 'serverLogFile', 'keepPreviousLogs', 'autoStart', 'restartPolicy', 'restartDelayMs', 'stopCommand', 'stopTimeoutMs'];
+  // Whether a field is focused and within the dialog's scrolled view.
+  const focusedInView = (id: string) => `(() => { const el = document.getElementById(${JSON.stringify(id)}); const body = el.closest('.ant-modal-body').getBoundingClientRect(); const r = el.getBoundingClientRect(); return document.activeElement === el && r.top >= body.top - 1 && r.bottom <= body.bottom + 1; })()`;
+  await openCreateDialog();
+  check('the reloaded page opens the dialog as last chosen', await formMode() === 'Advanced');
+  await pickFormMode('Simple');
+  await waitFor(async () => await formMode() === 'Simple', 'Simple picked');
+  check('Simple shows only the essentials', await evaluate(`[${['id', 'name', 'cwd', 'executable'].map(shown).join(', ')}].every(Boolean) && [${ADVANCED_IDS.map(shown).join(', ')}].every(v => !v)`));
+  await input('id', 'simple-rwr');
+  // Pick the template and submit in one go, before the dialog has rendered
+  // what the template set: what is sent must not wait for that.
+  await highlightTemplate('RWR');
+  await evaluate(`(() => { document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-active').click(); ${instanceModal}.querySelector('form').dispatchEvent(new Event('submit', {bubbles:true, cancelable:true})); })()`);
+  await waitFor(() => pending.length, 'create in Simple');
+  checkEqual("a create in Simple sends the template's settings, hidden ones included, even at once", requests.at(-1)!.payload, {
+    id: 'simple-rwr', name: 'simple-rwr', cwd: '.', executable: './rwr_server', args: [], autoStart: false, restartPolicy: 'always', restartDelayMs: 3000,
+    serverLogFile: 'rwr_server.log', serverLogHistory: { keepDays: 7, keepFiles: 50 }, autoRestart: true
+  });
+  await saved();
+
+  await openCreateDialog();
+  const beforeHiddenError = requests.length;
+  await input('id', 'bad-hidden');
+  await input('serverLogFile', '../x.log');
+  await evaluate(`${instanceModal}.querySelector('form').dispatchEvent(new Event('submit', {bubbles:true, cancelable:true}))`);
+  await waitFor(async () => await formMode() === 'Advanced', 'Advanced opened for the error');
+  await waitFor(() => evaluate(focusedInView('serverLogFile')), 'the field with the error in view', 3000).catch(() => false);
+  await sleep(250);
+  check('an invalid hidden setting opens Advanced at the field and sends nothing', requests.length === beforeHiddenError && await evaluate(`${shown('serverLogFile')} && !!document.getElementById('serverLogFile').closest('.ant-form-item').querySelector('.ant-form-item-explain-error') && ${focusedInView('serverLogFile')}`));
+  await closeInstanceDialog();
+  await command('Page.reload');
+  await waitFor(() => evaluate(`document.querySelectorAll('button[title="Edit"]').length > 2`), 'instances loaded after reload');
+  await openCreateDialog();
+  check('the choice is remembered, not the switch an error made', await formMode() === 'Simple' && await evaluate(`localStorage.getItem('squash.instanceFormMode') === 'simple'`));
+  await pickFormMode('Advanced');
+  await waitFor(async () => await formMode() === 'Advanced', 'Advanced picked');
+  await closeInstanceDialog();
+
+  // --- Keeping previous logs --------------------------------------------------
+  const switchState = (id: string) => evaluate(`(() => { const el = document.getElementById(${JSON.stringify(id)}); return el ? { checked: el.getAttribute('aria-checked'), disabled: el.disabled } : null; })()`);
+  const limits = (prefix: string) => evaluate(`[document.getElementById(${JSON.stringify(`${prefix}serverLogHistory_keepDays`)})?.value ?? null, document.getElementById(${JSON.stringify(`${prefix}serverLogHistory_keepFiles`)})?.value ?? null]`);
+  const limitsShown = (prefix: string) => evaluate(`document.getElementById(${JSON.stringify(`${prefix}serverLogHistory_keepDays`)}).offsetParent !== null`);
+  // The switch as the dialog shows it once its watches have caught up.
+  const settledSwitch = async (id: string, checked: 'true' | 'false') => {
+    await waitFor(async () => (await switchState(id))?.checked === checked, `${id} ${checked}`, 3000).catch(() => false);
+    return switchState(id);
+  };
+  await openCreateDialog();
+  const offAtFirst = await settledSwitch('keepPreviousLogs', 'false');
+  await evaluate(`document.getElementById('keepPreviousLogs').click()`);
+  await waitFor(() => limitsShown(''), 'limits shown');
+  checkEqual('turning Keep Previous Logs on fills in 7 days and 50 logs', { offAtFirst, on: await switchState('keepPreviousLogs'), limits: await limits('') }, {
+    offAtFirst: { checked: 'false', disabled: false }, on: { checked: 'true', disabled: false }, limits: ['7', '50']
+  });
+  await input('id', 'keeps-logs');
+  await input('serverLogHistory_keepDays', '');
+  const beforeMissingLimit = requests.length;
+  await clickSave();
+  const limitError = `document.getElementById('serverLogHistory_keepDays').closest('.ant-form-item').querySelector('.ant-form-item-explain-error')?.innerText ?? ''`;
+  await waitFor(() => evaluate(limitError), 'limit error');
+  await sleep(250);
+  check('a missing limit is reported on its field and sends nothing', requests.length === beforeMissingLimit && (await evaluate(limitError)).includes('How many days'));
+  await input('serverLogHistory_keepDays', '3');
+  await input('serverLogHistory_keepFiles', '10');
+  await clickSave();
+  await waitFor(() => pending.length, 'create keeping logs');
+  const keepsLogs = requests.at(-1)!.payload;
+  check('the create sends the limits as set, and no switch', isDeepStrictEqual(keepsLogs.serverLogHistory, { keepDays: 3, keepFiles: 10 }) && !Object.hasOwn(keepsLogs, 'keepPreviousLogs'));
+  await saved();
+  // The list refetch can land after the dialog closes.
+  await waitFor(() => evaluate(`document.body.innerText.includes('keeps-logs')`), 'keeps-logs listed');
+
+  await edit('keeps-logs');
+  await waitFor(() => limitsShown(''), 'edit shows the limits');
+  const editShows = { switch: await switchState('keepPreviousLogs'), limits: await limits('') };
+  await clickSave();
+  await waitFor(() => pending.length, 'edit keeping logs');
+  checkEqual('editing shows the saved setting and sends it again', { ...editShows, sent: requests.at(-1)!.payload.serverLogHistory }, {
+    switch: { checked: 'true', disabled: false }, limits: ['3', '10'], sent: { keepDays: 3, keepFiles: 10 }
+  });
+  await saved();
+  await edit('keeps-logs');
+  await waitFor(() => limitsShown(''), 'edit shows the limits again');
+  // A limit left blank no longer matters once the switch is off.
+  await input('serverLogHistory_keepDays', '');
+  await evaluate(`document.getElementById('keepPreviousLogs').click()`);
+  await waitFor(async () => !await limitsShown(''), 'limits hidden');
+  await clickSave();
+  await waitFor(() => pending.length, 'edit turning it off');
+  check('turned off (a limit blank), the setting is left out', !Object.hasOwn(requests.at(-1)!.payload, 'serverLogHistory') && !Object.hasOwn(requests.at(-1)!.payload, 'keepPreviousLogs'));
+  await saved();
+
+  await openCreateDialog();
+  await settledSwitch('keepPreviousLogs', 'false');
+  await evaluate(`document.getElementById('keepPreviousLogs').click()`);
+  await waitFor(() => limitsShown(''), 'limits shown again');
+  await input('serverLogFile', '');
+  await waitFor(async () => !await limitsShown(''), 'limits hidden without a log file');
+  const withoutLogFile = await switchState('keepPreviousLogs');
+  // Save as template: the setting as shown — off.
+  await evaluate(`Array.from(${instanceModal}.querySelectorAll('.ant-modal-footer button')).find(el => el.innerText.includes('Save as template')).click()`);
+  await waitFor(() => evaluate(`!!${templateModal}`), 'template dialog without a log file');
+  const templateWithoutLogFile = await settledSwitch('template_keepPreviousLogs', 'false');
+  await key('Escape', 'Escape', 27);
+  await waitFor(() => evaluate(`!${templateModal}`), 'template dialog closes');
+  await input('id', 'no-log');
+  await clickSave();
+  await waitFor(() => pending.length, 'create without a log file');
+  check('without a log file the switch is off and disabled, and nothing is sent (nor saved as template)',
+    isDeepStrictEqual(withoutLogFile, { checked: 'false', disabled: true }) && requests.at(-1)!.payload.serverLogFile === '' && !Object.hasOwn(requests.at(-1)!.payload, 'serverLogHistory') &&
+    isDeepStrictEqual(templateWithoutLogFile, { checked: 'false', disabled: false }));
+  await saved();
+
+  await openCreateDialog();
+  await pickTemplate('RWR');
+  const withRwr = await settledSwitch('keepPreviousLogs', 'true');
+  await pickTemplate('Minimal');
+  const withMinimal = await settledSwitch('keepPreviousLogs', 'false');
+  await pickTemplate('RWR');
+  await settledSwitch('keepPreviousLogs', 'true');
+  await evaluate(`Array.from(${instanceModal}.querySelectorAll('.ant-modal-footer button')).find(el => el.innerText.includes('Save as template')).click()`);
+  await waitFor(() => evaluate(`!!${templateModal}`), 'template dialog from RWR');
+  await waitFor(() => limitsShown('template_'), 'template limits from RWR');
+  const fromRwr = { switch: await switchState('template_keepPreviousLogs'), limits: await limits('template_') };
+  await key('Escape', 'Escape', 27);
+  await waitFor(() => evaluate(`!${templateModal}`), 'template dialog from RWR closes');
+  await closeInstanceDialog();
+  checkEqual('a template sets the switch, another without the setting turns it off; Save as template carries it', { withRwr, withMinimal, fromRwr }, {
+    withRwr: { checked: 'true', disabled: false }, withMinimal: { checked: 'false', disabled: false },
+    fromRwr: { switch: { checked: 'true', disabled: false }, limits: ['7', '50'] }
+  });
+
+  await openDrawer();
+  await evaluate(`Array.from(document.querySelectorAll('.ant-drawer button')).find(el => el.innerText.includes('New template')).click()`);
+  await waitFor(() => evaluate(`!!${templateModal}`), 'new template dialog for the setting');
+  await input('template_templateName', 'With history');
+  await settledSwitch('template_keepPreviousLogs', 'false');
+  await evaluate(`document.getElementById('template_keepPreviousLogs').click()`);
+  await waitFor(() => limitsShown('template_'), 'template limits shown');
+  const templateLimits = await limits('template_');
+  await submitTemplate();
+  await waitFor(() => evaluate(`!${templateModal}`), 'template with the setting closes');
+  const savedTemplate = templateRequests.at(-1)!.payload;
+  await waitFor(() => evaluate(`!!${drawerItem('With history')}`), 'drawer lists it');
+  check('a template saves the setting, and the drawer names it',
+    isDeepStrictEqual(templateLimits, ['7', '50']) &&
+    isDeepStrictEqual(savedTemplate, { name: 'With history', values: { serverLogHistory: { keepDays: 7, keepFiles: 50 } } }) &&
+    await evaluate(`${drawerItem('With history')}.innerText.includes('keep previous logs 7 days, 50 files')`));
+  await evaluate(`${drawerItem('With history')}.querySelector('button[title="Edit template"]').click()`);
+  await waitFor(() => evaluate(`!!${templateModal} && document.getElementById('template_templateName')?.value === 'With history'`), 'edit template with the setting');
+  await waitFor(() => limitsShown('template_'), 'edited template shows the limits');
+  const editedTemplate = { switch: await switchState('template_keepPreviousLogs'), limits: await limits('template_') };
+  await evaluate(`document.getElementById('template_keepPreviousLogs').click()`);
+  await waitFor(async () => !await limitsShown('template_'), 'edited template limits hidden');
+  await submitTemplate();
+  await waitFor(() => evaluate(`!${templateModal}`), 'edited template closes');
+  checkEqual('editing a template shows the setting and can turn it off', { editedTemplate, sent: templateRequests.at(-1)!.payload }, {
+    editedTemplate: { switch: { checked: 'true', disabled: false }, limits: ['7', '50'] }, sent: { name: 'With history', values: {} }
+  });
 };
 
 const cleanup = async (): Promise<string | undefined> => {
