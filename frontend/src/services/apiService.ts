@@ -318,26 +318,43 @@ export type ServerLogSnapshot = {
   modifiedAt?: string;
 };
 
-// `file` as configured (relative to the working directory), `path` resolved.
-export type ServerLogInfo = ServerLogSnapshot & { path: string; file: string };
+// `file` as configured (relative to the working directory), `path` resolved;
+// `archive`: the backup read instead of the log, if one was.
+export type ServerLogInfo = ServerLogSnapshot & { path: string; file: string; archive?: string };
 export type ServerLogLines = ServerLogSnapshot & { from: number; lines: string[] };
 export type ServerLogSearchResult = ServerLogSnapshot & { matches: number[]; truncated: boolean };
 
 const serverLogUrl = (id: string) => `${API_BASE}/instances/${encodeURIComponent(id)}/server-log`;
+// `archive` (below): read that backup of a previous run's log instead.
+const archiveParam = (archive: string | undefined): Record<string, string> => (archive === undefined ? {} : { archive });
 
-export const fetchServerLogInfo = async (id: string): Promise<ServerLogInfo> => {
-  const res = await fetch(serverLogUrl(id), { headers: authHeaders() });
+export const fetchServerLogInfo = async (id: string, archive?: string): Promise<ServerLogInfo> => {
+  const query = new URLSearchParams(archiveParam(archive)).toString();
+  const res = await fetch(`${serverLogUrl(id)}${query ? `?${query}` : ''}`, { headers: authHeaders() });
   return unwrap(res);
 };
 
-export const fetchServerLogLines = async (id: string, from: number, count: number, signal?: AbortSignal): Promise<ServerLogLines> => {
-  const res = await fetch(`${serverLogUrl(id)}/lines?from=${from}&count=${count}`, { headers: authHeaders(), signal });
+export const fetchServerLogLines = async (id: string, from: number, count: number, signal?: AbortSignal, archive?: string): Promise<ServerLogLines> => {
+  const params = new URLSearchParams({ from: String(from), count: String(count), ...archiveParam(archive) });
+  const res = await fetch(`${serverLogUrl(id)}/lines?${params}`, { headers: authHeaders(), signal });
   return unwrap(res);
 };
 
 // Matching line numbers (0-based) over the whole file, at most 10,000.
-export const searchServerLog = async (id: string, query: string, caseSensitive: boolean, signal?: AbortSignal): Promise<ServerLogSearchResult> => {
-  const params = new URLSearchParams({ q: query, caseSensitive: String(caseSensitive) });
+export const searchServerLog = async (id: string, query: string, caseSensitive: boolean, signal?: AbortSignal, archive?: string): Promise<ServerLogSearchResult> => {
+  const params = new URLSearchParams({ q: query, caseSensitive: String(caseSensitive), ...archiveParam(archive) });
   const res = await fetch(`${serverLogUrl(id)}/search?${params}`, { headers: authHeaders(), signal });
+  return unwrap(res);
+};
+
+// A backup of a previous run's log: `modifiedAt` is when that run last
+// wrote to it.
+export type ServerLogArchive = { name: string; size: number; modifiedAt: string };
+// The instance's backups, newest first, and its setting for keeping them
+// (null: off; backups made while it was on are listed all the same).
+export type ServerLogHistoryInfo = { file: string; keep: ServerLogHistory | null; archives: ServerLogArchive[] };
+
+export const fetchServerLogHistory = async (id: string): Promise<ServerLogHistoryInfo> => {
+  const res = await fetch(`${serverLogUrl(id)}/history`, { headers: authHeaders() });
   return unwrap(res);
 };

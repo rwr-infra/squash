@@ -27,7 +27,8 @@ const RequireAuth = ({ children }: { children: ReactNode }) => {
   // Login disabled (no credentials configured) → open access.
   if (!data?.loginEnabled) return <>{children}</>;
   // Login enabled but no token → redirect to login, remembering where we were.
-  if (!getToken()) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  // (With the query: a log page's ?archive= picks which log.)
+  if (!getToken()) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   return <>{children}</>;
 };
 
@@ -43,11 +44,11 @@ function App() {
       if (location.pathname === '/login') return;
       message.error('Session expired — please log in again');
       queryClient.clear();
-      navigate('/login', { replace: true, state: { from: location.pathname } });
+      navigate('/login', { replace: true, state: { from: location.pathname + location.search } });
     };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
-  }, [navigate, location.pathname, queryClient]);
+  }, [navigate, location.pathname, location.search, queryClient]);
 
   return (
     <Routes>

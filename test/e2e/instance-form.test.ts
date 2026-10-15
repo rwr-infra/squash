@@ -528,6 +528,9 @@ const flow = async () => {
 
   // The templates drawer: edit, delete, create an instance from one, new.
   await openDrawer();
+  // The list refetch (after the save above) can land after the drawer opens
+  // on the cached list.
+  await waitFor(() => evaluate(`!!${drawerItem('Alpha tpl')}`), 'drawer lists the new template', 5000).catch(() => false);
   check('drawer lists every template', await evaluate(`!!${drawerItem('Castling')} && !!${drawerItem('Minimal')} && !!${drawerItem('Alpha tpl')} && !!${drawerItem('Broken')}`));
   check('a malformed template is summarized by its usable fields', await evaluate(`${drawerItem('Broken')}.querySelector('.ant-list-item-meta-description').innerText.trim() === './bad'`));
   check('the drawer summary names the log file', await evaluate(`${drawerItem('Minimal')}.innerText.includes('log logs/other.log')`));
