@@ -13,6 +13,12 @@
   见 [归档](archive/2026-10-10-server-log-viewer.md)。
 - **iOS 真机上的换行日志视图**（低）：惯性滚动跨窗口滑动只在 Chrome 触摸模拟里测过（`smoke:server-log-ui`）。
 - **Windows PTY 残余句柄（上游结构性，低）**：squash 适配层已在真实 PTY exit 后终止 node-pty 从不释放的 conout worker 线程（`9513bbf` 之后的补充清理），supervisor 路径每次自然退出的句柄保留从约 15 降到约 5（Thread/Event/Semaphore/IO 完成端口每轮增长已消失）。剩余约 5/轮（conhost 进程句柄 + 未关闭伪控制台内的管道句柄 + type-50）在 JS 边界不可释放：node-pty 退出监视线程在 JS 回调前移除 pty 记录，事后原生 kill 为空操作（conpty.cc L101-108，A/B 已证）。需上游修改退出线程；`npm run smoke:pty-handles` 保持 exit 2 作为长期见证。真实 RWR bad allocation 根因、长时/并发仍未验证。入口 `smoke:pty-handles`、`smoke:pty-lifecycle`、`smoke:pty-cleanup`、`smoke:pty-exit-window`。见 [归档](archive/2026-10-01-pty-exit-cleanup.md)、[归因](archive/2026-10-01-pty-handle-attribution.md) 和 [输入资源修复](archive/2026-10-01-pty-cleanup.md)。
+- **Windows 上保留之前的日志**（低-中）：改名备份和清理只在 macOS 上用假服务验证过，CI 在三个平台都跑了单元和集成测试，但没有用真实 `rwr_server` 实跑。需要确认三件事：
+  - taskkill 之后立即改名能否成功；
+  - 杀毒软件或索引服务短暂占用日志时，改名会失败，那一轮的日志会被 rwr 清空。可以考虑对 EBUSY/EPERM 做几次短的同步重试（会阻塞事件循环）；
+  - 文件夹 junction 被识别为链接、因此拒绝写入，这一点只在测试里构造过。
+
+  见 [归档](archive/2026-10-15-server-log-history.md)。
 - **Windows 上的 `serverLogFile` 规则**（低）：盘符段（`x/C:..`）、设备名、`\` 分隔符、resolve 后的越界检查，只在 macOS 上用 `path.win32` 推导和单测验证过，没在 Windows 上实跑。用户 2026-10-10 在 macOS 上人工验证了 UI 和自定义文件（`logs/console_log.txt`）。见 [归档](archive/2026-10-10-server-log-file.md)。
 - **移到 `scripts/diagnostics/` 的 PTY 探针没有在 Windows 上实跑**（低）：只改了 root 和 `dist` 的相对路径，做过静态解析验证。下次在 Windows 上跑 `npm run build:server && npm run smoke:pty-cleanup` 即可确认。见 [归档](archive/2026-10-10-vitest-migration.md)。
 
@@ -21,7 +27,8 @@
 - **Restart 请求会挂到旧进程退出**（低）：最长 `stopTimeoutMs + 5s`，最长约 10 分钟。经反向代理或 Firefox（响应超时 300s）时，页面可能误报失败，但重启仍会完成（README 已说明）。长期可以改为立即返回，结果经 WebSocket 推送。
 - **Restart 被取消或 spawn 失败时审计里没有记录**（低）：审计只在成功后记录。
 - **`stopping` 期间网页终端的键盘输入被丢弃**（低，既有）：`sendRawInput` 要求状态是 `running`，所以停服卡住时无法在网页上手动按回车，只能用 Force stop。
-- **重启前没有保留上一轮的 `rwr_server.log`**（中）：rwr 每次启动都会清空它，崩溃后按 `always` 自动重启时，崩溃前的日志在 `restartDelayMs` 后就没了。可以在 supervisor 启动进程前把它复制或改名为 `rwr_server.<时间>.log`（注意磁盘占用上限，以及 Windows 上文件可能被占用）。
+- **之前的日志：下载、删除、压缩**（低）：现在只能在网页上查看，删除只能靠保留上限，或者手动删 `<日志>.history/` 目录；也没有压缩。见 [归档](archive/2026-10-15-server-log-history.md)。
+- **Log 页用键盘切换日志后焦点丢失**（低）：视图按日志重新挂载，焦点会落回 body。
 - **日志搜索匹配超过 10,000 条时不能继续**（低）：只能看到前 10,000 条（显示 "+"）；可以改为从当前视野起分页搜索。入口 `src/core/log/line-index.ts` 的 `search` 和 `frontend/src/components/LogSearchBar.tsx`。
 - **超长行 16 KiB 之后的匹配没有高亮**（低，README 已说明）：接口每行只返回前 16 KiB，计数和跳转仍然正确。
 - **日志首次建索引不能中止；同一实例的并发搜索不限流**（低）：前端发起新搜索前会中止旧的，但直接调接口可以并发多个全文扫描。

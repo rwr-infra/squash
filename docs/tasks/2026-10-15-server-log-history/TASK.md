@@ -103,9 +103,9 @@
 - [x] 4. 实例表单：Simple/Advanced 和 Keep previous logs（实例表单和模板表单）；`instanceForm.ts` 的映射和清洗；更新 `smoke:instance-form`
       证据：后端 typecheck 通过；`npm test` 1073/1073（前端映射和后端规则跑同一张用例表）；前端 lint 通过；`smoke:instance-form` 72/72（新增 15 项）；`smoke:server-log-ui` 73/73；4 个前端变异全部被抓到；两份审查的发现已处理；人工验证与 cp5 合并进行（见 cp6） ｜ commit：8750923
 - [x] 5. Log 页：选择并查看备份；更新 `smoke:server-log-ui`
-      证据：后端 typecheck 通过；`npm test` 1073/1073；前端 lint 通过；`smoke:server-log-ui` 86/86（新增 13 项，包括不轮询、读到时已删除、手机宽度、坏链接）；`smoke:instance-form` 72/72，修掉抽屉检查的偶发失败后连续 3 次通过；4 个变异全部被抓到；两份审查的发现已处理 ｜ commit：（见 git log）
-- [ ] 6. 文档：README 中英文、backlog 删掉已完成的条目、新增后续条目；人工验证
-      证据： ｜ commit：
+      证据：后端 typecheck 通过；`npm test` 1073/1073；前端 lint 通过；`smoke:server-log-ui` 86/86（新增 13 项，包括不轮询、读到时已删除、手机宽度、坏链接）；`smoke:instance-form` 72/72，修掉抽屉检查的偶发失败后连续 3 次通过；4 个变异全部被抓到；两份审查的发现已处理 ｜ commit：77be487
+- [x] 6. 文档：README 中英文、backlog 删掉已完成的条目、新增后续条目；人工验证
+      证据：README 中英文已更新（实例表单、模板、之前的日志、API）；backlog 删掉已完成的条目，新增 Windows 实测和下载/删除/焦点三项后续；用户 2026-10-15/16 在 macOS 上用假 rwr_server 逐步人工验证 8 步全部通过（Simple/Advanced、开关和默认值、首次启动没有历史、两次重启出现两份备份、查看/搜索/刷新/返回、重新登录保留 ?archive=、关闭后不再备份、手机宽度）；测试实例已删除，config 与备份逐字节一致 ｜ commit：（见 git log）
 
 ## Pitfalls
 ### Pitfall: 同一秒内被清理释放的后缀会被复用

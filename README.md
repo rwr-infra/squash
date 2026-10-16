@@ -21,7 +21,7 @@ All **Running With Rifles** related content, assets, and trademarks—including 
 - **Multi-instance management** — run multiple game server instances with separate working directories
 - **Real-time terminal streaming** — WebSocket-based terminal with xterm.js
 - **Instance lifecycle management** — start, stop, restart, delete instances
-- **Server log viewer** — browse the log file an instance writes (`rwr_server.log` for RWR, any file you set; none for SteamCMD) in the browser, however large: virtual scrolling, follows new lines, Ctrl+F search over the whole file (see [Server log viewer](#server-log-viewer))
+- **Server log viewer** — browse the log file an instance writes (`rwr_server.log` for RWR, any file you set; none for SteamCMD) in the browser, however large: virtual scrolling, follows new lines, Ctrl+F search over the whole file; optionally keeps the previous runs' logs, which `rwr_server` would empty on every start, and shows them too (see [Server log viewer](#server-log-viewer))
 - **Instance templates** — save common settings (executable, stop command, restart policy, …) as templates and prefill the create form from one; RWR and SteamCMD templates are included (see [Instance templates](#instance-templates))
 - **Bounded, graceful stops** — a per-instance console stop command (e.g. `quit`), a force-kill after a stop timeout, restarts that wait for the old process, and squash stopping every instance before it exits (see [Stopping](#stopping))
 - **Crash auto-restart** — opt-in per instance, with exponential backoff, a max-attempt cap, and a cooldown that resets the counter after stable uptime
@@ -185,6 +185,14 @@ Recorded actions: `login`, `create`, `start`, `stop`, `restart`, `delete`, and `
 has `time`, `user`, `action`, and optional `instanceId` / `detail`. The web UI shows them
 in the **Audit log** drawer on the instance list page.
 
+### Instance form
+
+**Create Instance** and **Edit** open in **Simple**: the Instance ID, Name, Working
+Directory and Executable (and the template picker). **Advanced** shows every setting.
+Settings Simple hides keep their values — a template's, the defaults, or an edited
+instance's own — and are saved with the rest; if one of them is invalid, the dialog
+switches to Advanced at that field. The choice is remembered per browser.
+
 ### Instance templates
 
 A template holds any of the instance form's settings except the Instance ID — all
@@ -201,9 +209,11 @@ instances created from it alone. Template names are unique, ignoring case.
 
 Templates live in `config/templates.json`. On first launch (no such file yet) squash
 writes two: **RWR dedicated server** (`./rwr_server`, stop command `quit` plus an empty
-line, keep running, server log file `rwr_server.log`) and **SteamCMD** (`./steamcmd`,
-stop command `quit`, no restart). Delete them like any other template and they do not
-come back. A template that sets no server log file (such as one written by an older
+line, keep running, server log file `rwr_server.log`, previous logs kept for 7 days / at
+most 50) and **SteamCMD** (`./steamcmd`, stop command `quit`, no restart). Delete them
+like any other template and they do not come back. An existing `templates.json` is never
+changed by an upgrade: to have your RWR template keep previous logs, edit it in the
+**Templates** drawer and turn on **Keep Previous Logs**. A template that sets no server log file (such as one written by an older
 version) gets the one its executable implies when you pick it (see below). squash
 refuses to start if the file is not valid (bad JSON, not a list of `{ id, name, values }`,
 a repeated id) and leaves it untouched — fix or delete it.
@@ -246,6 +256,33 @@ say) has neither button.
 
 The viewer only reads the file, and only the one in the instance's settings: no request
 names a path.
+
+#### Previous logs
+
+`rwr_server` empties its log whenever it starts, so after a crash and an automatic
+restart the log of the run that crashed is gone. **Keep Previous Logs** (Advanced, off
+by default; on in the RWR template squash writes on first launch) keeps them:
+
+- **Before every start** — Start, Restart, an automatic restart — squash moves a
+  non-empty log into a folder next to it, named after the time it was last written
+  (squash's local time): `rwr_server.log` → `rwr_server.log.history/rwr_server.2026-10-15_18-29-44.log`
+  (`-1`, `-2`, … for runs that ended in the same second). It is a rename, instant
+  however large the log, and nothing is ever overwritten.
+- **Limits:** after each start, previous logs last written more than *Keep for (days)*
+  ago, and all but the newest *Keep at most (logs)*, are deleted — never the newest
+  one. Only files in that folder whose names have exactly that format are deleted;
+  anything else there is left alone. Disk use is at most that many logs.
+- **On the Log page**, the picker next to the file name lists the previous logs (when
+  each was last written, in your browser's time zone, and its size). Picking one shows
+  it — with a notice, searchable, no longer followed — and puts it in the URL
+  (`?archive=…`), so a reload or a link keeps it.
+- If the log cannot be moved — the folder's name taken by a file, no permission, a
+  folder link, a mount point in between, or on Windows a program that holds the log
+  open (a `Get-Content -Wait`, an editor) — the instance log (`logs/<id>.log`) says why
+  and the server starts anyway; that run's log is then emptied as before.
+- Turning the setting off keeps the previous logs already there, listed and readable;
+  delete the folder yourself to remove them. They are found by the log file's name:
+  after renaming it (case included), the old ones are no longer listed or deleted.
 
 ### Portable distribution (no Node.js required)
 
@@ -405,7 +442,8 @@ All backend endpoints are served under the `/api` prefix; every other path is th
 | POST | `/api/templates` | yes | Create a template: `{ name, values }` (409 if the name is taken, ignoring case) |
 | PUT | `/api/templates/:id` | yes | Replace a template: `{ name, values }` (409 if renamed to a taken name, 404 if unknown) |
 | DELETE | `/api/templates/:id` | yes | Delete a template (404 if unknown) |
-| GET | `/api/instances/:id/server-log` | yes | The instance's server log file (`serverLogFile`): `{ exists, size, lineCount, generation, modifiedAt, path, file }` (`generation` changes when the file is emptied or replaced; 404 `SERVER_LOG_DISABLED` when the instance has none) |
+| GET | `/api/instances/:id/server-log` | yes | The instance's server log file (`serverLogFile`): `{ exists, size, lineCount, generation, modifiedAt, path, file }` (`generation` changes when the file is emptied or replaced; 404 `SERVER_LOG_DISABLED` when the instance has none). With `?archive=<name>` (this route, `lines` and `search`): a previous run's log from `history` instead (400 for a name no such log can have, 404 `SERVER_LOG_ARCHIVE_NOT_FOUND` when it is not there) |
+| GET | `/api/instances/:id/server-log/history` | yes | The previous runs' logs, newest first: `{ file, keep, archives: [{ name, size, modifiedAt }] }` (`keep`: the instance's `serverLogHistory`, `{ keepDays, keepFiles }` or `null` when off) |
 | GET | `/api/instances/:id/server-log/lines` | yes | Lines `?from=` (0-based) `&count=` (1–1000, default 200), with the same snapshot fields |
 | GET | `/api/instances/:id/server-log/search` | yes | Matching line numbers for `?q=` (1–256 characters, no line breaks) `&caseSensitive=true\|false`; at most 10,000 (`truncated` when there are more) |
 
