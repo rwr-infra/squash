@@ -3,7 +3,7 @@ import type { MouseEvent, ReactNode, Ref } from 'react';
 import { Button, Input, Space, Tooltip, Typography } from 'antd';
 import type { InputRef } from 'antd';
 import { ArrowDownOutlined, ArrowUpOutlined, CloseOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
-import { searchServerLog } from '../services/apiService';
+import { ApiError, searchServerLog } from '../services/apiService';
 import type { ServerLogSearchResult } from '../services/apiService';
 
 export type LogSearchHandle = {
@@ -22,6 +22,10 @@ export type LogSearchView = {
 type Props = {
   ref?: Ref<LogSearchHandle>;
   instanceId: string;
+  // The backup of a previous run's log being read, if one is.
+  archive?: string;
+  // A search found that backup gone.
+  onGone?: () => void;
   // The log file's name, for the box's label.
   fileName: string;
   // The file as the page last saw it.
@@ -76,7 +80,7 @@ const keepFocus = (event: MouseEvent) => event.preventDefault();
 // The find bar. Ctrl+F (⌘F on macOS) opens it instead of the browser's own
 // find, which only sees the rows on screen; the server searches the whole
 // file. Enter / F3: next match; Shift+Enter / Shift+F3: previous; Esc closes.
-export const LogSearchBar = ({ ref, instanceId, fileName, generation, size, firstVisibleLine, onJump, onClose, children }: Props) => {
+export const LogSearchBar = ({ ref, instanceId, archive, onGone, fileName, generation, size, firstVisibleLine, onJump, onClose, children }: Props) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -143,7 +147,7 @@ export const LogSearchBar = ({ ref, instanceId, fileName, generation, size, firs
     request.current = controller;
     setSearching(true);
     try {
-      const found = await searchServerLog(instanceId, query, caseSensitive, controller.signal);
+      const found = await searchServerLog(instanceId, query, caseSensitive, controller.signal, archive);
       if (controller.signal.aborted) return;
       setResults({ ...found, query, caseSensitive });
       setIndex(-1);
@@ -163,6 +167,7 @@ export const LogSearchBar = ({ ref, instanceId, fileName, generation, size, firs
       }
     } catch (e) {
       if (!controller.signal.aborted) setError((e as Error).message);
+      if (e instanceof ApiError && e.code === 'SERVER_LOG_ARCHIVE_NOT_FOUND') onGone?.();
     } finally {
       if (request.current === controller) {
         request.current = undefined;
@@ -213,7 +218,8 @@ export const LogSearchBar = ({ ref, instanceId, fileName, generation, size, firs
       } else if (open && event.key === 'F3') {
         event.preventDefault();
         step(event.shiftKey ? -1 : 1);
-      } else if (open && event.key === 'Escape' && !event.isComposing) {
+      } else if (open && event.key === 'Escape' && !event.isComposing && !(event.target instanceof Element && event.target.closest('.ant-select'))) {
+        // (Esc in a dropdown — the previous logs' picker — closes that only.)
         event.preventDefault();
         close();
       }

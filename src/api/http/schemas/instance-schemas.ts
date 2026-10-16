@@ -1,7 +1,14 @@
 import { z } from 'zod';
 import { inferServerLogFile, isValidServerLogFile } from '../../../core/log/server-log-file.js';
+import { SERVER_LOG_HISTORY_LIMITS } from '../../../core/log/server-log-history.js';
 
 export const SERVER_LOG_FILE_MESSAGE = 'serverLogFile must be a file path inside the working directory (no absolute path, drive or "..")';
+
+// Both limits apply; both are required, so there is always a cap on the files.
+export const ServerLogHistorySchema = z.object({
+  keepDays: z.number().int().min(SERVER_LOG_HISTORY_LIMITS.keepDays.min).max(SERVER_LOG_HISTORY_LIMITS.keepDays.max),
+  keepFiles: z.number().int().min(SERVER_LOG_HISTORY_LIMITS.keepFiles.min).max(SERVER_LOG_HISTORY_LIMITS.keepFiles.max)
+}).strict();
 
 export const CreateInstanceSchema = z.object({
   id: z.string().min(1).max(64),
@@ -23,7 +30,10 @@ export const CreateInstanceSchema = z.object({
   stopTimeoutMs: z.number().int().min(1000).max(600_000).optional(),
   // Relative to cwd; '' = no log viewer. Left out: inferred from the
   // executable, so a client that predates the field keeps rwr_server's log.
-  serverLogFile: z.string().refine(value => value === '' || isValidServerLogFile(value), SERVER_LOG_FILE_MESSAGE).optional()
+  serverLogFile: z.string().refine(value => value === '' || isValidServerLogFile(value), SERVER_LOG_FILE_MESSAGE).optional(),
+  // Left out = off: no inference, so no existing instance starts moving its
+  // log around on its own.
+  serverLogHistory: ServerLogHistorySchema.optional()
 }).strict().transform(config => ({ ...config, serverLogFile: config.serverLogFile ?? inferServerLogFile(config.executable) }));
 
 export type CreateInstanceRequest = z.infer<typeof CreateInstanceSchema>;

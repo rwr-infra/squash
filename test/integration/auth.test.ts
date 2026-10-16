@@ -69,6 +69,7 @@ const PROTECTED_ROUTES: ReadonlyArray<readonly [string, string, unknown?]> = [
   ['GET', '/api/instances/:id/server-log'],
   ['GET', '/api/instances/:id/server-log/lines'],
   ['GET', '/api/instances/:id/server-log/search'],
+  ['GET', '/api/instances/:id/server-log/history'],
   ['GET', '/api/audit'],
   ['GET', '/api/auth/me'],
   ['POST', '/api/auth/logout'],

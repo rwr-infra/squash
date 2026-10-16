@@ -4,7 +4,7 @@ import { Form, Input, Modal, message } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
 import { ApiError, createTemplate, updateTemplate } from '../services/apiService';
 import type { InstanceTemplate, InstanceTemplateValues } from '../services/apiService';
-import { formToTemplateValues, templateToFormValues } from '../services/instanceForm';
+import { DEFAULT_SERVER_LOG_HISTORY, formToTemplateValues, templateToFormValues } from '../services/instanceForm';
 import type { InstanceFormValues } from '../services/instanceForm';
 import { InstanceFormFields, ResetFormOnMount } from './InstanceFormFields';
 
@@ -33,9 +33,11 @@ export const TemplateModal = ({ target, open, onClose, isMobile }: Props) => {
   const queryClient = useQueryClient();
   const editing = target?.kind === 'edit' ? target.template : undefined;
 
+  // The limits for keeping previous logs start at the defaults, ready for
+  // the switch; a template that keeps logs overrides them.
   const initialValues: Partial<TemplateFormValues> = editing
-    ? { templateName: editing.name, ...templateToFormValues(editing.values) }
-    : { templateName: '', ...templateToFormValues(target?.kind === 'new' ? target.values : {}) };
+    ? { templateName: editing.name, serverLogHistory: { ...DEFAULT_SERVER_LOG_HISTORY }, ...templateToFormValues(editing.values) }
+    : { templateName: '', serverLogHistory: { ...DEFAULT_SERVER_LOG_HISTORY }, ...templateToFormValues(target?.kind === 'new' ? target.values : {}) };
 
   const close = () => {
     if (!savingRef.current) onClose();

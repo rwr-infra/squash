@@ -21,7 +21,7 @@
 - **多实例管理**——以独立工作目录运行多个游戏服务器实例
 - **实时终端流**——基于 WebSocket + xterm.js 的终端
 - **实例生命周期管理**——启动、停止、重启、删除实例
-- **服务器日志查看器**——在浏览器里查看实例写的日志文件(RWR 是 `rwr_server.log`,也可以设成任意文件;SteamCMD 没有),不论多大:虚拟滚动、跟随新行、Ctrl+F 全文件搜索(见[服务器日志查看器](#服务器日志查看器))
+- **服务器日志查看器**——在浏览器里查看实例写的日志文件(RWR 是 `rwr_server.log`,也可以设成任意文件;SteamCMD 没有),不论多大:虚拟滚动、跟随新行、Ctrl+F 全文件搜索;还可以保留之前几轮的日志(`rwr_server` 每次启动都会清空日志),同样能在网页上查看(见[服务器日志查看器](#服务器日志查看器))
 - **实例模板**——把常用设置(可执行文件、停止命令、重启策略等)存为模板,新建实例时一键预填;自带 RWR 与 SteamCMD 模板(见[实例模板](#实例模板))
 - **有上限的优雅停止**——按实例配置控制台停止命令(如 `quit`)、停止超时后强制结束、重启会等旧进程退出、squash 退出前先停掉所有实例(见[停止](#停止))
 - **崩溃自动重启**——按实例可选开启,带指数退避、最大重试次数上限,以及在稳定运行一段时间后重置计数器的冷却机制
@@ -170,6 +170,13 @@ cp .env.example .env
 `time`、`user`、`action`,以及可选的 `instanceId` / `detail`。Web UI 在实例列表页的
 **审计日志(Audit log)** 抽屉中展示这些记录。
 
+### 实例表单
+
+**Create Instance** 和 **Edit** 默认以 **Simple** 模式打开,只显示 Instance ID、Name、Working Directory
+和 Executable(以及模板选择框)。**Advanced** 显示全部设置。Simple 隐藏的设置保留原值(模板的值、默认值,
+或被编辑实例自己的值),会和其他设置一起保存;其中某项填写有误时,对话框会切到 Advanced 并定位到该项。
+选择会按浏览器记住。
+
 ### 实例模板
 
 模板保存实例表单中除 Instance ID 以外的任意设置,每一项都可选。在 **Create Instance**
@@ -184,8 +191,9 @@ cp .env.example .env
 
 模板保存在 `config/templates.json`。首次启动(该文件尚不存在)时,squash 会写入两个模板:
 **RWR dedicated server**(`./rwr_server`、停止命令 `quit` 加一个空行、Keep running、服务器日志文件
-`rwr_server.log`)和 **SteamCMD**(`./steamcmd`、停止命令 `quit`、不自动重启)。它们可以像其他模板一样
-删除,删除后不会再生成。没有设置服务器日志文件的模板(比如旧版本写入的),选用时按可执行文件推断(见下文)。如果文件无效(JSON 错误、不是
+`rwr_server.log`、之前的日志保留 7 天且最多 50 份)和 **SteamCMD**(`./steamcmd`、停止命令 `quit`、不自动重启)。
+它们可以像其他模板一样删除,删除后不会再生成。升级不会改动已有的 `templates.json`:想让你已有的 RWR 模板也保留
+之前的日志,请在 **Templates** 抽屉里编辑它,打开 **Keep Previous Logs**。没有设置服务器日志文件的模板(比如旧版本写入的),选用时按可执行文件推断(见下文)。如果文件无效(JSON 错误、不是
 `{ id, name, values }` 的列表、id 重复),squash 会拒绝启动且不改动该文件——请修正或删除它。
 
 ### 服务器日志查看器
@@ -214,6 +222,25 @@ cp .env.example .env
   明确提示。
 
 查看器只读取文件,而且只读实例设置里的那一个:没有任何请求能指定路径。
+
+#### 之前的日志
+
+`rwr_server` 每次启动都会清空日志,所以崩溃后自动重启,崩溃那一轮的日志就没了。**Keep Previous Logs**
+(在 Advanced 里,默认关闭;squash 首次启动时写入的 RWR 模板会打开它)用来保留这些日志:
+
+- **每次启动前**(Start、Restart、自动重启),squash 把非空的日志移到它旁边的文件夹里,用它最后一次写入的
+  时间命名(squash 所在机器的本地时间):`rwr_server.log` → `rwr_server.log.history/rwr_server.2026-10-15_18-29-44.log`
+  (同一秒内结束的几轮依次加 `-1`、`-2`……)。这是一次改名,日志再大也是瞬间完成,而且绝不覆盖任何文件。
+- **上限:** 每次启动后,最后写入时间早于 *Keep for (days)* 天的、以及最新 *Keep at most (logs)* 份以外的
+  都会被删除——最新的那份永远保留。只删除那个文件夹里名字完全符合上述格式的文件,其他文件一律不动。
+  磁盘占用最多就是这么多份日志。
+- **在 Log 页**,文件名旁边的下拉框列出之前的日志(各自最后写入的时间,按浏览器时区显示,以及大小)。选中
+  一份就显示它——带提示横幅,可以搜索,不再跟随——并写进网址(`?archive=…`),刷新或分享链接都会保留。
+- 日志移动不了时(文件夹名被同名文件占用、没有权限、文件夹是链接、中间隔着挂载点,或在 Windows 上有程序
+  一直开着这个日志,比如 `Get-Content -Wait`、编辑器),实例日志(`logs/<id>.log`)会写明原因,服务器照常启动;
+  这一轮的日志会像以前一样被清空。
+- 关闭这个设置后,已有的历史日志保留不动,照样能列出和查看;要删除请自己删掉那个文件夹。历史日志按日志文件名
+  查找:改了文件名(包括只改大小写)之后,旧的就不再列出,也不再清理。
 
 ### 便携发行包(无需 Node.js)
 
@@ -356,7 +383,8 @@ curl http://localhost:3000/api/instances
 | POST | `/api/templates` | 是 | 创建模板:`{ name, values }`(名称不区分大小写重复时返回 409) |
 | PUT | `/api/templates/:id` | 是 | 整体替换模板:`{ name, values }`(改成已被占用的名称时返回 409,不存在时返回 404) |
 | DELETE | `/api/templates/:id` | 是 | 删除模板(不存在时返回 404) |
-| GET | `/api/instances/:id/server-log` | 是 | 实例的服务器日志文件(`serverLogFile`):`{ exists, size, lineCount, generation, modifiedAt, path, file }`(文件被清空或替换时 `generation` 会变;实例没有日志文件时返回 404 `SERVER_LOG_DISABLED`) |
+| GET | `/api/instances/:id/server-log` | 是 | 实例的服务器日志文件(`serverLogFile`):`{ exists, size, lineCount, generation, modifiedAt, path, file }`(文件被清空或替换时 `generation` 会变;实例没有日志文件时返回 404 `SERVER_LOG_DISABLED`)。带 `?archive=<name>` 时(本接口以及 `lines`、`search`)改读 `history` 里之前某一轮的日志(名字格式不对返回 400,不存在返回 404 `SERVER_LOG_ARCHIVE_NOT_FOUND`) |
+| GET | `/api/instances/:id/server-log/history` | 是 | 之前几轮的日志,从新到旧:`{ file, keep, archives: [{ name, size, modifiedAt }] }`(`keep` 是实例的 `serverLogHistory`,即 `{ keepDays, keepFiles }`,关闭时为 `null`) |
 | GET | `/api/instances/:id/server-log/lines` | 是 | 读取行:`?from=`(从 0 开始)`&count=`(1–1000,默认 200),附带同样的快照字段 |
 | GET | `/api/instances/:id/server-log/search` | 是 | 搜索 `?q=`(1–256 个字符,不能含换行)`&caseSensitive=true\|false` 的匹配行号;最多 10,000 条(更多时 `truncated` 为真) |
 

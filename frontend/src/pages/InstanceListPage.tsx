@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { Table, Tag, Button, Space, Modal, Form, Input, Select, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
+import { Table, Tag, Button, Space, Modal, Form, Input, Select, Segmented, message, Popconfirm, Grid, Card, List, Drawer } from 'antd';
 import { RestartInfo } from '../components/RestartInfo';
 import { InstanceFormFields, ResetFormOnMount } from '../components/InstanceFormFields';
 import { TemplateModal, type TemplateTarget } from '../components/TemplateModal';
@@ -9,7 +10,17 @@ import { ReloadOutlined, PlayCircleOutlined, StopOutlined, SyncOutlined, DeleteO
 import { useQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query';
 import type { InstanceStatus, CreateInstanceRequest, InstanceWithRuntime, AuditEntry, InstanceTemplate } from '../services/apiService';
 import { fetchInstances, createInstance, updateInstance, startInstance, stopInstance, restartInstance, deleteInstance, fetchAudit, fetchTemplates, getAuthStatus, logout } from '../services/apiService';
-import { TEMPLATE_FIELD_NAMES, createFormValues, formToTemplateValues, inferServerLogFile, splitArgs, templateSetsServerLogFile } from '../services/instanceForm';
+import {
+  TEMPLATE_FIELD_PATHS,
+  createFormValues,
+  formToServerLogHistory,
+  formToTemplateValues,
+  historyFormValues,
+  inferServerLogFile,
+  splitArgs,
+  templateSetsServerLogFile,
+  withoutHistoryFields
+} from '../services/instanceForm';
 import type { InstanceFormValues } from '../services/instanceForm';
 
 const auditActionColor: Record<AuditEntry['action'], string> = {
@@ -42,6 +53,27 @@ const formatUptime = (startedAt?: string, status?: InstanceStatus): string => {
   return `${s}s`;
 };
 
+// The instance dialog shows the essentials (Simple) or every setting
+// (Advanced); the choice is remembered in this browser.
+type FormMode = 'simple' | 'advanced';
+const FORM_MODE_KEY = 'squash.instanceFormMode';
+// What Simple shows; an error on any other field opens Advanced.
+const SIMPLE_FIELDS: readonly string[] = ['id', 'name', 'cwd', 'executable'];
+const readFormMode = (): FormMode => {
+  try {
+    return localStorage.getItem(FORM_MODE_KEY) === 'advanced' ? 'advanced' : 'simple';
+  } catch {
+    return 'simple';
+  }
+};
+const saveFormMode = (mode: FormMode) => {
+  try {
+    localStorage.setItem(FORM_MODE_KEY, mode);
+  } catch {
+    // Not remembered: private window, or storage blocked.
+  }
+};
+
 const InstanceListPage = () => {
   const navigate = useNavigate();
   const [form] = Form.useForm<InstanceFormValues>();
@@ -59,6 +91,11 @@ const InstanceListPage = () => {
   const [templateTarget, setTemplateTarget] = useState<TemplateTarget | null>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [formMode, setFormMode] = useState<FormMode>(readFormMode);
+  const changeFormMode = (mode: FormMode) => {
+    setFormMode(mode);
+    saveFormMode(mode);
+  };
   // State updates render later; the ref also blocks submissions in one turn.
   const savingRef = useRef(false);
   const [auditOpen, setAuditOpen] = useState(false);
@@ -130,6 +167,7 @@ const InstanceListPage = () => {
 
   const openCreate = () => {
     if (savingRef.current) return;
+    setFormMode(readFormMode());
     setEditing(null);
     setTemplateId(undefined);
     setCreateInitial(createFormValues());
@@ -139,6 +177,7 @@ const InstanceListPage = () => {
 
   const openCreateFromTemplate = (template: InstanceTemplate) => {
     if (savingRef.current) return;
+    setFormMode(readFormMode());
     setEditing(null);
     setTemplateId(template.id);
     setCreateInitial(createFormValues(template.values));
@@ -154,7 +193,7 @@ const InstanceListPage = () => {
     const values = templates.find((template) => template.id === id)?.values;
     form.setFieldsValue(createFormValues(values));
     logFileFollowsExecutable.current = !templateSetsServerLogFile(values);
-    form.setFields(TEMPLATE_FIELD_NAMES.map((name) => ({ name, errors: [] })));
+    form.setFields(TEMPLATE_FIELD_PATHS.map((name) => ({ name, errors: [] })));
   };
 
   const openTemplateModal = (target: TemplateTarget) => {
@@ -167,12 +206,14 @@ const InstanceListPage = () => {
   // the template.
   const saveAsTemplate = () => {
     const values = form.getFieldsValue();
-    const { name, ...rest } = formToTemplateValues(values);
+    // Previous logs as the dialog shows them: without a log file, off.
+    const { name, ...rest } = formToTemplateValues(values.serverLogFile?.trim() ? values : { ...values, keepPreviousLogs: false });
     openTemplateModal({ kind: 'new', values: name !== undefined && name !== values.id ? { name, ...rest } : rest });
   };
 
   const openEdit = (record: InstanceWithRuntime) => {
     if (savingRef.current) return;
+    setFormMode(readFormMode());
     setEditing(record);
     logFileFollowsExecutable.current = false;
     setModalOpen(true);
@@ -184,7 +225,7 @@ const InstanceListPage = () => {
     setSaving(true);
     try {
       const parsed: CreateInstanceRequest = {
-        ...values,
+        ...withoutHistoryFields(values),
         // These settings have no form fields, so onFinish omits them. Editing
         // replaces the full config: carry them explicitly rather than reset
         // them to the API defaults. New instances use server defaults.
@@ -201,6 +242,8 @@ const InstanceListPage = () => {
         // Always sent, '' too: left out, the server would infer it from the
         // executable again.
         serverLogFile: values.serverLogFile?.trim() ?? '',
+        // Only with a log file to keep; left out, it is off.
+        serverLogHistory: values.serverLogFile?.trim() ? formToServerLogHistory(values) : undefined,
         autoRestart: values.restartPolicy !== 'never'
       };
       if (editing) {
@@ -223,7 +266,12 @@ const InstanceListPage = () => {
 
   // Form values when (re)opening the modal: existing config for edit, defaults for create.
   const initialValues: Partial<InstanceFormValues> = editing
-    ? { ...editing.config, restartPolicy: editing.config.restartPolicy ?? (editing.config.autoRestart ? 'on-failure' : 'never'), args: editing.config.args.join(', ') }
+    ? {
+        ...editing.config,
+        restartPolicy: editing.config.restartPolicy ?? (editing.config.autoRestart ? 'on-failure' : 'never'),
+        args: editing.config.args.join(', '),
+        ...historyFormValues(editing.config.serverLogHistory)
+      }
     : createInitial;
 
   // Action buttons shared by the desktop table and the mobile card list. Larger
@@ -378,6 +426,19 @@ const InstanceListPage = () => {
         destroyOnHidden
         styles={{ body: { maxHeight: isMobile ? '75vh' : '70vh', overflowY: 'auto', overflowX: 'hidden' } }}
       >
+        <Segmented
+          className="form-mode"
+          aria-label="Settings shown"
+          block
+          value={formMode}
+          onChange={(mode) => changeFormMode(mode as FormMode)}
+          options={[
+            { value: 'simple', label: 'Simple' },
+            { value: 'advanced', label: 'Advanced' }
+          ]}
+          disabled={saving}
+          style={{ marginTop: 16 }}
+        />
         {!editing && templatesFailed && (
           <div style={{ marginTop: 16, color: '#888', fontSize: 12 }}>Templates could not be loaded.</div>
         )}
@@ -400,6 +461,14 @@ const InstanceListPage = () => {
           layout="vertical"
           disabled={saving}
           onFinish={handleSubmit}
+          // A hidden setting that fails its rules: show every setting (for
+          // this dialog — the choice stays Simple), then the field.
+          onFinishFailed={({ errorFields }) => {
+            const hidden = formMode === 'simple' ? errorFields.find(({ name }) => !SIMPLE_FIELDS.includes(String(name[0]))) : undefined;
+            if (!hidden) return;
+            flushSync(() => setFormMode('advanced'));
+            form.scrollToField(hidden.name, { focus: true });
+          }}
           initialValues={initialValues}
           // User edits only (not setFieldsValue): typing a log file pins it;
           // a new executable re-infers one that still follows.
@@ -412,7 +481,12 @@ const InstanceListPage = () => {
           <Form.Item name="id" label="Instance ID" rules={[{ required: true, pattern: /^[a-zA-Z0-9_-]+$/, message: 'Alphanumeric, dash, underscore only' }]} tooltip={editing ? 'The ID cannot be changed' : undefined}>
             <Input placeholder="my-server-1" disabled={!!editing || saving} />
           </Form.Item>
-          <InstanceFormFields />
+          <InstanceFormFields advanced={formMode === 'advanced'} />
+          {formMode === 'simple' && (
+            <div className="form-mode-hint" style={{ color: '#888', fontSize: 12 }}>
+              {editing ? 'Other settings stay as they are.' : 'Other settings come from the template, or the defaults.'} Advanced shows them all.
+            </div>
+          )}
           <ResetFormOnMount />
         </Form>
       </Modal>

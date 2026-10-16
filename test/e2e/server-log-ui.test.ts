@@ -33,6 +33,13 @@
 //   - a configured log file in a subdirectory: its lines, its name in the
 //     header and the find box; no log file set: a notice, also when it is
 //     unset while the page is open (no stale name, Find disabled)
+//   - previous runs' logs: the header's picker lists them newest first (when
+//     last written, size); picking one shows it with a notice, in the URL
+//     (kept on reload), not polled, no Follow, searchable; "Current log"
+//     (notice or picker) goes back; one deleted while shown says so once
+//     more of it is read, one deleted before says so and leaves the list;
+//     none yet, or none kept, the picker says so (within a phone screen);
+//     no picker without a log file; a bad name in a link says so at once
 //
 // Usage: VITE_API_URL= npm --prefix frontend run build && npm run smoke:server-log-ui
 // (SQUASH_FORM_WEB_ROOT=<dir> tests another build; SQUASH_BROWSER_PATH=<path>
@@ -46,10 +53,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { vi } from 'vitest';
 import { findBrowser, startBrowser, type Browser } from '../helpers/cdp.js';
 import { CheckFailed, recordedChecks } from '../helpers/checks.js';
 import type { ApiServer } from '../helpers/api-server.js';
+import { archiveName } from '../../src/core/log/server-log-history.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -128,6 +137,19 @@ const { check: record, run } = recordedChecks([
   'a configured log file is read and named in the header and find box',
   'an instance without a log file says so',
   'a log file unset while the page is open: the notice, no stale name',
+  'the picker lists the previous logs, newest first, with when and how big',
+  'picking one shows it, says so, and puts it in the URL',
+  'a previous log is not polled',
+  'a reload keeps showing it',
+  'search reads the previous log',
+  '"Current log" goes back to the live log',
+  'a previous log deleted while shown says so once more of it is read',
+  'opened after it was deleted: says so, and it leaves the list',
+  '"Current log" in the picker goes back too',
+  'kept but none yet: the picker says so',
+  'with none kept, the picker says why, within a phone screen',
+  'no picker without a log file',
+  'a link to a name no backup can have says so at once',
   'an unknown instance shows an error',
   'no page errors'
 ]);
@@ -161,6 +183,9 @@ const check = (label: string, condition: unknown, detail = '') => {
   console.log(`[log-ui] ${condition ? 'PASS' : 'FAIL'} ${label}${!condition && detail ? ` — ${detail}` : ''}`);
   if (!record(label, Boolean(condition), detail)) throw new CheckFailed(label);
 };
+// check() for a deep comparison; shows both sides when they differ.
+const checkEqual = (label: string, actual: unknown, expected: unknown) =>
+  check(label, isDeepStrictEqual(actual, expected), `actual ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
 const appendLines = (count: number) => {
   fs.appendFileSync(logFile, Array.from({ length: count }, (_, i) => `${lineText(lineCount + i)}\n`).join(''));
   lineCount += count;
@@ -207,9 +232,29 @@ const flow = async () => {
   const customDir = path.join(work, 'custom');
   fs.mkdirSync(path.join(customDir, 'logs'), { recursive: true });
   fs.writeFileSync(path.join(customDir, 'logs', 'custom.log'), 'custom one\ncustom two\n');
-  const dirs: Record<string, string> = { demo: instanceDir, small: smallDir, wide: wideDir, custom: customDir, off: instanceDir };
+  // A sixth keeps previous logs: two backups beside its current log.
+  const histDir = path.join(work, 'hist');
+  fs.mkdirSync(path.join(histDir, 'rwr_server.log.history'), { recursive: true });
+  fs.writeFileSync(path.join(histDir, 'rwr_server.log'), 'current run\n');
+  const backup = (ageMs: number, content: string) => {
+    const mtime = new Date(Date.now() - ageMs);
+    const name = archiveName('rwr_server.log', mtime);
+    const file = path.join(histDir, 'rwr_server.log.history', name);
+    fs.writeFileSync(file, content);
+    fs.utimesSync(file, mtime, mtime);
+    return { name, file, mtime, size: Buffer.byteLength(content) };
+  };
+  const newerBackup = backup(60 * 60 * 1000, 'previous run\nboom crash\nafter the crash\n');
+  // Several blocks of lines: deleted while shown, a block not loaded yet tells.
+  const olderBackup = backup(24 * 60 * 60 * 1000, Array.from({ length: 1000 }, (_, i) => `older run ${i}\n`).join(''));
+  // A seventh keeps previous logs, but has none yet.
+  const freshDir = path.join(work, 'fresh');
+  fs.mkdirSync(freshDir);
+  fs.writeFileSync(path.join(freshDir, 'rwr_server.log'), 'fresh run\n');
+  const dirs: Record<string, string> = { demo: instanceDir, small: smallDir, wide: wideDir, custom: customDir, off: instanceDir, hist: histDir, fresh: freshDir };
   const logFiles: Record<string, string> = { custom: 'logs/custom.log', off: '' };
-  const registry = { getConfig: (id: string) => (dirs[id] ? { id, name: id, cwd: dirs[id], executable: 'x', args: [], env: {}, logDir: 'logs', serverLogFile: logFiles[id] ?? 'rwr_server.log' } : undefined) };
+  const keeps: Record<string, unknown> = { hist: { keepDays: 7, keepFiles: 50 }, fresh: { keepDays: 7, keepFiles: 50 } };
+  const registry = { getConfig: (id: string) => (dirs[id] ? { id, name: id, cwd: dirs[id], executable: 'x', args: [], env: {}, logDir: 'logs', serverLogFile: logFiles[id] ?? 'rwr_server.log', serverLogHistory: keeps[id] } : undefined) };
   const serverLogService = new ServerLogService(registry as unknown as ConstructorParameters<typeof ServerLogService>[0]);
   // Faults on demand: a failing line read, or one answered late (read first,
   // then held back, like a slow network).
@@ -221,6 +266,13 @@ const flow = async () => {
     const result = await readLines(...args);
     if (hold > 0) await sleep(hold);
     return result;
+  };
+  // Info requests for a previous run's log, by name: it is not polled.
+  const archiveInfoRequests = new Map<string, number>();
+  const getInfo = serverLogService.getInfo.bind(serverLogService);
+  serverLogService.getInfo = async (id, archive) => {
+    if (archive !== undefined) archiveInfoRequests.set(archive, (archiveInfoRequests.get(archive) ?? 0) + 1);
+    return getInfo(id, archive);
   };
   server = await createHttpServer({
     instanceService: {}, logService: {}, terminalService: {}, terminalGateway: {},
@@ -656,6 +708,92 @@ const flow = async () => {
     const text = document.body.innerText;
     return !text.includes('logs/custom.log') && !text.includes('2 lines') && document.querySelector('[aria-label="Find in Server log"]')?.disabled === true;
   })()`));
+
+  // Previous runs' logs, picked from the header.
+  const optionsIn = (selector: string): Promise<string[]> => evaluate(`Array.from(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) ${selector}')).map(el => el.innerText.trim())`);
+  const pickerOptions = () => optionsIn('.ant-select-item-option');
+  // Opens the picker once it lists `count` entries (the list loads apart
+  // from the log).
+  const openPicker = async (count: number) => {
+    await evaluate(`document.querySelector('.log-history-picker input').focus()`);
+    await key('ArrowDown', 'ArrowDown', 40);
+    await waitFor(async () => (await pickerOptions()).length === count, `picker lists ${count}`);
+  };
+  const pickOption = (prefix: string) => evaluate(`Array.from(document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')).find(el => el.innerText.trim().startsWith(${JSON.stringify(prefix)})).click()`);
+  const bodyText = (): Promise<string> => evaluate('document.body.innerText');
+  // As the page writes them: the browser's local time, the size in B/KB.
+  const optionLabel = async (item: { mtime: Date; size: number }) =>
+    `${await evaluate(`new Date(${item.mtime.getTime()}).toLocaleString()`)} · ${item.size < 1024 ? `${item.size} B` : `${(item.size / 1024).toFixed(1)} KB`}`;
+  await command('Page.navigate', { url: `${base}/server-log/hist` });
+  await waitFor(async () => (await bodyText()).includes('current run'), 'hist current log');
+  await openPicker(3);
+  const options = await pickerOptions();
+  checkEqual('the picker lists the previous logs, newest first, with when and how big', options, ['Current log', await optionLabel(newerBackup), await optionLabel(olderBackup)]);
+  await pickOption(options[1]!);
+  await waitFor(async () => (await bodyText()).includes('boom crash'), 'previous log shown');
+  check('picking one shows it, says so, and puts it in the URL', await evaluate(`(() => {
+    const notice = document.querySelector('.log-archive-notice')?.innerText ?? '';
+    return notice.includes("A previous run's rwr_server.log, last written " + new Date(${newerBackup.mtime.getTime()}).toLocaleString()) &&
+      new URLSearchParams(location.search).get('archive') === ${JSON.stringify(newerBackup.name)} &&
+      !document.querySelector('[aria-label="Follow new lines"]') && !document.querySelector('button[title="Check for new lines now"]') &&
+      !document.body.innerText.includes('current run') && document.body.innerText.includes(${JSON.stringify(path.join('rwr_server.log.history', newerBackup.name))});
+  })()`));
+  const requestsWhenShown = archiveInfoRequests.get(newerBackup.name) ?? 0;
+  await sleep(5000);
+  check('a previous log is not polled', archiveInfoRequests.get(newerBackup.name) === requestsWhenShown, `${requestsWhenShown} → ${archiveInfoRequests.get(newerBackup.name)}`);
+  await command('Page.reload');
+  await waitFor(async () => (await bodyText()).includes('boom crash'), 'previous log after reload');
+  check('a reload keeps showing it', await evaluate(`!!document.querySelector('.log-archive-notice')`));
+  await key('f', 'KeyF', 70, findModifier);
+  await waitFor(async () => evaluate(`document.activeElement === ${findInput}`), 'find box in the previous log');
+  await typeQuery('crash');
+  await key('Enter', 'Enter', 13);
+  await waitFor(async () => (await findStatus()).includes('/'), 'search in the previous log');
+  check('search reads the previous log', (await findStatus()) === '1 / 2', await findStatus());
+  await key('Escape', 'Escape', 27);
+  await evaluate(`Array.from(document.querySelectorAll('.log-archive-notice button')).find(b => b.innerText.includes('Current log')).click()`);
+  await waitFor(async () => (await bodyText()).includes('current run'), 'back to the current log');
+  check('"Current log" goes back to the live log', await evaluate(`!location.search && !document.querySelector('.log-archive-notice') && !!document.querySelector('[aria-label="Follow new lines"]')`));
+
+  // The older one: open at its end, deleted, then its top asked for.
+  await openPicker(3);
+  await pickOption((await pickerOptions())[2]!);
+  await waitFor(async () => (await bodyText()).includes('older run 999'), 'older previous log at its end');
+  fs.rmSync(olderBackup.file);
+  await evaluate(`document.querySelector('.log-viewport').focus()`);
+  await key('Home', 'Home', 36);
+  await waitFor(async () => (await bodyText()).includes('This previous log is not kept'), 'deleted while shown');
+  check('a previous log deleted while shown says so once more of it is read', !(await bodyText()).includes('older run 999'));
+  await command('Page.reload');
+  await waitFor(async () => (await bodyText()).includes('This previous log is not kept'), 'deleted previous log after reload');
+  await openPicker(3);
+  checkEqual('opened after it was deleted: says so, and it leaves the list', await pickerOptions(), ['Current log', await optionLabel(newerBackup), olderBackup.name]);
+  await pickOption('Current log');
+  await waitFor(async () => (await bodyText()).includes('current run'), 'Current log from the picker');
+  check('"Current log" in the picker goes back too', await evaluate(`!location.search`));
+
+  await command('Page.navigate', { url: `${base}/server-log/fresh` });
+  await waitFor(async () => (await bodyText()).includes('fresh run'), 'fresh log');
+  await openPicker(2);
+  checkEqual('kept but none yet: the picker says so', await optionsIn('.ant-select-item-option-disabled'), ['No previous logs yet']);
+  await key('Escape', 'Escape', 27);
+  await command('Page.navigate', { url: `${base}/server-log/small` });
+  await waitFor(async () => (await bodyText()).includes('small 2999'), 'small log for the picker');
+  // On a phone: the picker's list fits the screen.
+  await command('Emulation.setDeviceMetricsOverride', { width: 360, height: 780, deviceScaleFactor: 2, mobile: true });
+  await openPicker(2);
+  const notKept = await optionsIn('.ant-select-item-option-disabled');
+  const fits = await evaluate(`(() => { const list = document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getBoundingClientRect(); return list.left >= 0 && list.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth + 1; })()`);
+  check('with none kept, the picker says why, within a phone screen', isDeepStrictEqual(notKept, ['Previous logs are not kept']) && fits, JSON.stringify({ notKept, fits }));
+  await key('Escape', 'Escape', 27);
+  await command('Emulation.clearDeviceMetricsOverride');
+  await command('Page.navigate', { url: `${base}/server-log/off` });
+  await waitFor(async () => (await bodyText()).includes('No log to show for this instance'), 'no log file, no picker');
+  check('no picker without a log file', await evaluate(`!document.querySelector('.log-history-picker')`));
+  // A link to a name no backup can have: said at once, no retries.
+  await command('Page.navigate', { url: `${base}/server-log/hist?archive=${encodeURIComponent('../rwr_server.log')}` });
+  await waitFor(async () => (await bodyText()).includes('This previous log is not kept'), 'a bad name', 4000);
+  check('a link to a name no backup can have says so at once', true);
 
   await command('Page.navigate', { url: `${base}/server-log/ghost` });
   await waitFor(async () => (await evaluate('document.body.innerText')).includes('Instance ghost not found'), 'unknown instance');

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isValidServerLogFile } from '../../../core/log/server-log-file.js';
-import { SERVER_LOG_FILE_MESSAGE } from './instance-schemas.js';
+import { SERVER_LOG_FILE_MESSAGE, ServerLogHistorySchema } from './instance-schemas.js';
 
 // The constraints of CreateInstanceSchema, without its defaults: a template
 // keeps only the fields that were filled in. Creating an instance from it
@@ -17,7 +17,9 @@ export const TemplateValuesSchema = z.object({
   stopTimeoutMs: z.number().int().min(1000).max(600_000).optional(),
   // Only a file: a template can't say "no log viewer" — left out, the new
   // instance's executable decides, as for an instance request.
-  serverLogFile: z.string().refine(isValidServerLogFile, SERVER_LOG_FILE_MESSAGE).optional()
+  serverLogFile: z.string().refine(isValidServerLogFile, SERVER_LOG_FILE_MESSAGE).optional(),
+  // Like serverLogFile, only a setting: left out, the instance keeps none.
+  serverLogHistory: ServerLogHistorySchema.optional()
 }).strict();
 
 // Body of POST /templates and PUT /templates/:id (a full replacement).

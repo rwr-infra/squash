@@ -35,6 +35,13 @@
 //     file below the working directory, no log file or one outside the
 //     working directory (404 SERVER_LOG_DISABLED), and a config without the
 //     field (inferred from the executable)
+//   - the history route lists the log's backups newest first (other files
+//     left out) with the instance's setting; ?archive=<name> reads a backup
+//     on every route; a name no backup can have is 400, a backup that is not
+//     there (or a link, or in a linked directory) is 404
+//     SERVER_LOG_ARCHIVE_NOT_FOUND (also one read before, and deleted);
+//     more backups read than indexes kept, a backup's generation unchanged;
+//     with stableGeneration, indexes of one file agree on its generation
 // Uses a temp directory only.
 //
 // Tests in a file run in order and share state: each step acts, then checks,
@@ -54,6 +61,8 @@ import type { LineIndex, LineIndexSnapshot } from '../../src/core/log/line-index
 import { SERVER_LOG_SEARCH_LIMIT } from '../../src/api/http/schemas/server-log-schemas.js';
 import { ServerLogService } from '../../src/services/server-log-service.js';
 import { createApiServer, login, type ApiServer } from '../helpers/api-server.js';
+import { archiveName, historyDirOf } from '../../src/core/log/server-log-history.js';
+import { MAX_ARCHIVE_INDEXES } from '../../src/services/server-log-service.js';
 import { useTempDir } from '../helpers/temp-dir.js';
 
 const workRoot = useTempDir('squash-server-log-test-');
@@ -585,6 +594,32 @@ describe('a 1M-line file', () => {
 // Steps share the server, the token and the instance's working directory, in
 // order: run the whole file — a step run on its own (-t) lacks them, and may
 // fail or, worse, pass for the wrong reason.
+// For backups: the generation comes from the file, not chance.
+describe('stable generation', () => {
+  const file = () => path.join(workRoot(), 'stable.log');
+  it('two indexes of the same file agree', async () => {
+    fs.writeFileSync(file(), 'one\ntwo\n');
+    const first = await createLineIndex(file(), { stableGeneration: true }).refresh();
+    const second = await createLineIndex(file(), { stableGeneration: true }).refresh();
+    expect(second.generation).toBe(first.generation);
+    expect((await createLineIndex(file()).refresh()).generation).not.toBe(first.generation);
+  });
+  it('a rewrite still changes it', async () => {
+    const index = createLineIndex(file(), { stableGeneration: true });
+    const before = await index.refresh();
+    fs.writeFileSync(file(), 'ONE\nTWO\nthree\n');
+    const after = await index.refresh();
+    expect(after.generation).not.toBe(before.generation);
+    expect((await createLineIndex(file(), { stableGeneration: true }).refresh()).generation).toBe(after.generation);
+  });
+  it('an append keeps it', async () => {
+    const index = createLineIndex(file(), { stableGeneration: true });
+    const before = await index.refresh();
+    fs.appendFileSync(file(), 'four\n');
+    expect((await index.refresh()).generation).toBe(before.generation);
+  });
+});
+
 describe('routes', () => {
   const PASSWORD = 'smoke-password';
   // One instance, whose working directory, executable and log file the test
@@ -593,10 +628,21 @@ describe('routes', () => {
   let instanceCwd = '';
   let instanceExecutable = 'x';
   let instanceLogFile: unknown = 'rwr_server.log';
+  let instanceHistory: unknown;
   const registry = {
     getConfig: (id: string) =>
       id === 'a'
-        ? { id: 'a', name: 'a', cwd: instanceCwd, executable: instanceExecutable, args: [], env: {}, logDir: 'logs', ...(instanceLogFile === undefined ? {} : { serverLogFile: instanceLogFile }) }
+        ? {
+            id: 'a',
+            name: 'a',
+            cwd: instanceCwd,
+            executable: instanceExecutable,
+            args: [],
+            env: {},
+            logDir: 'logs',
+            ...(instanceLogFile === undefined ? {} : { serverLogFile: instanceLogFile }),
+            ...(instanceHistory === undefined ? {} : { serverLogHistory: instanceHistory })
+          }
         : undefined
   };
   let server: ApiServer;
@@ -611,7 +657,7 @@ describe('routes', () => {
     await server?.close();
   });
 
-  const urls = ['/api/instances/a/server-log', '/api/instances/a/server-log/lines?from=0', '/api/instances/a/server-log/search?q=x'];
+  const urls = ['/api/instances/a/server-log', '/api/instances/a/server-log/lines?from=0', '/api/instances/a/server-log/search?q=x', '/api/instances/a/server-log/history'];
   let token = '';
   const get = (url: string) => server.inject({ method: 'GET', url, headers: { authorization: `Bearer ${token}` } });
   type Body = { success: boolean; data?: any; error?: { code: string; message: string } };
@@ -621,7 +667,7 @@ describe('routes', () => {
 
   it('routes: every server-log route needs a token', async () => {
     const unauthorized = await Promise.all(urls.map(url => server.inject({ method: 'GET', url })));
-    expect(unauthorized.map(res => res.statusCode)).toEqual([401, 401, 401]);
+    expect(unauthorized.map(res => res.statusCode)).toEqual(urls.map(() => 401));
   });
   it('routes: login', async () => {
     token = await login(server, PASSWORD);
@@ -780,5 +826,161 @@ describe('routes', () => {
     expect(body(await get('/api/instances/a/server-log')).data).toMatchObject({ path: path.join(instanceCwd, 'rwr_server.log'), file: 'rwr_server.log', lineCount: 1 });
     instanceExecutable = './steamcmd';
     expect(await disabled()).toEqual(urls.map(() => [404, 'SERVER_LOG_DISABLED']));
+  });
+  // Backups of previous runs (core/log/server-log-history.ts names them):
+  // listed newest first, and readable through every route with ?archive=.
+  const DAY = 24 * 60 * 60 * 1000;
+  let historyDir = '';
+  const archives: string[] = [];
+  // Backup-shaped, but a directory.
+  let directoryLike = '';
+  const archiveQuery = (name: string) => `archive=${encodeURIComponent(name)}`;
+  it('history: no backups yet → an empty list, the setting off', async () => {
+    instanceCwd = path.join(workRoot(), 'instance-history');
+    fs.mkdirSync(instanceCwd);
+    instanceLogFile = 'rwr_server.log';
+    instanceExecutable = './rwr_server';
+    fs.writeFileSync(path.join(instanceCwd, 'rwr_server.log'), 'live one\nlive two\n');
+    const res = await get('/api/instances/a/server-log/history');
+    expect([res.statusCode, body(res).data]).toEqual([200, { file: 'rwr_server.log', keep: null, archives: [] }]);
+  });
+  it('history: backups newest first, with size and last write; other files left out; the setting', async () => {
+    historyDir = historyDirOf(path.join(instanceCwd, 'rwr_server.log'));
+    fs.mkdirSync(historyDir);
+    const now = Date.now();
+    for (const [ageMs, content] of [[3 * DAY, 'oldest run\nhit\n'], [DAY, 'middle run\n'], [1000, 'newest run\nhit here\nand hit\n']] as const) {
+      const mtime = new Date(now - ageMs);
+      const name = archiveName('rwr_server.log', mtime);
+      fs.writeFileSync(path.join(historyDir, name), content);
+      fs.utimesSync(path.join(historyDir, name), mtime, mtime);
+      archives.unshift(name);
+    }
+    fs.writeFileSync(path.join(historyDir, 'notes.txt'), 'not a backup');
+    directoryLike = archiveName('rwr_server.log', new Date(now - 10 * DAY));
+    fs.mkdirSync(path.join(historyDir, directoryLike));
+    instanceHistory = { keepDays: 7, keepFiles: 50 };
+    const data = body(await get('/api/instances/a/server-log/history')).data;
+    expect(data.keep).toEqual({ keepDays: 7, keepFiles: 50 });
+    expect(data.archives.map((archive: { name: string }) => archive.name)).toEqual(archives);
+    expect(data.archives[0]).toEqual({ name: archives[0], size: Buffer.byteLength('newest run\nhit here\nand hit\n'), modifiedAt: expect.any(String) });
+    expect(Math.abs(Date.parse(data.archives[0].modifiedAt) - fs.statSync(path.join(historyDir, archives[0]!)).mtimeMs)).toBeLessThanOrEqual(1);
+  });
+  it('history: a hand-edited setting out of range reads as off', async () => {
+    instanceHistory = { keepDays: 0, keepFiles: 50 };
+    expect(body(await get('/api/instances/a/server-log/history')).data.keep).toBeNull();
+    instanceHistory = { keepDays: 7, keepFiles: 50 };
+  });
+  it('history: ?archive= reads that backup on every route; the live log without it', async () => {
+    const name = archives[0]!;
+    const info = body(await get(`/api/instances/a/server-log?${archiveQuery(name)}`)).data;
+    expect(info).toMatchObject({ exists: true, lineCount: 3, file: 'rwr_server.log', archive: name, path: path.join(historyDir, name) });
+    const range = body(await get(`/api/instances/a/server-log/lines?from=0&${archiveQuery(name)}`)).data;
+    expect(range).toMatchObject({ lines: ['newest run', 'hit here', 'and hit'], generation: info.generation });
+    expect(body(await get(`/api/instances/a/server-log/search?q=HIT&${archiveQuery(name)}`)).data.matches).toEqual([1, 2]);
+    expect(body(await get(`/api/instances/a/server-log/lines?from=0&${archiveQuery(archives[2]!)}`)).data.lines).toEqual(['oldest run', 'hit']);
+    const live = body(await get('/api/instances/a/server-log')).data;
+    expect(live).toMatchObject({ lineCount: 2, path: path.join(instanceCwd, 'rwr_server.log') });
+    expect(live.archive).toBeUndefined();
+    expect(live.generation).not.toBe(info.generation);
+  });
+  it('history: more backups read than indexes kept still read right; a backup keeps its generation', async () => {
+    const generation = body(await get(`/api/instances/a/server-log?${archiveQuery(archives[0]!)}`)).data.generation;
+    const now = Date.now();
+    const many = Array.from({ length: MAX_ARCHIVE_INDEXES + 4 }, (_, i) => {
+      const mtime = new Date(now - 2 * DAY - (i + 1) * 1000);
+      const name = archiveName('rwr_server.log', mtime);
+      fs.writeFileSync(path.join(historyDir, name), `many ${i}\n`);
+      return name;
+    });
+    for (const round of [0, 1]) {
+      for (const [i, name] of many.entries()) {
+        expect([round, i, body(await get(`/api/instances/a/server-log/lines?from=0&${archiveQuery(name)}`)).data.lines]).toEqual([round, i, [`many ${i}`]]);
+      }
+    }
+    expect(body(await get(`/api/instances/a/server-log?${archiveQuery(archives[0]!)}`)).data.generation).toBe(generation);
+  });
+  it('history: a backup of the same name in another working directory is read from there', async () => {
+    const name = archives[0]!;
+    const before = body(await get(`/api/instances/a/server-log/lines?from=0&${archiveQuery(name)}`)).data.lines;
+    const otherCwd = path.join(workRoot(), 'instance-history-other');
+    fs.mkdirSync(path.join(otherCwd, 'rwr_server.log.history'), { recursive: true });
+    fs.writeFileSync(path.join(otherCwd, 'rwr_server.log.history', name), 'another instance\n');
+    instanceCwd = otherCwd;
+    const after = body(await get(`/api/instances/a/server-log/lines?from=0&${archiveQuery(name)}`)).data.lines;
+    instanceCwd = path.dirname(historyDir);
+    expect([before, after]).toEqual([['newest run', 'hit here', 'and hit'], ['another instance']]);
+  });
+  it('history: a name no backup can have is 400 on every route', async () => {
+    const names = [
+      '../rwr_server.log',
+      'rwr_server.log',
+      'notes.txt',
+      `../${archives[0]}`,
+      `x/${archives[0]}`,
+      `x\\${archives[0]}`,
+      archives[0]!.toUpperCase(),
+      `${archives[0]}.bak`,
+      // Spellings Windows would take for the same file.
+      `${archives[0]}.`,
+      `${archives[0]} `,
+      `${archives[0]}::$DATA`,
+      'RWR_SE~1.LOG',
+      '/etc/passwd',
+      'x'.repeat(513)
+    ];
+    for (const name of names) {
+      const res = await Promise.all(urls.slice(0, 3).map(url => get(`${url}${url.includes('?') ? '&' : '?'}${archiveQuery(name)}`)));
+      expect([name, res.map(r => [r.statusCode, body(r).error?.code])]).toEqual([name, urls.slice(0, 3).map(() => [400, 'INVALID_REQUEST'])]);
+    }
+    // Empty, or given twice.
+    for (const query of ['archive=', `${archiveQuery(archives[0]!)}&${archiveQuery(archives[1]!)}`]) {
+      expect([query, (await get(`/api/instances/a/server-log?${query}`)).statusCode]).toEqual([query, 400]);
+    }
+  });
+  it('history: a backup that is not there — never made, deleted, a directory — is 404 SERVER_LOG_ARCHIVE_NOT_FOUND', async () => {
+    const missing = archiveName('rwr_server.log', new Date(2020, 0, 1));
+    // Never read, and read before (its index kept).
+    const deleted = [archives[1]!, archives[2]!];
+    for (const name of deleted) fs.rmSync(path.join(historyDir, name));
+    for (const name of [missing, directoryLike, ...deleted]) {
+      const res = await Promise.all(urls.slice(0, 3).map(url => get(`${url}${url.includes('?') ? '&' : '?'}${archiveQuery(name)}`)));
+      expect([name, res.map(r => [r.statusCode, body(r).error?.code])]).toEqual([name, urls.slice(0, 3).map(() => [404, 'SERVER_LOG_ARCHIVE_NOT_FOUND'])]);
+    }
+    expect(body(await get('/api/instances/a/server-log/history')).data.archives.map((archive: { name: string }) => archive.name)).not.toContain(deleted[0]);
+  });
+  it('history: a backup-shaped link to a file elsewhere is not read', async ctx => {
+    const outside = path.join(workRoot(), 'outside-secret.log');
+    fs.writeFileSync(outside, 'secret\n');
+    const name = archiveName('rwr_server.log', new Date(Date.now() - 4 * DAY));
+    try {
+      fs.symlinkSync(outside, path.join(historyDir, name));
+    } catch {
+      return ctx.skip();
+    }
+    expect(body(await get(`/api/instances/a/server-log/lines?from=0&${archiveQuery(name)}`)).error?.code).toBe('SERVER_LOG_ARCHIVE_NOT_FOUND');
+    expect(body(await get('/api/instances/a/server-log/history')).data.archives.map((archive: { name: string }) => archive.name)).not.toContain(name);
+  });
+  it('history: a history directory that links elsewhere lists nothing and reads nothing', async () => {
+    const elsewhere = path.join(workRoot(), 'history-elsewhere');
+    fs.renameSync(historyDir, elsewhere);
+    fs.symlinkSync(elsewhere, historyDir, 'junction');
+    expect(body(await get('/api/instances/a/server-log/history')).data.archives).toEqual([]);
+    expect(body(await get(`/api/instances/a/server-log/lines?from=0&${archiveQuery(archives[0]!)}`)).error?.code).toBe('SERVER_LOG_ARCHIVE_NOT_FOUND');
+    fs.rmSync(historyDir);
+    fs.renameSync(elsewhere, historyDir);
+  });
+  it('history: a history directory name taken by a file lists nothing', async () => {
+    const instanceDir = path.join(workRoot(), 'instance-history-file');
+    fs.mkdirSync(instanceDir);
+    fs.writeFileSync(path.join(instanceDir, 'rwr_server.log.history'), 'mine');
+    instanceCwd = instanceDir;
+    expect(body(await get('/api/instances/a/server-log/history')).data.archives).toEqual([]);
+    instanceCwd = path.dirname(historyDir);
+  });
+  it('history: without a log file, the history and backups are 404 SERVER_LOG_DISABLED too', async () => {
+    instanceLogFile = '';
+    const res = await Promise.all(urls.map(url => get(`${url}${url.includes('?') ? '&' : '?'}${archiveQuery(archives[0]!)}`)));
+    expect(res.map(r => [r.statusCode, body(r).error?.code])).toEqual(urls.map(() => [404, 'SERVER_LOG_DISABLED']));
+    instanceLogFile = 'rwr_server.log';
   });
 });

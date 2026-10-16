@@ -29,7 +29,9 @@ export const createDefaultTemplates = (): InstanceTemplate[] => [
       // requested` and exits only on one more Enter.
       stopCommand: 'quit\n',
       stopTimeoutMs: 15000,
-      serverLogFile: RWR_SERVER_LOG_FILE
+      serverLogFile: RWR_SERVER_LOG_FILE,
+      // rwr_server empties its log on every start: keep a week of them.
+      serverLogHistory: { keepDays: 7, keepFiles: 50 }
     }
   },
   {

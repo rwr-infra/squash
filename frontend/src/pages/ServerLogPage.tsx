@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { Alert, Button, ConfigProvider, Grid, Space, Spin, Switch, Tooltip, theme } from 'antd';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Alert, Button, ConfigProvider, Grid, Select, Space, Spin, Switch, Tooltip, theme } from 'antd';
 import { ApartmentOutlined, ArrowLeftOutlined, CloseOutlined, ReloadOutlined, SearchOutlined, VerticalAlignBottomOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
-import { ApiError, fetchServerLogInfo, fetchServerLogLines } from '../services/apiService';
+import { ApiError, fetchServerLogHistory, fetchServerLogInfo, fetchServerLogLines } from '../services/apiService';
 import type { ServerLogInfo } from '../services/apiService';
 import { LogViewport } from '../components/LogViewport';
 import { WrappedLogViewport } from '../components/WrappedLogViewport';
@@ -63,8 +63,11 @@ const isNotFound = (error: unknown) => error instanceof ApiError && error.code =
 // The instance has no log file set (or a hand-edited one outside its
 // working directory).
 const isDisabled = (error: unknown) => error instanceof ApiError && error.code === 'SERVER_LOG_DISABLED';
+// The previous run's log asked for is not kept (deleted since, or never
+// made), or (an old link, a hand-made URL) is no name one can have.
+const isGone = (error: unknown) => error instanceof ApiError && (error.code === 'SERVER_LOG_ARCHIVE_NOT_FOUND' || error.code === 'INVALID_REQUEST');
 // Answers that won't change by asking again.
-const isFinal = (error: unknown) => isNotFound(error) || isDisabled(error);
+const isFinal = (error: unknown) => isNotFound(error) || isDisabled(error) || isGone(error);
 
 // Whether a block can stand for the file as `info` describes it. A block
 // that ended before the last line of its read is final; one holding that
@@ -78,9 +81,22 @@ const formatBytes = (bytes: number) =>
       : bytes < 1024 ** 3 ? `${(bytes / 1024 ** 2).toFixed(1)} MB`
         : `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 
+// The log, or with ?archive=<name> a backup of a previous run's log (see
+// GET .../server-log/history). Each is a view of its own: nothing — lines,
+// search, following — carries over from one to another.
 const ServerLogPage = () => {
   const { instanceId = '' } = useParams<{ instanceId: string }>();
+  const [searchParams] = useSearchParams();
+  // `?archive=` with no name: the current log.
+  const archive = searchParams.get('archive') || undefined;
+  return <ServerLogView key={`${instanceId}\n${archive ?? ''}`} instanceId={instanceId} archive={archive} />;
+};
+
+const ServerLogView = ({ instanceId, archive }: { instanceId: string; archive: string | undefined }) => {
   const navigate = useNavigate();
+  const [, setSearchParams] = useSearchParams();
+  // Another log of this instance: the current one, or a previous run's.
+  const showLog = (name: string | undefined) => setSearchParams(name ? { archive: name } : {});
   const screens = Grid.useBreakpoint();
   const isMobile = !screens.md;
   const viewportRef = useRef<LogViewportHandle>(null);
@@ -98,14 +114,16 @@ const ServerLogPage = () => {
   const [loadError, setLoadError] = useState<string | undefined>();
   // Bumped to retry failed block loads.
   const [retryTick, setRetryTick] = useState(0);
+  // A line load found the backup gone (the page does not poll a backup).
+  const [goneWhileOpen, setGoneWhileOpen] = useState(false);
 
   // The file as this page last saw it (not the query cache's: that may be
   // from an earlier visit).
   const seen = useRef<ServerLogInfo | undefined>(undefined);
   const { data: info, error, isLoading, isFetching, refetch } = useQuery({
-    queryKey: ['server-log', instanceId],
+    queryKey: ['server-log', instanceId, archive ?? null],
     queryFn: async () => {
-      const next = await fetchServerLogInfo(instanceId);
+      const next = await fetchServerLogInfo(instanceId, archive);
       const previous = seen.current;
       if (previous?.exists && next.exists && previous.generation !== next.generation) {
         // A new run's log: show its end. Cached blocks are keyed by
@@ -119,13 +137,26 @@ const ServerLogPage = () => {
       return next;
     },
     gcTime: 0,
-    refetchInterval: (query) => (isFinal(query.state.error) ? false : POLL_MS),
+    // A previous run's log no longer changes: no polling, nor a check on
+    // coming back to the tab (each can mean reading the whole file again).
+    refetchInterval: (query) => (archive !== undefined || isFinal(query.state.error) ? false : POLL_MS),
+    refetchOnWindowFocus: archive === undefined,
     // A 404 (no such instance, no log file) won't fix itself.
     retry: (count, err) => !isFinal(err) && count < 3
   });
   // What an earlier poll saw no longer applies once the answer is final (the
   // log file was unset while the page was open): nothing to show or load.
-  const shown = isFinal(error) ? undefined : info;
+  const shown = isFinal(error) || goneWhileOpen ? undefined : info;
+
+  // The previous runs' logs, for the picker: on opening the page, and again
+  // whenever the picker opens (a restart may have added one).
+  const { data: history, isError: historyFailed, refetch: refetchHistory } = useQuery({
+    queryKey: ['server-log-history', instanceId],
+    queryFn: () => fetchServerLogHistory(instanceId),
+    gcTime: 0,
+    retry: false,
+    enabled: !isNotFound(error) && !isDisabled(error)
+  });
 
   // Mirrors for the loader, which runs from callbacks and timers.
   const infoRef = useRef<ServerLogInfo | undefined>(undefined);
@@ -162,7 +193,7 @@ const ServerLogPage = () => {
     for (const index of wanted.slice(0, Math.max(0, MAX_IN_FLIGHT - inFlight.current.size))) {
       const controller = new AbortController();
       inFlight.current.set(index, { generation: current.generation, controller });
-      fetchServerLogLines(instanceId, index * BLOCK_LINES, BLOCK_LINES, controller.signal).then(
+      fetchServerLogLines(instanceId, index * BLOCK_LINES, BLOCK_LINES, controller.signal, archive).then(
         (result) => {
           if (inFlight.current.get(index)?.controller === controller) inFlight.current.delete(index);
           // Read after the file was started over: other content. The next
@@ -183,6 +214,8 @@ const ServerLogPage = () => {
         },
         (err: Error) => {
           if (inFlight.current.get(index)?.controller === controller) inFlight.current.delete(index);
+          // A backup deleted while open: no poll will say so.
+          if (isGone(err)) setGoneWhileOpen(true);
           // Aborted, or the log file is gone for good (the next poll says so).
           if (controller.signal.aborted || isFinal(err)) return;
           // Try again later, backing off; say why meanwhile.
@@ -193,7 +226,7 @@ const ServerLogPage = () => {
         }
       );
     }
-  }, [instanceId]);
+  }, [instanceId, archive]);
 
   // New lines, a new generation, a block arrived (others may wait for a
   // free slot) or a retry: load what the view needs.
@@ -224,9 +257,26 @@ const ServerLogPage = () => {
 
   const notFound = isNotFound(error);
   const disabled = isDisabled(error);
-  const fileName = shown?.file ?? 'Server log';
+  const gone = isGone(error) || goneWhileOpen;
+  // A backup that is gone still names its log (from the list); a log file
+  // unset meanwhile names none.
+  const fileName = shown?.file ?? (gone ? history?.file : undefined) ?? 'Server log';
   const rwrLog = fileName === 'rwr_server.log';
   const muted = { color: '#888', fontSize: 12 };
+  const lastWritten = (at: string) => new Date(at).toLocaleString();
+  const archives = history?.archives ?? [];
+  const historyOptions = [
+    { value: '', label: 'Current log' },
+    ...archives.map((item) => ({ value: item.name, label: `${lastWritten(item.modifiedAt)} · ${formatBytes(item.size)}` })),
+    // The one shown, should the list not have it (any more).
+    ...(archive !== undefined && !archives.some((item) => item.name === archive) ? [{ value: archive, label: archive }] : []),
+    ...(history && archives.length === 0
+      ? [history.keep
+          ? { value: '-', disabled: true, label: 'No previous logs yet' }
+          : { value: '-', disabled: true, label: 'Previous logs are not kept', title: 'Turn on "Keep Previous Logs" in the instance settings (Advanced).' }]
+      : []),
+    ...(historyFailed ? [{ value: '-', disabled: true, label: 'Could not list previous logs' }] : [])
+  ];
 
   return (
     <ConfigProvider theme={{ algorithm: theme.darkAlgorithm }}>
@@ -235,10 +285,27 @@ const ServerLogPage = () => {
           <Button icon={<ArrowLeftOutlined />} size="small" onClick={() => navigate('/')} type="text" style={{ color: '#fff' }} title="Back to instances" />
           <code style={{ color: '#fff', background: '#3c3c3c', padding: '2px 8px', borderRadius: 4, wordBreak: 'break-all', maxWidth: '40vw' }}>{instanceId}</code>
           <strong style={{ color: '#fff', wordBreak: 'break-all' }}>{fileName}</strong>
+          {!notFound && !disabled && (
+            <Select
+              size="small"
+              className="log-history-picker"
+              aria-label="Show a previous run's log"
+              value={archive ?? ''}
+              onChange={(name: string) => showLog(name || undefined)}
+              onOpenChange={(open) => {
+                if (open) void refetchHistory();
+              }}
+              options={historyOptions}
+              popupMatchSelectWidth={false}
+              // Never wider than the screen (a phone).
+              styles={{ popup: { root: { maxWidth: 'calc(100vw - 24px)' } } }}
+              style={{ minWidth: isMobile ? 150 : 210 }}
+            />
+          )}
           {shown?.exists && (
             <span style={muted}>
               {shown.lineCount.toLocaleString()} lines · {formatBytes(shown.size)}
-              {shown.modifiedAt && !isMobile ? ` · updated ${new Date(shown.modifiedAt).toLocaleTimeString()}` : ''}
+              {shown.modifiedAt && !isMobile && archive === undefined ? ` · updated ${new Date(shown.modifiedAt).toLocaleTimeString()}` : ''}
             </span>
           )}
           <Space style={{ marginLeft: 'auto' }} wrap>
@@ -260,14 +327,17 @@ const ServerLogPage = () => {
                 <span style={{ fontSize: 12 }}>Wrap</span>
               </Space>
             </Tooltip>
-            <Tooltip title="Keep showing the newest lines">
-              <Space size={4}>
-                <Switch size="small" checked={follow} onChange={(on) => { if (!on) viewportRef.current?.holdEnd(); setFollow(on); }} aria-label="Follow new lines" />
-                <span style={{ fontSize: 12 }}>Follow</span>
-              </Space>
-            </Tooltip>
-            <Button size="small" icon={<VerticalAlignBottomOutlined />} onClick={() => setFollow(true)} title="Jump to the end and follow">{isMobile ? null : 'End'}</Button>
-            <Button size="small" icon={<ReloadOutlined />} loading={isFetching && !info} onClick={() => refetch()} title="Check for new lines now" />
+            {/* A previous run's log gets no new lines. */}
+            {archive === undefined && (
+              <Tooltip title="Keep showing the newest lines">
+                <Space size={4}>
+                  <Switch size="small" checked={follow} onChange={(on) => { if (!on) viewportRef.current?.holdEnd(); setFollow(on); }} aria-label="Follow new lines" />
+                  <span style={{ fontSize: 12 }}>Follow</span>
+                </Space>
+              </Tooltip>
+            )}
+            <Button size="small" icon={<VerticalAlignBottomOutlined />} onClick={() => setFollow(true)} title={archive === undefined ? 'Jump to the end and follow' : 'Jump to the end'}>{isMobile ? null : 'End'}</Button>
+            {archive === undefined && <Button size="small" icon={<ReloadOutlined />} loading={isFetching && !info} onClick={() => refetch()} title="Check for new lines now" />}
             <Button size="small" icon={<ApartmentOutlined />} onClick={() => navigate(`/terminal/${encodeURIComponent(instanceId)}`)} title="Open Terminal">{isMobile ? null : 'Terminal'}</Button>
           </Space>
         </div>
@@ -276,6 +346,16 @@ const ServerLogPage = () => {
           <div style={{ ...muted, padding: '4px 12px', background: '#252526', borderBottom: '1px solid #3c3c3c', wordBreak: 'break-all' }}>{shown.path}</div>
         )}
 
+        {archive !== undefined && shown && (
+          <Alert
+            type="info"
+            showIcon
+            banner
+            className="log-archive-notice"
+            title={`A previous run's ${fileName}${shown.modifiedAt ? `, last written ${lastWritten(shown.modifiedAt)}` : ''}. It no longer changes.`}
+            action={<Button size="small" onClick={() => showLog(undefined)}>Current log</Button>}
+          />
+        )}
         {resetAt && (
           <Alert
             type="info"
@@ -286,11 +366,22 @@ const ServerLogPage = () => {
             title={`The log was emptied or replaced at ${resetAt.toLocaleTimeString()}${rwrLog ? ' (rwr_server clears it whenever it starts)' : ''}. Showing the new file.`}
           />
         )}
-        {error && info && !isFinal(error) && <Alert type="warning" showIcon banner title={`Could not check for new lines: ${(error as Error).message}`} />}
+        {error && info && !isFinal(error) && (
+          <Alert type="warning" showIcon banner title={`${archive === undefined ? 'Could not check for new lines' : 'Could not read this previous log'}: ${(error as Error).message}`} />
+        )}
         {loadError && shown?.exists && <Alert type="warning" showIcon banner title={`Could not load lines: ${loadError}. Retrying…`} />}
 
         {notFound ? (
           <Alert type="error" showIcon style={{ margin: 12 }} title={`Instance ${instanceId} not found`} />
+        ) : gone ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ margin: 12 }}
+            title="This previous log is not kept"
+            description={`${archive ?? ''} is not there: deleted since (by the instance's limits for keeping previous logs, or by hand), or never made.`}
+            action={<Button size="small" onClick={() => showLog(undefined)}>Current log</Button>}
+          />
         ) : disabled ? (
           <Alert
             type="info"
@@ -315,6 +406,8 @@ const ServerLogPage = () => {
           <LogSearchBar
             ref={searchRef}
             instanceId={instanceId}
+            archive={archive}
+            onGone={() => setGoneWhileOpen(true)}
             fileName={info.file}
             generation={info.generation}
             size={info.size}

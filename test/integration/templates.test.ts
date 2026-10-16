@@ -1,9 +1,9 @@
 // Instance templates: the file store and the /api/templates routes, driven
 // through the real createHttpServer (auth hook included) with fastify.inject —
 // no port is opened.
-//   - a missing templates file is seeded with the RWR and SteamCMD templates
-//     and written; reopening keeps it (same id); a list emptied by the user
-//     stays empty
+//   - a missing templates file is seeded with the RWR (a week of previous
+//     logs kept) and SteamCMD templates and written; reopening keeps it
+//     (same id); a list emptied by the user stays empty
 //   - a corrupt or malformed file (duplicate ids included) fails loudly and is
 //     left byte-for-byte as is; a UTF-8 byte order mark is accepted
 //   - concurrent changes leave a valid file holding every template
@@ -54,7 +54,7 @@ describe('store', () => {
       expect(JSON.stringify(readJson(seededFile()))).toBe(JSON.stringify(store.list()));
     });
     it('seed values are the rwr_server defaults', () => {
-      expect(seed?.values).toMatchObject({ executable: './rwr_server', stopCommand: 'quit\n', restartPolicy: 'always', stopTimeoutMs: 15000, serverLogFile: 'rwr_server.log' });
+      expect(seed?.values).toMatchObject({ executable: './rwr_server', stopCommand: 'quit\n', restartPolicy: 'always', stopTimeoutMs: 15000, serverLogFile: 'rwr_server.log', serverLogHistory: { keepDays: 7, keepFiles: 50 } });
       expect(seed?.values.cwd).toBeUndefined();
     });
     it('SteamCMD seed values: ./steamcmd, no restart, quit without an extra Enter', () => {

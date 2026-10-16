@@ -27,6 +27,14 @@
 //     also when called while a stop is under way — and a Stop, force stop or
 //     dispose() meanwhile cancels the restart instead of starting a new
 //     process; concurrent restarts join into one
+//   - with serverLogHistory on, every start — the first (a log left from
+//     before squash), an auto-restart after a crash, restart() — moves the
+//     previous server log into its history before the spawn (gone when the
+//     instance turns `running`, so the new process never sees it), logs it,
+//     and afterwards deletes backups past keepFiles, never the one just made
+//     (also when another sorts as newer); a backup that fails is logged and
+//     the server starts anyway; off, or without a log file, the log stays
+//     where it is
 //
 // Each scenario runs once, in its suite's beforeAll, and records its checks
 // as it goes — the observations are timing-sensitive, so they are taken at
@@ -41,6 +49,7 @@ import { createInstanceSupervisor, resolveRestartPolicy } from '../../src/core/i
 import { CreateInstanceSchema } from '../../src/api/http/schemas/instance-schemas.js';
 import type { InstanceConfig, InstanceStatus, InstanceSupervisor } from '../../src/core/instance/instance-types.js';
 import { toInstanceLogFile } from '../../src/core/log/log-writer.js';
+import { archiveName } from '../../src/core/log/server-log-history.js';
 import { useTempDir } from '../helpers/temp-dir.js';
 
 const isWindows = process.platform === 'win32';
@@ -114,6 +123,15 @@ process.on('exit', killStrays);
 const CHILD = `
 const fs = require('node:fs');
 const mode = process.argv[1];
+// Like rwr_server, in any mode: (re)write the server log at startup — after
+// saying whether the previous one was still there — numbering the runs.
+const serverLog = process.env.SQUASH_TEST_SERVER_LOG;
+if (serverLog) {
+  console.log('server log was there: ' + fs.existsSync(serverLog));
+  const run = (fs.existsSync('runs') ? Number(fs.readFileSync('runs', 'utf8')) : 0) + 1;
+  fs.writeFileSync('runs', String(run));
+  fs.writeFileSync(serverLog, 'run ' + run + '\\n');
+}
 console.log('child ready');
 if (mode === 'size') {
   let last = '';
@@ -202,6 +220,7 @@ type Harness = {
   readonly output: () => string;
   // The instance log file (`[squash] ...` lines go only there, not to onData).
   readonly instanceLog: () => string;
+  readonly cwd: string;
 };
 
 const createHarness = async (mode: string, overrides: Partial<InstanceConfig> = {}): Promise<Harness> => {
@@ -258,7 +277,7 @@ const createHarness = async (mode: string, overrides: Partial<InstanceConfig> = 
       return '';
     }
   };
-  return { supervisor, statuses, output: () => chunks.join(''), instanceLog };
+  return { supervisor, statuses, output: () => chunks.join(''), instanceLog, cwd };
 };
 
 const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
@@ -1072,6 +1091,156 @@ for (const by of ['stop', 'force', 'dispose'] as const) {
     `${label}: ends in stopped`,
     `${label}: no new process was started`
   ], () => checkRestartCancelled(by));
+}
+
+// The child writes rwr_server.log at startup, numbering its runs.
+const SERVER_LOG_OVERRIDES: Partial<InstanceConfig> = { env: { SQUASH_TEST_SERVER_LOG: 'rwr_server.log' }, serverLogFile: 'rwr_server.log' };
+// The backups' contents (sorted), or undefined without a history directory.
+const historyContents = (cwd: string) => {
+  const dir = path.join(cwd, 'rwr_server.log.history');
+  return fs.existsSync(dir) ? fs.readdirSync(dir).map((name) => fs.readFileSync(path.join(dir, name), 'utf8').trim()).sort() : undefined;
+};
+const countOf = (text: string, part: string) => text.split(part).length - 1;
+// Whether the server log was still there each time the instance turned
+// `running` — reported right after the spawn returns, before the child has
+// run any code: false proves it was moved before the spawn.
+const watchServerLogAtSpawn = (supervisor: InstanceSupervisor, cwd: string) => {
+  const seen: boolean[] = [];
+  let previous: InstanceStatus | undefined;
+  supervisor.onStatus((runtime) => {
+    if (runtime.status === 'running' && previous !== 'running') seen.push(fs.existsSync(path.join(cwd, 'rwr_server.log')));
+    previous = runtime.status;
+  });
+  return seen;
+};
+
+scenario('server log history', [
+  'server log history: crashed, auto-restarted, restarted twice',
+  'server log history: the log was gone at every spawn',
+  'server log history: every run started without the previous log',
+  'server log history: the first start kept the log left from before',
+  'server log history: the crashed run’s log was kept before the auto-restart',
+  'server log history: each start logged its backup, by the name on disk',
+  'server log history: past keepFiles, the oldest backups were deleted and logged',
+  'server log history: the live log is the current run’s'
+], async () => {
+  const { supervisor, output, instanceLog, cwd } = await createHarness('crash-once', {
+    ...SERVER_LOG_OVERRIDES,
+    restartPolicy: 'always',
+    serverLogHistory: { keepDays: 7, keepFiles: 2 }
+  });
+  const atSpawn = watchServerLogAtSpawn(supervisor, cwd);
+  // Left by a run before squash started.
+  fs.writeFileSync(path.join(cwd, 'rwr_server.log'), 'run 0\n');
+  await supervisor.start();
+  const afterStart = historyContents(cwd);
+  const autoRestarted = await waitFor(() => supervisor.getRuntime().restartCount === 1 && countOf(output(), 'child ready') === 2, 5000);
+  const afterCrash = historyContents(cwd);
+  if (autoRestarted) {
+    await supervisor.restart();
+    await waitFor(() => countOf(output(), 'child ready') === 3, 5000);
+    await supervisor.restart();
+  }
+  const ran = autoRestarted && (await waitFor(() => countOf(output(), 'child ready') === 4, 5000));
+  if (!check('server log history: crashed, auto-restarted, restarted twice', ran, output())) return;
+  check('server log history: the log was gone at every spawn', JSON.stringify(atSpawn) === JSON.stringify([false, false, false, false]), JSON.stringify(atSpawn));
+  check(
+    'server log history: every run started without the previous log',
+    countOf(output(), 'server log was there: false') === 4 && !output().includes('server log was there: true'),
+    output()
+  );
+  check('server log history: the first start kept the log left from before', JSON.stringify(afterStart) === JSON.stringify(['run 0']), JSON.stringify(afterStart));
+  check('server log history: the crashed run’s log was kept before the auto-restart', JSON.stringify(afterCrash) === JSON.stringify(['run 0', 'run 1']), JSON.stringify(afterCrash));
+  // The clean-ups run after the spawns: wait for the second one's line.
+  await waitFor(() => countOf(instanceLog(), 'deleted 1 old') === 2, 5000);
+  const kept = Array.from(instanceLog().matchAll(/kept the previous rwr_server\.log as rwr_server\.log\.history\/(rwr_server\.\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-\d+)?\.log)\r?\n/g), (match) => match[1]);
+  const onDisk = fs.readdirSync(path.join(cwd, 'rwr_server.log.history'));
+  check(
+    'server log history: each start logged its backup, by the name on disk',
+    kept.length === 4 && new Set(kept).size === 4 && onDisk.every((name) => kept.includes(name)) && !instanceLog().includes('could not'),
+    `${JSON.stringify(onDisk)}\n${instanceLog()}`
+  );
+  const deleted = Array.from(instanceLog().matchAll(/deleted 1 old rwr_server\.log backup\(s\): (\S+)\r?\n/g), (match) => match[1]);
+  check(
+    'server log history: past keepFiles, the oldest backups were deleted and logged',
+    JSON.stringify(historyContents(cwd)) === JSON.stringify(['run 2', 'run 3']) && JSON.stringify(deleted) === JSON.stringify(kept.slice(0, 2)),
+    `${JSON.stringify(historyContents(cwd))}\n${instanceLog()}`
+  );
+  check('server log history: the live log is the current run’s', fs.readFileSync(path.join(cwd, 'rwr_server.log'), 'utf8') === 'run 4\n');
+  supervisor.stop();
+  await waitFor(() => isSettled(supervisor), 5000);
+});
+
+// A backup that sorts as newer than the one just made (a clock set back):
+// with room for one, the one just made stays.
+scenario('server log history: newest', [
+  'server log history newest: started',
+  'server log history newest: the backup just made stayed, the other went'
+], async () => {
+  const { supervisor, output, instanceLog, cwd } = await createHarness('server-log-newest', {
+    ...SERVER_LOG_OVERRIDES,
+    serverLogHistory: { keepDays: 7, keepFiles: 1 }
+  });
+  const dir = path.join(cwd, 'rwr_server.log.history');
+  fs.mkdirSync(dir);
+  const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const futureName = archiveName('rwr_server.log', future);
+  fs.writeFileSync(path.join(dir, futureName), 'from the future\n');
+  fs.utimesSync(path.join(dir, futureName), future, future);
+  fs.writeFileSync(path.join(cwd, 'rwr_server.log'), 'run 0\n');
+  await supervisor.start();
+  const started = await waitFor(() => output().includes('child ready'), 5000);
+  if (!check('server log history newest: started', started, output())) return;
+  await waitFor(() => instanceLog().includes('deleted 1 old'), 5000);
+  check(
+    'server log history newest: the backup just made stayed, the other went',
+    JSON.stringify(historyContents(cwd)) === JSON.stringify(['run 0']) && instanceLog().includes(`deleted 1 old rwr_server.log backup(s): ${futureName}`),
+    `${JSON.stringify(historyContents(cwd))}\n${instanceLog()}`
+  );
+  supervisor.stop();
+  await waitFor(() => isSettled(supervisor), 5000);
+});
+
+scenario('server log history: cannot keep', [
+  'server log history cannot keep: started anyway',
+  'server log history cannot keep: the log stayed for the server',
+  'server log history cannot keep: the instance log says why'
+], async () => {
+  const { supervisor, output, instanceLog, cwd } = await createHarness('server-log-blocked', {
+    ...SERVER_LOG_OVERRIDES,
+    serverLogHistory: { keepDays: 7, keepFiles: 50 }
+  });
+  // The history directory's name taken by a file.
+  fs.writeFileSync(path.join(cwd, 'rwr_server.log.history'), 'mine');
+  fs.writeFileSync(path.join(cwd, 'rwr_server.log'), 'previous run\n');
+  await supervisor.start();
+  const ready = await waitFor(() => output().includes('child ready'), 5000);
+  if (!check('server log history cannot keep: started anyway', ready && supervisor.getRuntime().status === 'running', output())) return;
+  check('server log history cannot keep: the log stayed for the server', output().includes('server log was there: true'), output());
+  await waitFor(() => instanceLog().includes('could not keep'), 2000);
+  check('server log history cannot keep: the instance log says why', /could not keep the previous rwr_server\.log: (EEXIST|ENOTDIR)/.test(instanceLog()), instanceLog());
+  supervisor.stop();
+  await waitFor(() => isSettled(supervisor), 5000);
+});
+
+// Off: no setting; or a setting, but no log file.
+for (const [label, overrides] of [
+  ['off', SERVER_LOG_OVERRIDES],
+  ['without a log file', { ...SERVER_LOG_OVERRIDES, serverLogFile: '', serverLogHistory: { keepDays: 7, keepFiles: 50 } }]
+] as const) {
+  scenario(`server log history: ${label}`, [
+    `server log history ${label}: the log stayed for the server`,
+    `server log history ${label}: no history directory`
+  ], async () => {
+    const { supervisor, output, cwd } = await createHarness(`server-log-${label.replaceAll(' ', '-')}`, overrides);
+    fs.writeFileSync(path.join(cwd, 'rwr_server.log'), 'previous run\n');
+    await supervisor.start();
+    await waitFor(() => output().includes('child ready'), 5000);
+    check(`server log history ${label}: the log stayed for the server`, output().includes('server log was there: true'), output());
+    check(`server log history ${label}: no history directory`, !fs.existsSync(path.join(cwd, 'rwr_server.log.history')));
+    supervisor.stop();
+    await waitFor(() => isSettled(supervisor), 5000);
+  });
 }
 
 // Each scenario has its own timeout against a hang; this keeps the smoke's

@@ -1,8 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { StaleIndexError } from '../../../core/log/line-index.js';
-import { ServerLogDisabledError, type ServerLogService } from '../../../services/server-log-service.js';
+import {
+  InvalidServerLogArchiveError,
+  ServerLogArchiveNotFoundError,
+  ServerLogDisabledError,
+  type ServerLogService
+} from '../../../services/server-log-service.js';
 import type { InstanceIdParam } from '../schemas/instance-schemas.js';
-import { ServerLogLinesQuerySchema, ServerLogSearchQuerySchema, SERVER_LOG_SEARCH_LIMIT } from '../schemas/server-log-schemas.js';
+import { ServerLogInfoQuerySchema, ServerLogLinesQuerySchema, ServerLogSearchQuerySchema, SERVER_LOG_SEARCH_LIMIT } from '../schemas/server-log-schemas.js';
 
 type RouteDeps = {
   serverLogService: ServerLogService;
@@ -20,10 +25,11 @@ const invalidRequest = (reply: FastifyReply, message: string) =>
     error: { code: 'INVALID_REQUEST', message }
   });
 
-// No log file configured: 404 with its own code, so the page can say so.
-// The file exists but can't be read right now (locked, permissions, not a
-// regular file, rewritten on every attempt): say which and why, instead of
-// the generic 500. Anything else — including Node's own ERR_* errors, which
+// No log file configured: 404 with its own code, so the page can say so;
+// the same for a backup that is gone (deleted by the limits), while a name no
+// backup can have is a bad request. The file exists but can't be read right
+// now (locked, permissions, not a regular file, rewritten on every attempt):
+// say which and why, instead of the generic 500. Anything else — including Node's own ERR_* errors, which
 // mean a bug rather than a file problem — goes to the error handler.
 const readFailed = (reply: FastifyReply, err: unknown, file = 'the server log') => {
   if (err instanceof ServerLogDisabledError) {
@@ -32,6 +38,13 @@ const readFailed = (reply: FastifyReply, err: unknown, file = 'the server log') 
       error: { code: 'SERVER_LOG_DISABLED', message: err.message }
     });
   }
+  if (err instanceof ServerLogArchiveNotFoundError) {
+    return reply.status(404).send({
+      success: false,
+      error: { code: 'SERVER_LOG_ARCHIVE_NOT_FOUND', message: err.message }
+    });
+  }
+  if (err instanceof InvalidServerLogArchiveError) return invalidRequest(reply, err.message);
   if (err instanceof StaleIndexError) {
     return reply.status(503).send({
       success: false,
@@ -46,16 +59,34 @@ const readFailed = (reply: FastifyReply, err: unknown, file = 'the server log') 
   });
 };
 
+// Every route reads the instance's log, or with `?archive=<name>` one of its
+// backups (named as the history listing names them).
 export const registerServerLogRoutes = async (fastify: FastifyInstance, deps: RouteDeps) => {
   // Where the file is and what the index covers; brings the index up to date.
   fastify.get('/instances/:id/server-log', async (request: FastifyRequest<{ Params: InstanceIdParam }>, reply) => {
     const { id } = request.params;
+    const query = ServerLogInfoQuerySchema.safeParse(request.query);
+    if (!query.success) return invalidRequest(reply, query.error.message);
     try {
-      const info = await deps.serverLogService.getInfo(id);
+      const info = await deps.serverLogService.getInfo(id, query.data.archive);
       if (!info) return notFound(reply, id);
       return reply.status(200).send({ success: true, data: info });
     } catch (err) {
-      return readFailed(reply, err, deps.serverLogService.fileOf(id));
+      return readFailed(reply, err, deps.serverLogService.fileOf(id, query.data.archive));
+    }
+  });
+
+  // The backups of the previous runs' logs, newest first, and the instance's
+  // setting for keeping them.
+  fastify.get('/instances/:id/server-log/history', async (request: FastifyRequest<{ Params: InstanceIdParam }>, reply) => {
+    const { id } = request.params;
+    try {
+      const history = await deps.serverLogService.listArchives(id);
+      if (!history) return notFound(reply, id);
+      return reply.status(200).send({ success: true, data: history });
+    } catch (err) {
+      const file = deps.serverLogService.fileOf(id);
+      return readFailed(reply, err, file === undefined ? undefined : `${file}.history`);
     }
   });
 
@@ -64,11 +95,11 @@ export const registerServerLogRoutes = async (fastify: FastifyInstance, deps: Ro
     const query = ServerLogLinesQuerySchema.safeParse(request.query);
     if (!query.success) return invalidRequest(reply, query.error.message);
     try {
-      const range = await deps.serverLogService.readLines(id, query.data.from, query.data.count);
+      const range = await deps.serverLogService.readLines(id, query.data.from, query.data.count, query.data.archive);
       if (!range) return notFound(reply, id);
       return reply.status(200).send({ success: true, data: { ...range.snapshot, from: range.from, lines: range.lines } });
     } catch (err) {
-      return readFailed(reply, err, deps.serverLogService.fileOf(id));
+      return readFailed(reply, err, deps.serverLogService.fileOf(id, query.data.archive));
     }
   });
 
@@ -86,7 +117,7 @@ export const registerServerLogRoutes = async (fastify: FastifyInstance, deps: Ro
     // is consumed.)
     if (request.raw.socket?.destroyed === true) controller.abort();
     try {
-      const result = await deps.serverLogService.search(id, query.data.q, query.data.caseSensitive, SERVER_LOG_SEARCH_LIMIT, controller.signal);
+      const result = await deps.serverLogService.search(id, query.data.q, query.data.caseSensitive, SERVER_LOG_SEARCH_LIMIT, controller.signal, query.data.archive);
       if (!result) return notFound(reply, id);
       return reply.status(200).send({ success: true, data: { ...result.snapshot, matches: result.matches, truncated: result.truncated } });
     } catch (err) {
@@ -94,7 +125,7 @@ export const registerServerLogRoutes = async (fastify: FastifyInstance, deps: Ro
       if ((err as Error).name === 'AbortError') {
         return reply.status(499).send({ success: false, error: { code: 'CLIENT_CLOSED_REQUEST', message: 'Search aborted' } });
       }
-      return readFailed(reply, err, deps.serverLogService.fileOf(id));
+      return readFailed(reply, err, deps.serverLogService.fileOf(id, query.data.archive));
     }
   });
 };
