@@ -130,13 +130,14 @@ describe('backup names', () => {
     expect(archiveStamp(lastWritten)).toBe('2026-10-05_07-03-09');
   });
   it('the server’s time zone, not UTC', () => {
-    const zone = process.env.TZ;
+    // Put back by name: on Windows, deleting TZ leaves Node in the zone set
+    // last (the later tests here then ran on Shanghai time).
+    const zone = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     process.env.TZ = 'Asia/Shanghai';
     try {
       expect(archiveStamp(new Date(Date.UTC(2026, 9, 15, 18, 30, 0)))).toBe('2026-10-16_02-30-00');
     } finally {
-      if (zone === undefined) delete process.env.TZ;
-      else process.env.TZ = zone;
+      process.env.TZ = zone;
     }
   });
   it('rwr_server.log → rwr_server.<time>.log, suffix before the extension', () => {
