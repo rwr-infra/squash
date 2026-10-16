@@ -2,7 +2,7 @@
 
 - 日期：2026-10-15 – 2026-10-16
 - 风险：高（服务器上自动改名和删除文件；改动 supervisor 的启动路径）
-- Commits：`e2176dc`..`632763c`（分支 `feat/server-log-history`）
+- Commits：`e2176dc`..`b56518e`（分支 `feat/server-log-history`，PR #17）
 - 相关 ADR：无
 
 ## 结果
@@ -38,6 +38,7 @@
 - **被清理释放的后缀会被复用**：后缀按"第一个空位"分配时，同一秒内几轮重启加上一次清理，就会让一个名字先后指向两轮日志。现象是 supervisor 测试偶发失败。做法：取已用的最大后缀 + 1。
 - **antd Form.Item 字段级 `initialValue` 与表单级 `initialValues` 冲突**：开发模式会报 "Form already set 'initialValues'"。默认值统一放在表单级的值里。
 - **`Form.useWatch` 晚一帧**：它通过宏任务批量通知，首帧返回 undefined。不要拿它决定提交什么；首帧也别据此显示错误提示（例如 "Needs a Server Log File."）。
+- **Windows 上删除 `process.env.TZ` 不会恢复时区**：测试里临时改了 TZ，再 `delete process.env.TZ`，同一文件里后面的测试仍按改后的时区运行（windows-latest 上差了 8 小时）。做法：还原时按名字设回原来实际生效的时区，见 CLAUDE.md 的 Platform notes。
 - **e2e 只在 agent 下运行时，通过的测试看不到 console 输出**：调试时加 `--silent=false`。
 - **instance-form e2e 的抽屉检查偶发失败**：`openDrawer()` 等到的是缓存里的旧列表；已改为先等新模板出现。
 
